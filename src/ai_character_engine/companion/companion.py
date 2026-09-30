@@ -256,7 +256,14 @@ def _repeats_a_line(sentence: str, lines: Sequence[str]) -> bool:
     if len(new) < _SHORTEST_CHECKED:
         return False
     for line in lines:
-        if new in _plain(line):
+        old_line = _plain(line)
+        if new in old_line:
+            return True
+        # Most of the sentence taken over word for word, with a new opening.
+        longest = SequenceMatcher(None, new, old_line, autojunk=False).find_longest_match(
+            0, len(new), 0, len(old_line)
+        ).size
+        if longest >= max(12, 0.6 * len(new)):
             return True
         said, rest = _sentences(line)
         for old in [*said, rest]:

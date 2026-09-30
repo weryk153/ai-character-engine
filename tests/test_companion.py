@@ -2680,3 +2680,19 @@ def test_a_short_remark_of_her_own_is_still_a_remark(tmp_path):
         return result.text
 
     assert run(scenario()) == "喂，還醒著嗎？"
+
+
+def test_a_sentence_with_a_new_opening_on_an_old_one_is_still_a_repetition(tmp_path):
+    async def scenario():
+        llm = Scripted(
+            "Stop dreaming and look at the latest typhoon map, that is what saves lives.",
+            "Stop building that machine and look at the latest typhoon map, that is what saves lives.",
+            "How is Bun taking the rain?",
+        )
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "How is Bun taking the rain?"
