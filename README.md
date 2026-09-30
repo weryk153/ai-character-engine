@@ -139,7 +139,7 @@ asyncio.run(main())
 
 This example uses conversation history. For continuity across restarts, add [session save/restore](examples/session_runtime.py). Long-term memory, reflection and goals require their own configuration. See the [installation guide](docs/getting-started.md) for the full setup.
 
-A host that talks to one character — a chat window, a voice application, a desktop avatar — can skip that configuration: [`CharacterCompanion`](docs/companion.md) is the engine assembled with memory, mood, goals, reflection and interruption already wired, behind a single `reply()`. Its context is written into the conversation as it grows, so a local model's prompt cache stays usable from turn to turn. See [`examples/companion_chat.py`](examples/companion_chat.py).
+A host that talks to one character — a chat window, a voice application, a desktop avatar — can skip that configuration: [`CharacterCompanion`](docs/companion.md) is the engine assembled with memory, mood, goals, reflection and interruption already wired, behind a single `reply()`. Its context is written into the conversation as it grows, so a local model’s prompt cache stays usable from turn to turn. See [`examples/companion_chat.py`](examples/companion_chat.py).
 
 ## 🔌 Models and integrations
 
@@ -149,7 +149,7 @@ A host that talks to one character — a chat window, a voice application, a des
 
 ## 📂 Examples and docs
 
-- [Character companion](examples/companion_chat.py): one character that remembers, changes and can be interrupted, on a local OpenAI-compatible endpoint.
+- [Character companion](examples/companion_chat.py): a terminal chat with one character that remembers what you tell it and changes over time, on a local OpenAI-compatible endpoint.
 - [Interactive chat](examples/basic_chat.py) / [tool calls](examples/tool_chat.py): configure the model and credentials in `.env` before running.
 - [Sessions](examples/session_runtime.py): save and restore using temporary storage and an offline client.
 - [HTTP/SSE/WebSocket](examples/character_service.py): a service example for web or mobile clients. Uses an offline client by default; configure inference and authentication for deployment.

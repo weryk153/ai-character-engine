@@ -40,11 +40,12 @@ request/response schema. `create_app` defaults to `NoopAuthHook`; an exposed
 service must supply its own authentication and tenant/session admission policy.
 CORS configuration is not authentication.
 
-## Renderer and compatibility packages
+## Renderer package
 
 The core renderer contract remains independent of any renderer SDK. Install
 `packages/renderer-vrm` when the host needs VRM command mapping. Its README
-specifies the adapter boundary and asset requirements. It shares the engine version and ships its own Apache-2.0 license.
+specifies the adapter boundary and asset requirements. It shares the engine
+version and ships its own Apache-2.0 license.
 
 ## Audio and training hosts
 

@@ -6,10 +6,10 @@ Use Python 3.11, 3.12 or 3.13. Core CI covers Linux, macOS and Windows.
 Optional audio, training and renderer integrations may need their own native
 libraries, services or hardware; core CI does not certify every device stack.
 
-Clone the private repository using an account with access:
+Clone the repository:
 
 ```sh
-git clone git@github.com:weryk153/ai-character-engine.git
+git clone https://github.com/weryk153/ai-character-engine.git
 cd ai-character-engine
 python -m venv .venv
 ```

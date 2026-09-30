@@ -30,7 +30,7 @@
 
 ## Sobre o projeto
 
-AI Character Engine permite criar companheiros de IA, NPCs e assistentes virtuais. Defina a personalidade, permita que lembrem interações e acompanhem tarefas pendentes, e conecte ferramentas para agir no seu aplicativo.
+AI Character Engine permite criar companheiros de IA, NPCs e assistentes virtuais. Defina a personalidade, permita que lembrem interações e acompanhem tarefas pendentes, e conecte ferramentas para que eles ajam no seu aplicativo.
 
 O motor gerencia conversas, memória de longo prazo, emoções, relações, reflexões, crenças e objetivos. O modelo gera respostas. Os dados do personagem ficam fora do modelo: você pode inspecionar, corrigir, salvar e continuar usando esses dados ao trocar de modelo.
 
@@ -53,7 +53,7 @@ Comece com texto ou integre o motor a um personagem de desktop, uma interface de
 
 ### ⚡ Cognição em segundo plano e vários modelos
 
-- **Conversar enquanto processa experiências:** Turnos em primeiro plano e resumos ou reflexões em segundo plano, com limites de concorrência, prazos e cancelamento.
+- **Conversar enquanto processa experiências:** Turnos em primeiro plano e resumos ou reflexões em segundo plano, com limites de concorrência, tempos limite e cancelamento.
 - **Modelos por função:** Diálogo, resumo, reflexão e visão podem compartilhar um modelo ou usar endpoints distintos com fallback configurado.
 - **Especialistas:** Um fluxo opcional de planejador, especialistas e verificador distribui uma tarefa limitada e reúne resultados.
 
@@ -83,7 +83,7 @@ flowchart TD
     Runtime <--> Tools["Ferramentas do aplicativo"]
     Runtime --> Record["Registro do turno e atualização de estado"]
     Record --> Context
-    Runtime --> Snapshot["Snapshot somente de leitura"]
+    Runtime --> Snapshot["Snapshot somente leitura"]
     Snapshot --> Workers["Resumos, reflexão e cognição de fundo"]
     Workers --> Commit["Validação e commit de propostas"]
     Commit --> Context
@@ -143,23 +143,23 @@ Um host que conversa com um único personagem — uma janela de chat, um aplicat
 
 ## 🔌 Modelos e integrações
 
-- **LLM:** OpenAI Responses e Chat Completions compatível com OpenAI, incluindo endpoints compatíveis de LM Studio, Ollama e vLLM. Você também pode implementar seu client. [Exemplos](examples/README.md).
+- **LLM:** OpenAI Responses e Chat Completions compatível com OpenAI, incluindo endpoints compatíveis de LM Studio, Ollama e vLLM. Você também pode implementar seu client. [Exemplos de provedores](examples/README.md).
 - **Voz e avatares:** Extras de áudio e [adaptador VRM](packages/renderer-vrm/README.md), conforme necessário. Instalar pacotes não baixa modelos nem inicia serviços.
-- **Local ou remoto:** O núcleo não exige nuvem nem chave de API. Os provedores e ferramentas escolhidos determinam o uso da rede.
+- **Local ou remoto:** O núcleo não exige nuvem nem chave de API. Modelos locais podem usar endpoints locais; os provedores e ferramentas escolhidos determinam o uso da rede.
 
 ## 📂 Exemplos e documentação
 
-- [Companheiro de personagem](examples/companion_chat.py): um personagem que lembra, muda e pode ser interrompido, em um endpoint local compatível com OpenAI.
+- [Personagem companheiro](examples/companion_chat.py): um chat no terminal com um personagem que lembra o que você conta e muda com o tempo, em um endpoint local compatível com OpenAI.
 - [Chat interativo](examples/basic_chat.py) / [ferramentas](examples/tool_chat.py): configure modelo e credenciais no `.env`.
 - [Sessões](examples/session_runtime.py): salvar e restaurar com armazenamento temporário e client offline.
 - [HTTP/SSE/WebSocket](examples/character_service.py): serviço para web ou celular com client offline por padrão. Configure inferência e autenticação para implantação.
 - [Autonomy](examples/autonomy_host.py): gatilhos e ciclo de vida.
 - [Revisão de memória](tests/scenarios/memory_revision.py), [reflexão e crenças](tests/scenarios/reflection_long_term_cognition.py), [objetivos](tests/scenarios/goal_motivation_runtime.py), [percepção](tests/scenarios/world_environment.py): cenários de regressão executáveis com configuração e resultados esperados.
 
-[API](docs/api-reference.md) · [Configuração](docs/configuration.md) · [Operação](docs/operations.md) · [Extensões](docs/extensions.md)
+[Referência da API](docs/api-reference.md) · [Configuração](docs/configuration.md) · [Implantação e operação](docs/operations.md) · [Extensões](docs/extensions.md)
 
 ## Desenvolvimento e licença
 
-Versão atual: **1.0.0**. CI cobre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilidade da API, replay, injeção de falhas, desempenho no mesmo ambiente e instalação de pacotes. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validação](VALIDATION.md) · [Compatibilidade](docs/compatibility.md).
+Versão atual: **1.0.0**. CI cobre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilidade da API, replay de persistência, injeção de falhas, desempenho no mesmo ambiente e instalação de pacotes. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validação](VALIDATION.md) · [Compatibilidade](docs/compatibility.md).
 
 Relatos de problemas e correções são bem-vindos; consulte [CONTRIBUTING](CONTRIBUTING.md). Licença [Apache-2.0](LICENSE). Modelos, vozes e recursos de terceiros mantêm suas próprias licenças.

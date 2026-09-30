@@ -53,7 +53,7 @@ AI Character Engine 是開發 AI 陪伴角色、遊戲 NPC 和虛擬助理的 Py
 
 ### ⚡ 背景認知與多模型
 
-- **邊對話、邊整理**：前景處理使用者的回合，背景執行摘要、反思等工作，搭配併發上限、逾時與取消。
+- **邊對話、邊整理**：前景處理使用者的回合，背景執行摘要、反思等工作，搭配並行上限、逾時與取消。
 - **模型分工**：對話、摘要、反思、視覺等認知角色可以共用一個模型，也可以分配到不同端點，設定 fallback。
 - **專家協作**：可選的規劃者、專家與驗證者流程，讓指定任務交給不同角色分析，再收集結果。
 
@@ -89,7 +89,7 @@ flowchart TD
     Commit --> Context
 ```
 
-背景 worker 使用快照工作，結果提交前會檢查來源與版本，避免舊任務覆蓋新的角色狀態。模型、語音服務、renderer 都透過介面接入，角色資料的寫入仍由 runtime 與提交流程協調。
+背景 worker 使用快照工作，結果提交前會檢查來源與版本，避免舊任務覆蓋新的角色狀態。模型、語音服務、渲染器都透過介面接入，角色資料的寫入仍由 runtime 與提交流程協調。
 
 [完整架構說明](docs/architecture.md)包含前景／背景資料流、多角色隔離、世界感知與擴充介面。
 
@@ -139,20 +139,20 @@ asyncio.run(main())
 
 這個範例使用對話歷史。要在程式重啟後接續，請接上 [Session 保存與還原](examples/session_runtime.py)；長期記憶、反思與目標需另行配置。完整步驟見[安裝指南](docs/getting-started.md)。
 
-只跟一個角色對話的主機——聊天視窗、語音應用、桌面角色——可以省掉那些配置：[`CharacterCompanion`](docs/companion.md) 是已經接好記憶、心情、目標、反思與打斷的引擎，只露出一個 `reply()`。她的脈絡會隨著對話寫進對話裡，本機模型的提示快取每一輪都能沿用。見 [`examples/companion_chat.py`](examples/companion_chat.py)。
+只跟一個角色對話的宿主——聊天視窗、語音應用、桌面角色——可以省掉那些配置：[`CharacterCompanion`](docs/companion.md) 是已經接好記憶、心情、目標、反思與打斷的引擎，對外只提供一個 `reply()`。它的上下文會隨著對話進行逐步寫進對話內容，因此本機模型的提示快取每一輪都能沿用。見 [`examples/companion_chat.py`](examples/companion_chat.py)。
 
 ## 🔌 模型與整合
 
 - **LLM**：OpenAI Responses 與 OpenAI 相容 Chat Completions；可接 LM Studio、Ollama、vLLM 等相容端點，也可實作自己的 client。見 [provider 範例](examples/README.md)。
-- **語音與 avatar**：依需要安裝音訊 extra 或 [VRM adapter](packages/renderer-vrm/README.md)。套件不會自動下載模型或啟動服務。
+- **語音與虛擬角色**：依需要安裝音訊 extra 或 [VRM adapter](packages/renderer-vrm/README.md)。套件不會自動下載模型或啟動服務。
 - **本機或遠端**：核心不要求雲端服務或 API key。本機模型可以走本機端點；外部服務與工具是否連網，由你的配置決定。
 
 ## 📂 範例與文件
 
-- [角色夥伴](examples/companion_chat.py)：一個會記得你、會改變、可以被打斷的角色，接本機的 OpenAI 相容端點。
+- [角色夥伴](examples/companion_chat.py)：在終端機裡跟一個角色聊天；角色會記得你說過的事，也會隨時間改變。接本機的 OpenAI 相容端點。
 - [互動聊天](examples/basic_chat.py)／[工具呼叫](examples/tool_chat.py)：配置 `.env` 中的模型與憑證後執行。
-- [Session](examples/session_runtime.py)：使用暫存儲存與離線 client 示範保存、還原。
-- [HTTP／SSE／WebSocket](examples/character_service.py)：接入網頁或行動端的服務範例，預設使用離線 client；正式使用需配置模型與驗證。
+- [Session](examples/session_runtime.py)：使用暫存目錄與離線 client 示範保存、還原。
+- [HTTP／SSE／WebSocket](examples/character_service.py)：接入網頁或行動端的服務範例，預設使用離線 client；正式使用需配置模型與身分驗證。
 - [Autonomy](examples/autonomy_host.py)：角色觸發與生命週期整合。
 - [記憶修正](tests/scenarios/memory_revision.py)、[反思與信念](tests/scenarios/reflection_long_term_cognition.py)、[目標](tests/scenarios/goal_motivation_runtime.py)、[世界感知](tests/scenarios/world_environment.py)：可執行的回歸情境，展示認知機制的配置與預期結果。
 

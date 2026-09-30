@@ -34,7 +34,7 @@ AI Character Engine permite crear compañeros de IA, NPCs y asistentes virtuales
 
 El motor gestiona conversaciones, memoria a largo plazo, emociones, relaciones, reflexiones, creencias y objetivos. El modelo genera respuestas. Los datos del personaje viven fuera del modelo: puedes inspeccionarlos, corregirlos, guardarlos y seguir usándolos cuando cambies de modelo.
 
-Empieza con chat de texto o intégralo en un personaje de escritorio, una interfaz de voz o un juego. El núcleo no depende de un modelo ni renderer concreto. El adaptador VRM es opcional. Compatible con Linux, macOS y Windows, con Python 3.11–3.13.
+Empieza con chat de texto o intégralo en un personaje de escritorio, una interfaz de voz o un juego. El núcleo no depende de ningún modelo ni renderer concreto. El adaptador VRM es opcional. Compatible con Linux, macOS y Windows, con Python 3.11–3.13.
 
 ## ✨ Funciones
 
@@ -67,7 +67,7 @@ Empieza con chat de texto o intégralo en un personaje de escritorio, una interf
 
 - **Entrada en vivo:** Envía texto y observaciones visuales o de audio normalizadas al live runtime.
 - **Conversación por voz:** Interfaces y flujos para reconocimiento, síntesis en streaming, reproducción e interrupciones. Requieren proveedores y dispositivos configurados.
-- **Expresiones y sincronización labial:** Genera señales de expresión, comportamiento y labios para el modelo de tu aplicación. El adaptador VRM es una conexión opcional.
+- **Expresiones y sincronización labial:** Genera señales de expresión, comportamiento y sincronización labial para el modelo de tu aplicación. El adaptador VRM es una conexión opcional.
 
 También incluye trazas, replay de persistencia, evaluación cognitiva, servicios HTTP/SSE/WebSocket y herramientas de entrenamiento offline SFT/LoRA. Son módulos opcionales: empieza por texto y añade lo necesario.
 
@@ -143,23 +143,23 @@ Un host que habla con un solo personaje —una ventana de chat, una aplicación 
 
 ## 🔌 Modelos e integraciones
 
-- **LLM:** OpenAI Responses y Chat Completions compatible con OpenAI, incluidos endpoints compatibles de LM Studio, Ollama y vLLM. También puedes implementar tu client. [Ejemplos](examples/README.md).
+- **LLM:** OpenAI Responses y Chat Completions compatible con OpenAI, incluidos endpoints compatibles de LM Studio, Ollama y vLLM. También puedes implementar tu client. [Ejemplos de proveedores](examples/README.md).
 - **Voz y avatares:** Extras de audio y [adaptador VRM](packages/renderer-vrm/README.md) opcionales. Instalar paquetes no descarga modelos ni inicia servicios.
-- **Local o remoto:** El núcleo no exige nube ni API key. El uso de red depende de los proveedores y herramientas elegidos.
+- **Local o remoto:** El núcleo no exige nube ni API key. Los modelos locales pueden usar endpoints locales; el uso de red depende de los proveedores y herramientas elegidos.
 
 ## 📂 Ejemplos y documentación
 
-- [Compañero de personaje](examples/companion_chat.py): un personaje que recuerda, cambia y puede ser interrumpido, en un endpoint local compatible con OpenAI.
+- [Personaje compañero](examples/companion_chat.py): un chat de terminal con un personaje que recuerda lo que le cuentas y cambia con el tiempo, en un endpoint local compatible con OpenAI.
 - [Chat interactivo](examples/basic_chat.py) / [herramientas](examples/tool_chat.py): configura modelo y credenciales en `.env`.
 - [Sesiones](examples/session_runtime.py): guardado y restauración con almacenamiento temporal y client offline.
-- [HTTP/SSE/WebSocket](examples/character_service.py): servicio para web o móvil. Usa un client offline; configura inferencia y autenticación para desplegarlo.
+- [HTTP/SSE/WebSocket](examples/character_service.py): servicio para web o móvil. Usa un client offline por defecto; configura inferencia y autenticación para desplegarlo.
 - [Autonomy](examples/autonomy_host.py): activadores y ciclo de vida.
 - [Revisión de memoria](tests/scenarios/memory_revision.py), [reflexión y creencias](tests/scenarios/reflection_long_term_cognition.py), [objetivos](tests/scenarios/goal_motivation_runtime.py), [percepción](tests/scenarios/world_environment.py): escenarios de regresión ejecutables con configuración y resultados esperados.
 
-[API](docs/api-reference.md) · [Configuración](docs/configuration.md) · [Operación](docs/operations.md) · [Extensiones](docs/extensions.md)
+[Referencia de API](docs/api-reference.md) · [Configuración](docs/configuration.md) · [Despliegue y operación](docs/operations.md) · [Extensiones](docs/extensions.md)
 
 ## Desarrollo y licencia
 
-Versión actual: **1.0.0**. CI cubre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilidad de API, replay, inyección de fallos, rendimiento en el mismo entorno e instalación de paquetes. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validación](VALIDATION.md) · [Compatibilidad](docs/compatibility.md).
+Versión actual: **1.0.0**. CI cubre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilidad de API, replay de persistencia, inyección de fallos, rendimiento en el mismo entorno e instalación de paquetes. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validación](VALIDATION.md) · [Compatibilidad](docs/compatibility.md).
 
 Se agradecen incidencias y correcciones; consulta [CONTRIBUTING](CONTRIBUTING.md). Licencia [Apache-2.0](LICENSE). Los modelos, voces y recursos de terceros mantienen sus propias licencias.

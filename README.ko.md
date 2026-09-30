@@ -139,24 +139,24 @@ asyncio.run(main())
 
 이 예제는 대화 기록을 사용합니다. 재시작 후에도 이어가려면 [세션 저장·복원](examples/session_runtime.py)을 연결하세요. 장기 기억, 성찰, 목표는 별도로 설정합니다. 전체 절차는 [설치 가이드](docs/getting-started.md)를 참고하세요.
 
-한 캐릭터와 대화하는 호스트(채팅 창, 음성 앱, 데스크톱 캐릭터)라면 그 설정을 건너뛸 수 있습니다. [`CharacterCompanion`](docs/companion.md)은 기억, 기분, 목표, 성찰, 끼어들기가 이미 연결된 엔진으로 `reply()` 하나로 씁니다. 그녀의 맥락은 대화 안에 이어 써지므로 로컬 모델의 프롬프트 캐시가 턴을 넘어 유지됩니다. [`examples/companion_chat.py`](examples/companion_chat.py)를 보세요.
+한 캐릭터와 대화하는 호스트(채팅 창, 음성 앱, 데스크톱 캐릭터)라면 그 설정을 건너뛸 수 있습니다. [`CharacterCompanion`](docs/companion.md)은 기억, 기분, 목표, 성찰, 중단 처리가 이미 연결된 엔진으로, `reply()` 하나로 사용할 수 있습니다. 문맥은 대화가 진행되면서 대화 안에 추가되므로 로컬 모델의 프롬프트 캐시를 턴마다 계속 활용할 수 있습니다. [`examples/companion_chat.py`](examples/companion_chat.py)를 보세요.
 
 ## 🔌 모델과 연동
 
 - **LLM**: OpenAI Responses와 OpenAI 호환 Chat Completions. 호환되는 LM Studio, Ollama, vLLM 엔드포인트 또는 직접 구현한 client를 사용할 수 있습니다. [프로바이더 예제](examples/README.md).
 - **음성과 아바타**: 음성 extra나 [VRM 어댑터](packages/renderer-vrm/README.md)를 필요에 따라 설치합니다. 설치만으로 모델을 다운로드하거나 서비스를 시작하지는 않습니다.
-- **로컬 또는 원격**: 코어에 클라우드 서비스나 API 키는 필수가 아닙니다. 네트워크 사용은 선택한 프로바이더와 도구에 따라 달라집니다.
+- **로컬 또는 원격**: 코어에 클라우드 서비스나 API 키는 필수가 아닙니다. 로컬 모델은 로컬 엔드포인트를 사용할 수 있습니다. 네트워크 사용은 선택한 프로바이더와 도구에 따라 달라집니다.
 
 ## 📂 예제와 문서
 
-- [캐릭터 컴패니언](examples/companion_chat.py): 당신을 기억하고 변하며 끼어들 수 있는 캐릭터. 로컬 OpenAI 호환 엔드포인트로 동작합니다.
+- [캐릭터 동반자](examples/companion_chat.py): 터미널에서 캐릭터 하나와 대화합니다. 말한 내용을 기억하고 시간이 지나며 변합니다. 로컬 OpenAI 호환 엔드포인트로 동작합니다.
 - [대화형 채팅](examples/basic_chat.py) / [도구 호출](examples/tool_chat.py): `.env`에 모델과 인증 정보를 설정하고 실행합니다.
 - [세션](examples/session_runtime.py): 임시 저장소와 오프라인 client로 저장·복원을 보여줍니다.
 - [HTTP/SSE/WebSocket](examples/character_service.py): 웹·모바일 서비스 예제. 기본값은 오프라인 client이며 배포하려면 모델과 인증을 설정해야 합니다.
 - [Autonomy](examples/autonomy_host.py): 트리거와 생명주기 통합.
 - [기억 수정](tests/scenarios/memory_revision.py), [성찰과 신념](tests/scenarios/reflection_long_term_cognition.py), [목표](tests/scenarios/goal_motivation_runtime.py), [세계 지각](tests/scenarios/world_environment.py): 인지 설정과 예상 결과를 보여주는 실행 가능한 회귀 시나리오.
 
-[API](docs/api-reference.md) · [설정](docs/configuration.md) · [배포와 운영](docs/operations.md) · [확장 개발](docs/extensions.md)
+[API 레퍼런스](docs/api-reference.md) · [설정](docs/configuration.md) · [배포와 운영](docs/operations.md) · [확장 개발](docs/extensions.md)
 
 ## 개발과 라이선스
 

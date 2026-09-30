@@ -14,7 +14,7 @@
 </p>
 
 <blockquote>
-  <p align="center"><strong>Créez compagnons IA, PNJ et assistants virtuels avec un même runtime de personnages.</strong></p>
+  <p align="center"><strong>Créez des compagnons IA, des PNJ et des assistants virtuels avec un même runtime de personnages.</strong></p>
 </blockquote>
 
 <p align="center">
@@ -30,7 +30,7 @@
 
 ## Présentation
 
-AI Character Engine permet de créer des compagnons IA, des PNJ et des assistants virtuels. Donnez-leur une personnalité, faites-leur mémoriser les échanges et suivre les tâches en cours, puis connectez des outils pour agir dans votre application.
+AI Character Engine permet de créer des compagnons IA, des PNJ et des assistants virtuels. Donnez-leur une personnalité, faites-leur mémoriser les échanges et suivre les tâches en cours, puis connectez des outils pour qu’ils puissent agir dans votre application.
 
 Le moteur gère conversations, mémoire à long terme, émotions, relations, réflexions, croyances et objectifs. Le modèle génère les réponses. Les données du personnage restent hors du modèle : vous pouvez les consulter, les corriger, les sauvegarder et les réutiliser avec un autre modèle.
 
@@ -89,7 +89,7 @@ flowchart TD
     Commit --> Context
 ```
 
-Les workers travaillent sur des instantanés. Provenance et révision sont vérifiées avant commit pour éviter qu’une ancienne tâche écrase un état récent. Modèles, services vocaux et rendu se connectent par interfaces ; le runtime et le flux de commit coordonnent les écritures.
+Les workers travaillent sur des instantanés. Provenance et révision sont vérifiées avant commit pour éviter qu’une ancienne tâche écrase un état récent. Modèles, services vocaux et moteurs de rendu se connectent par interfaces ; le runtime et le flux de commit coordonnent les écritures.
 
 Le [guide d’architecture](docs/architecture.md) détaille les flux, l’isolation des personnages, la perception du monde et les extensions.
 
@@ -143,23 +143,23 @@ Un hôte qui parle à un seul personnage — une fenêtre de chat, une applicati
 
 ## 🔌 Modèles et intégrations
 
-- **LLM :** OpenAI Responses et Chat Completions compatible OpenAI, dont les endpoints compatibles de LM Studio, Ollama et vLLM. Vous pouvez aussi écrire votre client. [Exemples](examples/README.md).
+- **LLM :** OpenAI Responses et Chat Completions compatible OpenAI, dont les endpoints compatibles de LM Studio, Ollama et vLLM. Vous pouvez aussi écrire votre client. [Exemples de fournisseurs](examples/README.md).
 - **Voix et avatars :** extras audio et [adaptateur VRM](packages/renderer-vrm/README.md) selon vos besoins. L’installation ne télécharge pas de modèles et ne lance pas de services.
-- **Local ou distant :** le cœur n’exige ni cloud ni clé API. Les fournisseurs et outils choisis déterminent l’usage du réseau.
+- **Local ou distant :** le cœur n’exige ni cloud ni clé API. Les modèles locaux peuvent utiliser des endpoints locaux ; les fournisseurs et outils choisis déterminent l’usage du réseau.
 
 ## 📂 Exemples et documentation
 
-- [Compagnon de personnage](examples/companion_chat.py) : un personnage qui se souvient, change et peut être interrompu, sur un endpoint local compatible OpenAI.
+- [Personnage compagnon](examples/companion_chat.py) : un chat en terminal avec un personnage qui retient ce que vous lui dites et évolue avec le temps, sur un endpoint local compatible OpenAI.
 - [Chat interactif](examples/basic_chat.py) / [outils](examples/tool_chat.py) : configurez modèle et identifiants dans `.env`.
 - [Sessions](examples/session_runtime.py) : sauvegarde et restauration avec stockage temporaire et client hors ligne.
 - [HTTP/SSE/WebSocket](examples/character_service.py) : service web/mobile utilisant un client hors ligne par défaut ; configurez inférence et authentification pour le déploiement.
 - [Autonomy](examples/autonomy_host.py) : déclencheurs et cycle de vie.
 - [Révision de mémoire](tests/scenarios/memory_revision.py), [réflexion et croyances](tests/scenarios/reflection_long_term_cognition.py), [objectifs](tests/scenarios/goal_motivation_runtime.py), [perception](tests/scenarios/world_environment.py) : scénarios de régression exécutables avec configuration et résultats attendus.
 
-[API](docs/api-reference.md) · [Configuration](docs/configuration.md) · [Exploitation](docs/operations.md) · [Extensions](docs/extensions.md)
+[Référence de l’API](docs/api-reference.md) · [Configuration](docs/configuration.md) · [Déploiement et exploitation](docs/operations.md) · [Extensions](docs/extensions.md)
 
 ## Développement et licence
 
-Version actuelle : **1.0.0**. CI couvre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilité API, rejeu, injection de pannes, performances dans le même environnement et installation des paquets. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validation](VALIDATION.md) · [Compatibilité](docs/compatibility.md).
+Version actuelle : **1.0.0**. CI couvre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilité API, rejeu de la persistance, injection de pannes, performances dans le même environnement et installation des paquets. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validation](VALIDATION.md) · [Compatibilité](docs/compatibility.md).
 
-Signalements et corrections sont bienvenus ; consultez [CONTRIBUTING](CONTRIBUTING.md). Licence [Apache-2.0](LICENSE). Les modèles, voix et ressources tiers conservent leurs propres licences.
+Les signalements et corrections sont les bienvenus ; consultez [CONTRIBUTING](CONTRIBUTING.md). Licence [Apache-2.0](LICENSE). Les modèles, voix et ressources tiers conservent leurs propres licences.

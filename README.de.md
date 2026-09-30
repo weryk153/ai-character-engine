@@ -43,7 +43,7 @@ Beginne mit Textchat oder integriere die Engine in einen Desktop-Charakter, eine
 - **Langzeitgedächtnis:** Speichert relevante Erlebnisse und ruft zum aktuellen Thema passende Erinnerungen ab. Mit Korrektur, Konsolidierung und Vergessen.
 - **Reflexion und Überzeugungen:** Ordnet Deutungen vergangener Ereignisse und behält ihre Belege. Unzureichende und widersprüchliche Belege werden gesondert behandelt; Modellwiederholungen erzeugen keine Tatsachen.
 - **Emotionen und Beziehungen:** Verwaltet Emotion, Energie, Vertrauen, Zuneigung und Beziehungsphase. Deine Regeln bestimmen, wie sie sich ändern.
-- **Gespeicherte Sitzungen:** Speichert und restauriert Gespräche und Beziehungsdaten für den nächsten Besuch.
+- **Gespeicherte Sitzungen:** Speichert Gespräche und Beziehungsdaten und stellt sie wieder her, für den nächsten Besuch.
 
 ### 🎯 Ziele und Handlungen
 
@@ -60,7 +60,7 @@ Beginne mit Textchat oder integriere die Engine in einen Desktop-Charakter, eine
 ### 🌍 Mehrere Charaktere und Weltinteraktion
 
 - **Eigene Erinnerungen und Sichtweisen:** Jeder Charakter behält seinen Zustand und seine Kognitionsdaten. Die Kommunikation erfolgt durch ausdrückliche Nachrichten.
-- **Beobachtungen nach Charakter:** Wahrnehmungsregeln bestimmen die Empfänger von Weltereignissen. Ein NPC kann eine Türöffnung beobachten, ohne dass alle anderen davon wissen.
+- **Beobachtungen nach Charakter:** Wahrnehmungsregeln bestimmen die Empfänger von Weltereignissen. Ein NPC kann beobachten, wie sich eine Tür öffnet, ohne dass alle anderen davon wissen.
 - **Deine Welt anbinden:** Schnittstellen für Weltzustand, Ereignisse und Beobachtungen. Bewegung, Physik und Darstellung bleiben beim Host.
 
 ### 🎙️ Sprache, Bild und Avatare
@@ -73,7 +73,7 @@ Außerdem enthalten: Ereignis-Traces, Persistenz-Replay, Kognitionsevaluation, H
 
 ## 🏗️ Architektur
 
-`CharacterRuntime` ist der Einstiegspunkt für einen Charakter. Sie baut Kontext auf, ruft Modelle und Werkzeuge auf und zeichnet das Ergebnis auf. Profil, Zustand, Gedächtnis, Überzeugungen und Ziele werden getrennt gespeichert und innerhalb ihrer Kontextbudgets eingebunden.
+`CharacterRuntime` ist der Einstiegspunkt für einen Charakter. Die Runtime baut Kontext auf, ruft Modelle und Werkzeuge auf und zeichnet das Ergebnis auf. Profil, Zustand, Gedächtnis, Überzeugungen und Ziele werden getrennt gespeichert und innerhalb ihrer Kontextbudgets eingebunden.
 
 ```mermaid
 flowchart TD
@@ -139,27 +139,27 @@ asyncio.run(main())
 
 Das Beispiel nutzt den Gesprächsverlauf. Für die Fortsetzung nach einem Neustart ergänze [Sitzungsspeicherung](examples/session_runtime.py). Langzeitgedächtnis, Reflexion und Ziele werden separat konfiguriert. Siehe [Installationsanleitung](docs/getting-started.md).
 
-Ein Host, der mit einer einzigen Figur spricht – ein Chatfenster, eine Sprachanwendung, ein Desktop-Avatar – kann sich diese Konfiguration sparen: [`CharacterCompanion`](docs/companion.md) ist die Engine mit Gedächtnis, Stimmung, Zielen, Reflexion und Unterbrechung bereits verdrahtet, hinter einem einzigen `reply()`. Ihr Kontext wird in das Gespräch hineingeschrieben, während es wächst, sodass der Prompt-Cache eines lokalen Modells von Zug zu Zug nutzbar bleibt. Siehe [`examples/companion_chat.py`](examples/companion_chat.py).
+Ein Host, der mit einem einzigen Charakter spricht – ein Chatfenster, eine Sprachanwendung, ein Desktop-Avatar –, kann sich diese Konfiguration sparen: [`CharacterCompanion`](docs/companion.md) ist die Engine, in der Gedächtnis, Stimmung, Ziele, Reflexion und Unterbrechung bereits verdrahtet sind, hinter einem einzigen `reply()`. Ihr Kontext wird fortlaufend in das Gespräch geschrieben, sodass der Prompt-Cache eines lokalen Modells von Runde zu Runde nutzbar bleibt. Siehe [`examples/companion_chat.py`](examples/companion_chat.py).
 
 ## 🔌 Modelle und Integrationen
 
 - **LLM:** OpenAI Responses und OpenAI-kompatible Chat Completions, darunter kompatible Endpunkte von LM Studio, Ollama und vLLM. Eigene Clients sind ebenfalls möglich. [Provider-Beispiele](examples/README.md).
 - **Sprache und Avatare:** Audio-Extras und [VRM-Adapter](packages/renderer-vrm/README.md) nach Bedarf. Paketinstallation lädt keine Modelle herunter und startet keine Dienste.
-- **Lokal oder entfernt:** Der Kern verlangt weder Cloud noch API-Schlüssel. Anbieter und Werkzeuge bestimmen die Netzwerknutzung.
+- **Lokal oder entfernt:** Der Kern verlangt weder Cloud noch API-Schlüssel. Lokale Modelle können lokale Endpunkte nutzen; Anbieter und Werkzeuge bestimmen die Netzwerknutzung.
 
 ## 📂 Beispiele und Dokumentation
 
-- [Character Companion](examples/companion_chat.py): eine Figur, die sich erinnert, sich verändert und unterbrochen werden kann, an einem lokalen OpenAI-kompatiblen Endpunkt.
+- [Begleiter-Charakter](examples/companion_chat.py): ein Terminal-Chat mit einem Charakter, der sich merkt, was du erzählst, und sich mit der Zeit verändert, an einem lokalen OpenAI-kompatiblen Endpunkt.
 - [Interaktiver Chat](examples/basic_chat.py) / [Werkzeuge](examples/tool_chat.py): Modell und Zugangsdaten in `.env` konfigurieren.
 - [Sitzungen](examples/session_runtime.py): Speichern und Wiederherstellen mit temporärem Speicher und Offline-Client.
-- [HTTP/SSE/WebSocket](examples/character_service.py): Servicebeispiel für Web und Mobilgeräte mit Offline-Client. Für den Einsatz Inferenz und Authentifizierung konfigurieren.
+- [HTTP/SSE/WebSocket](examples/character_service.py): Servicebeispiel für Web und Mobilgeräte, standardmäßig mit Offline-Client. Für den Einsatz Inferenz und Authentifizierung konfigurieren.
 - [Autonomy](examples/autonomy_host.py): Auslöser und Lebenszyklus integrieren.
 - [Erinnerungskorrektur](tests/scenarios/memory_revision.py), [Reflexion und Überzeugungen](tests/scenarios/reflection_long_term_cognition.py), [Ziele](tests/scenarios/goal_motivation_runtime.py), [Wahrnehmung](tests/scenarios/world_environment.py): ausführbare Regressionsszenarien mit Konfiguration und erwarteten Ergebnissen.
 
-[API](docs/api-reference.md) · [Konfiguration](docs/configuration.md) · [Betrieb](docs/operations.md) · [Erweiterungen](docs/extensions.md)
+[API-Referenz](docs/api-reference.md) · [Konfiguration](docs/configuration.md) · [Bereitstellung und Betrieb](docs/operations.md) · [Erweiterungen](docs/extensions.md)
 
 ## Entwicklung und Lizenz
 
-Aktuelle Version: **1.0.0**. CI prüft Linux/macOS/Windows × Python 3.11/3.12/3.13 sowie API-Kompatibilität, Replay, Fehlerinjektion, Leistung in gleicher Umgebung und Paketinstallation. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validierung](VALIDATION.md) · [Kompatibilität](docs/compatibility.md).
+Aktuelle Version: **1.0.0**. CI prüft Linux/macOS/Windows × Python 3.11/3.12/3.13 sowie API-Kompatibilität, Persistenz-Replay, Fehlerinjektion, Leistung in gleicher Umgebung und Paketinstallation. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validierung](VALIDATION.md) · [Kompatibilität](docs/compatibility.md).
 
-Fehlermeldungen und Korrekturen sind willkommen; siehe [CONTRIBUTING](CONTRIBUTING.md). Lizenz: [Apache-2.0](LICENSE). Modelle, Stimmen und Assets Dritter behalten ihre eigenen Lizenzen.
+Fehlerberichte und Korrekturen sind willkommen; siehe [CONTRIBUTING](CONTRIBUTING.md). Lizenz: [Apache-2.0](LICENSE). Modelle, Stimmen und Assets Dritter behalten ihre eigenen Lizenzen.
