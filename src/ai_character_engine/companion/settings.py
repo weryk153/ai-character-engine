@@ -49,8 +49,9 @@ class CompanionSettings:
     # newest message is about comes first, then what matters most.
     memories_recalled: int = 40
     # The language memories, goals and thoughts are written in, by any name a
-    # model understands ("繁體中文", "Japanese"). Empty: the language the user
-    # writes in, which a small model does not always work out.
+    # model understands ("繁體中文" for Traditional Chinese, "Japanese"). Empty:
+    # the language the user writes in, which a small model does not always work
+    # out.
     language: str = ""
 
     def __post_init__(self) -> None:

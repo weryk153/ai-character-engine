@@ -1,4 +1,4 @@
-"""Offline v0.25 duplex voice / VAD barge-in demonstration.
+"""Offline duplex voice / VAD barge-in demonstration.
 
 No microphone, speaker, cloud model, or TTS service is required. The example uses
 synthetic PCM16 chunks and a cooperative sink whose second sentence blocks until

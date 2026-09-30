@@ -55,7 +55,7 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         expected_worker_kind="conversation_summary",
         max_age_s=300.0,
     ),
-    # Reflection remains review-only unless a v0.34 LongTermCognitionManager is
+    # Reflection remains review-only unless a LongTermCognitionManager is
     # explicitly configured. Vision interpretation remains review-only. Neither
     # model output is silently promoted into durable fact or Character State.
     "cognition.reflection_candidate": CommitTargetPolicy(
@@ -84,7 +84,7 @@ class CognitiveCommitCoordinator:
 
     Background workers remain non-authoritative.  This coordinator is the bridge
     from ``TaskProposal`` to authoritative State/Memory and, when explicitly
-    configured by v0.34, the separate long-term cognition store.  It shares
+    configured, the separate long-term cognition store.  It shares
     the MultiTaskRuntime authority lock with foreground turns so freshness is
     checked in the same critical section as the mutation.
     """
@@ -166,8 +166,8 @@ class CognitiveCommitCoordinator:
                 return existing_authority
 
             # Reflection becomes persistable only when the host explicitly
-            # configures the separate v0.34 LongTermCognitionManager.  Without it,
-            # v0.33 behavior is preserved. Vision remains review-only.
+            # configures the separate LongTermCognitionManager.  Without it,
+            # reflection stays review-only. Vision remains review-only.
             if proposal.target == "cognition.reflection_candidate":
                 if getattr(self.tasks.runtime, "long_term_cognition", None) is None:
                     return self._finalize(
@@ -596,7 +596,7 @@ class CognitiveCommitCoordinator:
             return record.id
 
         if proposal.target == "state.emotion_candidate":
-            # The v0.32 worker analyzes the *user's* expressed emotion.  Do not
+            # The emotion worker analyzes the *user's* expressed emotion.  Do not
             # overwrite CharacterState.emotion (the character's own emotion).
             # Store it as an explicit observation in custom state instead.
             before = runtime.state.snapshot()
@@ -693,7 +693,7 @@ class CognitiveCommitCoordinator:
     ) -> CommitResult | None:
         """Detect duplicates/conflicts already present in authoritative stores.
 
-        The coordinator journal is intentionally in-memory in v0.33, so this second
+        The coordinator journal is intentionally in-memory, so this second
         check prevents duplicate writes after coordinator recreation and reconciles
         background extraction with memory already written by the foreground turn.
         """

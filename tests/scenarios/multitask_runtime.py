@@ -1,4 +1,4 @@
-"""Offline v0.30 demo: foreground dialogue plus safe background tasks."""
+"""Offline demo: foreground dialogue plus safe background tasks."""
 from __future__ import annotations
 
 import asyncio

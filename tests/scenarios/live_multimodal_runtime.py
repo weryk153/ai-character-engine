@@ -1,4 +1,4 @@
-"""v0.24 offline live-runtime example.
+"""Offline live-runtime example.
 
 This demonstrates the orchestration boundary without microphones, cameras,
 network calls or host imports. Real hosts replace the fake providers and

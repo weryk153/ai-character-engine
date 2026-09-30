@@ -97,8 +97,9 @@ class MultiTaskRuntime:
 
     Foreground turns bypass the background queue and continue to use the existing
     CharacterRuntime/TurnCoordinator authoritative path. Background workers only
-    receive immutable snapshots and return TaskOutput/TaskProposal values. v0.30
-    intentionally does *not* apply proposals to CharacterState or MemoryManager.
+    receive immutable snapshots and return TaskOutput/TaskProposal values. The
+    runtime intentionally does *not* apply proposals to CharacterState or
+    MemoryManager; the commit coordinator does.
     """
 
     def __init__(

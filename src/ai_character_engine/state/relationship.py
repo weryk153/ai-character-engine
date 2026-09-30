@@ -5,7 +5,7 @@ by the commit coordinator) but deliberately does not decide what that does to
 the character. Hosts that do not want to invent rules can use these.
 
 The rules read two signed scores and never the emotion label. The label is free
-text in whatever language the model chose; one model returned "疲倦", "joy" and
+text in whatever language the model chose; one model returned "疲倦" (tired), "joy" and
 "curiosity" within the same conversation.
 
 - ``valence``: how pleasant the user feels, -1 to 1.

@@ -1,4 +1,4 @@
-"""Offline v0.34 reflection -> deterministic long-term belief demo."""
+"""Offline reflection -> deterministic long-term belief demo."""
 
 from ai_character_engine.long_term_cognition import (
     BeliefClaim,

@@ -49,7 +49,8 @@ def _applies(case: EvalCase, rule: PersonaRule) -> tuple[bool | None, dict]:
     return True, observed
 
 
-# Explicit name assertions only: “I am happy” and “我是店長” are not names.
+# Explicit name assertions only: “I am happy” and “我是店長” (“I am the shop
+# manager”) are not names.
 # Pattern captures a whole assertion up to punctuation, avoiding prefix matches.
 _NAME_PATTERN = re.compile(
     r"(?:\bmy name is\s+|\bi(?:'m| am) named\s+|我的名字是\s*|我叫\s*)(?P<value>[^\n,.!?，。！？;；:：]+)",

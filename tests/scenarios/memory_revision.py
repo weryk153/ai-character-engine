@@ -1,4 +1,4 @@
-"""v0.7 memory correction / forgetting example using the local memory layer."""
+"""Memory correction / forgetting example using the local memory layer."""
 
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.llm.models import LLMResponse

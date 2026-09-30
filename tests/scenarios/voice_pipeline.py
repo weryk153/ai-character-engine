@@ -1,4 +1,4 @@
-"""Offline v0.19 voice-pipeline example; no microphone, model API, or TTS service required."""
+"""Offline voice-pipeline example; no microphone, model API, or TTS service required."""
 
 from __future__ import annotations
 

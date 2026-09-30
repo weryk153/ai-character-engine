@@ -1894,7 +1894,7 @@ def test_how_many_thoughts_she_keeps_in_mind_is_a_setting(tmp_path):
     assert run(scenario()) == ["- thought: Thought number 2"]
 
 
-# --- what a sixth review found ---------------------------------------------------
+# --- taking back, host calls and the goals in mind: edge cases -------------------
 
 
 def test_taking_back_after_a_turn_that_failed_leaves_the_exchange_that_was_heard(tmp_path):

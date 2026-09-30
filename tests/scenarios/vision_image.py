@@ -1,4 +1,4 @@
-"""Offline v0.20 single-image example using a fake VLM provider."""
+"""Offline single-image example using a fake VLM provider."""
 from __future__ import annotations
 
 import asyncio

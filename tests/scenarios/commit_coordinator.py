@@ -1,4 +1,4 @@
-"""Offline v0.33 Commit Coordinator example.
+"""Offline Commit Coordinator example.
 
 Run:
     PYTHONPATH=src python tests/scenarios/commit_coordinator.py

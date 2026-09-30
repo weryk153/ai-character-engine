@@ -1,4 +1,4 @@
-"""Offline retrieval evaluation example for v0.11.
+"""Offline retrieval evaluation example.
 
 Run with:
     PYTHONPATH=src python tests/scenarios/rag_evaluation.py

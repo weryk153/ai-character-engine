@@ -27,9 +27,8 @@ def _migration_map(rules: Iterable[MigrationRule]) -> dict[str, MigrationRule]:
 def _parameter_breaks(previous: tuple[ParameterContract, ...], current: tuple[ParameterContract, ...]) -> list[str]:
     """Return source-compatibility reasons without overpromising type compatibility.
 
-    The v0.43 contract deliberately tracks call shape only: names, kinds and
-    whether a parameter is required. Annotation changes remain documentation-level
-    until the v1 API freeze.
+    The contract deliberately tracks call shape only: names, kinds and whether a
+    parameter is required. Annotation changes remain documentation-level.
     """
 
     reasons: list[str] = []

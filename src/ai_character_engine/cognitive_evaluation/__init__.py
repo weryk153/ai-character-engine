@@ -1,4 +1,4 @@
-"""v0.37 read-only cognition-wide evaluation contracts."""
+"""Read-only cognition-wide evaluation contracts."""
 from .models import (
     CognitiveEvalCase, CognitiveEvalDimension, CognitiveEvalResult, CognitiveEvalSource,
     CognitiveEvalTrace, CognitiveTimelineFrame,

@@ -1,4 +1,4 @@
-"""v0.23.1 regressions derived from the v0.23 independent quality review."""
+"""Regression tests for previously fixed defects."""
 import asyncio
 from datetime import UTC, datetime, timedelta
 

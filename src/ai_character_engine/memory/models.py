@@ -35,7 +35,7 @@ class MemoryRecord:
     id: str = field(default_factory=lambda: uuid4().hex)
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
-    # Appended to preserve v0.8 positional construction. Metadata is provider-neutral.
+    # Appended last to keep positional construction stable. Metadata is provider-neutral.
     embedding: tuple[float, ...] | None = None
     embedding_metadata: dict[str, Any] = field(default_factory=dict)
     vector_metadata: dict[str, Any] = field(default_factory=dict)
@@ -65,7 +65,7 @@ class MemoryRecord:
     def evidence_type(self) -> str:
         """Provider-neutral provenance class stored in metadata.
 
-        Older persisted records predate v0.29.3 and therefore default to
+        Records persisted before provenance was recorded default to
         ``unknown``; retrieval can still infer a conservative class from their
         original source text.
         """

@@ -132,7 +132,7 @@ class SoundDeviceOutput:
             self.cancel()
 
     async def stop(self):
-        """Cooperative async stop hook used by the v0.25 duplex runtime."""
+        """Cooperative async stop hook used by the duplex runtime."""
         self.cancel()
 
     def cancel(self):

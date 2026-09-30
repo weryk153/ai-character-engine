@@ -1,4 +1,4 @@
-"""v0.38 provider/host-neutral production reliability primitives."""
+"""Provider/host-neutral production reliability primitives."""
 from .models import (
     CircuitBreakerPolicy, CircuitState, DegradedMode, EvaluationGateDecision,
     EvaluationGatePolicy, FailureClass, Idempotency, OperationLifecycleEvent,

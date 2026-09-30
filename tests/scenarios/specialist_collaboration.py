@@ -1,4 +1,4 @@
-"""Offline v0.36 Specialist / Multi-Agent Runtime example.
+"""Offline Specialist / Multi-Agent Runtime example.
 
 No network, provider account, renderer, microphone, or host application is required.
 The example demonstrates the bounded topology:

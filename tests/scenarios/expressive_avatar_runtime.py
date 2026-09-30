@@ -1,4 +1,4 @@
-"""Offline v0.27 expressive-avatar demo; no network, microphone or VRM renderer."""
+"""Offline expressive-avatar demo; no network, microphone or VRM renderer."""
 
 from __future__ import annotations
 

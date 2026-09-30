@@ -49,8 +49,8 @@ class InMemoryMemoryStore:
 class JsonlMemoryStore(InMemoryMemoryStore):
     """Tiny persistent store for development and single-process examples.
 
-    This is deliberately not a production database. It gives v0.5 real
-    persistence without coupling the engine to Redis/PostgreSQL/Qdrant yet.
+    This is deliberately not a production database. It gives real persistence
+    without coupling the engine to Redis/PostgreSQL/Qdrant.
     """
 
     def __init__(self, path: str | Path) -> None:

@@ -1,4 +1,4 @@
-"""Offline v0.46 persistence migration + replay verification example."""
+"""Offline persistence migration + replay verification example."""
 
 from __future__ import annotations
 

@@ -63,7 +63,7 @@ class _ObservedFrame:
 class LiveCharacterOrchestrator:
     """Arbitrate foreground input, recent vision, autonomy and duplex voice.
 
-    v0.25 keeps device ownership in the host. A microphone task may call
+    Device ownership stays in the host. A microphone task may call
     :meth:`ingest_audio_chunk` concurrently while ``run()`` is generating or
     playing a reply. VAD can therefore stop a cooperative playback sink and/or
     cancel the current character generation without creating a second Runtime
@@ -549,7 +549,7 @@ class LiveCharacterOrchestrator:
         return tuple(items)
 
     async def _process_input_stream(self, item: LiveTurnInput):
-        """Yield one foreground turn, using v0.26 streaming only when opted in."""
+        """Yield one foreground turn, streaming only when opted in."""
         if not self.config.streaming_output:
             for event in await self._process_input(item):
                 yield event

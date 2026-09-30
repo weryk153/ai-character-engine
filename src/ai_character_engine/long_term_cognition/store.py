@@ -71,7 +71,7 @@ class JsonlLongTermCognitionStore(InMemoryLongTermCognitionStore):
     """Small local/dev persistence store for reflections and beliefs.
 
     This intentionally remains a single-process JSONL implementation. Production
-    databases/distributed transactions stay outside the v0.34 core contract.
+    databases/distributed transactions stay outside the core contract.
     """
 
     def __init__(self, path: str | Path) -> None:

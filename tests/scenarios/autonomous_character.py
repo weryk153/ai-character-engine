@@ -1,4 +1,4 @@
-"""Offline v0.23 proactive-character example with deterministic fake inference."""
+"""Offline proactive-character example with deterministic fake inference."""
 
 import asyncio
 from datetime import UTC, datetime, timedelta

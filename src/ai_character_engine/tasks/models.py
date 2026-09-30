@@ -43,8 +43,8 @@ class TaskStatus(str, Enum):
 class TaskRequest:
     """One background task request.
 
-    ``payload`` is deliberately provider-neutral. v0.31 may add model-role routing,
-    but v0.30 only owns task lifecycle and scheduling.
+    ``payload`` is deliberately provider-neutral. Model-role routing lives in the
+    cognition layer; this model only owns task lifecycle and scheduling.
     """
 
     task_type: str
@@ -102,9 +102,9 @@ class TaskSnapshot:
 class TaskProposal:
     """Non-authoritative proposal emitted by a background worker.
 
-    A proposal carries enough provenance for a future commit coordinator to
-    decide whether the result is trustworthy and still fresh.  v0.32 still
-    never applies proposals directly to CharacterState or MemoryManager.
+    A proposal carries enough provenance for the commit coordinator to decide
+    whether the result is trustworthy and still fresh. Proposals are never
+    applied directly to CharacterState or MemoryManager.
     """
 
     target: str
@@ -134,7 +134,7 @@ class TaskProposal:
 
 @dataclass(slots=True, frozen=True)
 class TaskOutput:
-    """Worker output. ``proposals`` remain non-authoritative in v0.30."""
+    """Worker output. ``proposals`` remain non-authoritative."""
 
     value: Any = None
     proposals: tuple[TaskProposal, ...] = field(default_factory=tuple)

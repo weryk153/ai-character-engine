@@ -1,4 +1,4 @@
-"""v0.4 example: deterministic state transitions before character generation."""
+"""Deterministic state transitions before character generation."""
 
 import asyncio
 import os

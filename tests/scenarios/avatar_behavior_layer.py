@@ -1,4 +1,4 @@
-"""Offline v0.28 avatar-behavior demo; no network, audio device, or renderer."""
+"""Offline avatar-behavior demo; no network, audio device, or renderer."""
 
 from __future__ import annotations
 

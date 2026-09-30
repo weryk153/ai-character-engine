@@ -1,4 +1,4 @@
-"""Offline v0.31 demo: semantic cognitive roles routed to different fake models.
+"""Offline demo: semantic cognitive roles routed to different fake models.
 
 Run:
     PYTHONPATH=src python tests/scenarios/cognitive_routing.py

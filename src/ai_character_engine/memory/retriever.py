@@ -28,7 +28,7 @@ def _terms(text: str) -> set[str]:
 
 
 class MemoryRetriever:
-    """Retrieval interface with the v0.8 lexical implementation as default.
+    """Retrieval interface with a lexical implementation as default.
 
     MemoryRetriever(store) and retrieve() remain compatible. New strategies
     override retrieve_with_trace(); legacy custom retrieve() implementations
@@ -82,7 +82,7 @@ class MemoryRetriever:
             )
             recency = 1.0 / (1.0 + age_days / 30.0)
             score = overlap * 0.65 + record.importance * 0.25 + recency * 0.10
-            # v0.29.3 provenance-aware ranking. Old stores may not have an
+            # Provenance-aware ranking. Old stores may not have an
             # evidence_type field, so infer it conservatively from source text.
             source_content = record.metadata.get("source_content", "")
             evidence_type = record.evidence_type
@@ -92,7 +92,7 @@ class MemoryRetriever:
             if overlap == 0 and record.importance < 0.8:
                 continue
             scored.append(RetrievedMemory(record=record, score=score))
-        # Preserve the original v0.8 ordering, including stable ties.
+        # Highest score first; the newest record wins a tie.
         scored.sort(key=lambda item: (item.score, item.record.created_at), reverse=True)
         selected = scored[: max(0, limit)]
         selected_ids = tuple(item.record.id for item in selected)
@@ -190,7 +190,7 @@ async def retrieve_with_trace_async(
     now: datetime | None = None,
     rewrite_context: tuple[str, ...] = (),
 ) -> RetrievalResult:
-    """Async adapter for production retrievers while preserving v0.9 sync ones."""
+    """Async adapter for production retrievers that also accepts synchronous ones."""
     async_method = getattr(retriever, "retrieve_with_trace_async", None)
     if callable(async_method):
         import inspect

@@ -1,4 +1,4 @@
-"""Optional, cancellable Mac adapters for the v0.19 provider protocols."""
+"""Optional, cancellable Mac adapters for the voice provider protocols."""
 from __future__ import annotations
 import asyncio
 import base64

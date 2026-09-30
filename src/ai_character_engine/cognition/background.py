@@ -933,7 +933,8 @@ def _evidence(value: Any) -> tuple[str, ...]:
 
 
 def _squeeze(text: str) -> str:
-    # Models re-space quotes ("研究AI" comes back as "研究 AI"); spacing is not evidence.
+    # Models re-space quotes (Chinese "研究AI", "studying AI", comes back as
+    # "研究 AI"); spacing is not evidence.
     return "".join(text.split())
 
 

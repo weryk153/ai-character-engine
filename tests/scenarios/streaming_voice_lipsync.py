@@ -1,4 +1,4 @@
-"""Offline v0.26 demo: streamed LLM text -> streamed TTS -> mouth cues.
+"""Offline demo: streamed LLM text -> streamed TTS -> mouth cues.
 
 Run:
     PYTHONPATH=src python tests/scenarios/streaming_voice_lipsync.py

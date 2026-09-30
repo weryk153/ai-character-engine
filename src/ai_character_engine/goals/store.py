@@ -40,7 +40,7 @@ class InMemoryGoalStore:
 
 
 class JsonlGoalStore(InMemoryGoalStore):
-    """Single-process local/dev JSONL persistence for v0.35 goals."""
+    """Single-process local/dev JSONL persistence for goals."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)

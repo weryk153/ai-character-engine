@@ -1,4 +1,4 @@
-"""Offline v0.39 multi-character isolation and sharing demonstration."""
+"""Offline multi-character isolation and sharing demonstration."""
 from __future__ import annotations
 
 import asyncio

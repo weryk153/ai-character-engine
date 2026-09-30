@@ -1,4 +1,4 @@
-"""v0.12 persona consistency evaluation; opt-in and provider-neutral."""
+"""Persona consistency evaluation; opt-in and provider-neutral."""
 from .dataset import (
     AggregateMetrics, CharacterEvalDataset, CharacterEvalReport, aggregate_metrics, evaluate_dataset,
 )

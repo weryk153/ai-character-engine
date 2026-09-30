@@ -1,4 +1,4 @@
-"""Offline v0.35 Goal / Motivation Runtime demonstration.
+"""Offline Goal / Motivation Runtime demonstration.
 
 No network/model dependency is required. The example feeds already-structured
 TaskProposal values through the same commit boundary used by background cognition.

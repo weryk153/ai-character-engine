@@ -1,5 +1,5 @@
 /**
- * Minimal host-side adapter for v0.29.1 VRMRendererPacket (VRM 0.x + 1.x).
+ * Minimal host-side adapter for VRMRendererPacket (VRM 0.x + 1.x).
  *
  * Verified against the current @pixiv/three-vrm v3 API shape used by its
  * official examples: expressionManager.setValue(),

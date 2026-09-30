@@ -26,7 +26,8 @@ _VALID_EVIDENCE_TYPES: set[str] = {
 }
 
 # Direct first-person assertions outrank punctuation-based question detection.
-# This preserves messages such as "我喜歡七武士，你呢？" as user evidence.
+# This preserves messages such as "我喜歡七武士，你呢？" ("I like Seven Samurai,
+# and you?") as user evidence.
 _ASSERTION_PATTERNS = (
     re.compile(r"(?:^|[，,。；;：:\s])我叫\S+"),
     re.compile(r"(?:^|[，,。；;：:\s])我是\S+"),
@@ -110,7 +111,8 @@ def classify_user_text(text: str) -> MemoryEvidenceType:
         return "memory_operation"
 
     # Property-recall questions can look syntactically like assertions
-    # ("我的名字是什麼？"). Catch them before first-person assertion rules.
+    # ("我的名字是什麼？", "what is my name?"). Catch them before first-person
+    # assertion rules.
     if re.search(
         r"我的.{0,24}(?:是|叫|為|为)(?:什麼|什么|誰|谁|哪|幾|几|多少)", stripped
     ):

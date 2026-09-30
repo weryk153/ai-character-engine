@@ -686,8 +686,8 @@ async def test_goal_worker_prompt_exposes_active_belief_but_never_raw_reflection
 async def test_default_goal_worker_is_not_applicable_when_goal_manager_absent():
     runtime = engine()
     tasks = MultiTaskRuntime(runtime)
-    # No GOAL endpoint is configured. This must still work because v0.34 hosts
-    # should not suddenly require a v0.35 cognitive role just by upgrading.
+    # No GOAL endpoint is configured. A host that never configured goals must
+    # not suddenly need a goal cognitive role.
     models = CognitiveModelRuntime(
         endpoints=(ModelEndpoint(endpoint_id="dummy", client=StaticLLM()),),
         router=CognitiveModelRouter(

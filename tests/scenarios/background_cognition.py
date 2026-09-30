@@ -1,4 +1,4 @@
-"""Offline v0.32 demo: foreground dialogue + parallel background cognition.
+"""Offline demo: foreground dialogue + parallel background cognition.
 
 No network/model is required. Deterministic fake clients demonstrate that the
 foreground response returns first, while memory/emotion/summary/reflection

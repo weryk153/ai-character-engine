@@ -1,4 +1,4 @@
-"""Offline v0.12 example; no API key or network required.
+"""Offline persona evaluation example; no API key or network required.
 
 Run: PYTHONPATH=src python tests/scenarios/persona_evaluation.py
 """

@@ -338,7 +338,7 @@ def evaluation_gate(
     *,
     policy: EvaluationGatePolicy | None = None,
 ) -> EvaluationGateDecision:
-    """Translate a read-only v0.37 evaluation into an operational mode suggestion.
+    """Translate a read-only cognitive evaluation into an operational mode suggestion.
 
     This function performs no mutation and intentionally accepts only the public
     evaluation result, not Memory/Belief/Goal managers.

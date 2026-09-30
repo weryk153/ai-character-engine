@@ -1,4 +1,4 @@
-"""Offline v0.42 distributed-worker semantics demo.
+"""Offline distributed-worker semantics demo.
 
 No network, cloud queue, provider, renderer, or authoritative character store is used.
 The in-memory broker demonstrates the contract a real deployment adapter preserves.

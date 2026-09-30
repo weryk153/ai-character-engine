@@ -1,4 +1,4 @@
-"""Offline v0.38 production hardening demonstration."""
+"""Offline production hardening demonstration."""
 from __future__ import annotations
 
 import asyncio
