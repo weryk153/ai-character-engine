@@ -1,0 +1,2090 @@
+"""CharacterCompanion: one object a host talks to.
+
+It wires the pieces a host otherwise has to assemble and get right itself: the
+streamed foreground turn, background cognition, commits that survive a slow
+local model, a character whose state moves, per-conversation memory, and
+persistence. Every scenario below was first met in a real host.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+
+import pytest
+
+from ai_character_engine import CharacterProfile
+from ai_character_engine.companion import (
+    CharacterCompanion,
+    CompanionClosed,
+    CompanionSettings,
+    TurnInterrupted,
+)
+from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk, Message
+from ai_character_engine.tools.models import ToolCall, ToolDefinition
+from tests.fakes import system_context
+
+WARM = {
+    "emotion": "glad",
+    "intensity": 1.0,
+    "valence": 0.9,
+    "stance": 1.0,
+    "confidence": 1.0,
+    "evidence": ["thank you"],
+}
+NEUTRAL = {**WARM, "emotion": "calm", "valence": 0.0, "stance": 0.0, "evidence": []}
+
+
+class Foreground:
+    """The character's model. Streams a reply in two parts."""
+
+    def __init__(self, parts=("Hello. ", "How are you?"), *, gate=None):
+        self.parts = parts
+        self.gate = gate
+        self.calls: list[list[Message]] = []
+        self.started = asyncio.Event()
+
+    async def generate(self, messages, *, tools=None):
+        self.calls.append(list(messages))
+        self.started.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        return LLMResponse(text="".join(self.parts), model="foreground")
+
+    async def stream_generate(self, messages, *, tools=None):
+        self.calls.append(list(messages))
+        yield LLMStreamChunk(text=self.parts[0])
+        self.started.set()
+        if self.gate is not None:
+            await self.gate.wait()
+        for part in self.parts[1:]:
+            yield LLMStreamChunk(text=part)
+        yield LLMStreamChunk(
+            final=True, response=LLMResponse(text="".join(self.parts), model="foreground")
+        )
+
+
+class Worker:
+    """A background model that answers with fixed JSON, or a function of the prompt."""
+
+    running = 0
+    most_at_once = 0
+    order: list[str] = []
+
+    def __init__(self, payload, *, gate=None, fail=False, name=""):
+        self.payload = payload
+        self.gate = gate
+        self.fail = fail
+        self.name = name
+        self.calls = 0
+        self.abandoned = 0
+
+    @classmethod
+    def reset(cls):
+        cls.running, cls.most_at_once, cls.order = 0, 0, []
+
+    async def generate(self, messages, *, tools=None):
+        self.calls += 1
+        Worker.order.append(self.name)
+        Worker.running += 1
+        Worker.most_at_once = max(Worker.most_at_once, Worker.running)
+        try:
+            if self.gate is not None:
+                await self.gate.wait()
+            await asyncio.sleep(0)
+            if self.fail:
+                raise RuntimeError("model is down")
+            payload = self.payload(messages) if callable(self.payload) else self.payload
+            return LLMResponse(text=json.dumps(payload, ensure_ascii=False), model="worker")
+        except asyncio.CancelledError:
+            self.abandoned += 1
+            raise
+        finally:
+            Worker.running -= 1
+
+
+def warm_only_when_thanked(messages):
+    thanked = "Latest event/user content:\nthank you for last night" in messages[1].content
+    return WARM if thanked else NEUTRAL
+
+
+def companion(tmp_path, workers=None, *, llm=None, **settings):
+    defaults = {
+        "emotion_every": 0,
+        "memory_every": 0,
+        "goal_every": 0,
+        "reflection_every": 0,
+        "summary_every": 0,
+    }
+    defaults.update(settings)
+    return CharacterCompanion(
+        character=CharacterProfile(id="mei", name="Mei", description="A researcher."),
+        llm=llm or Foreground(),
+        background_llm=workers or {},
+        storage_dir=tmp_path / "engine",
+        settings=CompanionSettings(**defaults),
+    )
+
+
+def run(coroutine):
+    Worker.reset()
+    return asyncio.run(coroutine)
+
+
+async def until(condition, *, steps=500):
+    for _ in range(steps):
+        if condition():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("condition never became true")
+
+
+# --- the foreground turn -------------------------------------------------------
+
+
+def test_a_reply_is_streamed_and_returned(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        heard = []
+        result = await current.reply("hi", conversation_id="a", on_text_delta=heard.append)
+        await current.close()
+        return heard, result.text
+
+    assert run(scenario()) == (["Hello. ", "How are you?"], "Hello. How are you?")
+
+
+def test_a_host_with_one_conversation_needs_no_conversation_id(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("call me Alex")
+        await current.reply("what is my name")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    assert "call me Alex" in run(scenario())
+
+
+def test_each_conversation_keeps_its_own_history(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first in a", conversation_id="a")
+        await current.reply("first in b", conversation_id="b")
+        await current.reply("second in a", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "first in a" in sent
+    assert "first in b" not in sent
+    assert sent[-1] == "second in a"
+
+
+def test_coming_back_to_a_conversation_continues_its_prompt(tmp_path):
+    """What the model was sent is the conversation plus the notes written into
+    it. Both have to come back, or the server reads everything again."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first in a", conversation_id="a")
+        before = llm.calls[-1]
+        await current.reply("first in b", conversation_id="b")
+        await current.reply("second in a", conversation_id="a")
+        await current.close()
+        return before, llm.calls[-1]
+
+    before, after = run(scenario())
+    assert after[: len(before)] == before
+
+
+def test_coming_back_to_the_oldest_conversation_kept_finds_it(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, conversations_kept=2)
+        for conversation in ("b", "c", "a"):
+            await current.reply(f"first in {conversation}", conversation_id=conversation)
+        await current.reply("second in b", conversation_id="b")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    assert "first in b" in run(scenario())
+
+
+def test_a_loaded_conversation_is_continued_from_what_the_host_had(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        current.load_conversation(
+            "a",
+            [
+                Message("assistant", "an orphan reply"),
+                Message("user", "where were we"),
+                Message("assistant", "at the time machine"),
+            ],
+        )
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "at the time machine" in sent
+    assert "an orphan reply" not in sent
+
+
+def test_a_host_can_ask_whether_a_conversation_still_has_to_be_loaded(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        before = current.has_conversation("a")
+        current.load_conversation("a", [Message("user", "old"), Message("assistant", "older")])
+        loaded = current.has_conversation("a")
+        await current.reply("hello", conversation_id="b")
+        await current.reply("hello", conversation_id="c")
+        await current.close()
+        return before, loaded, current.has_conversation("b"), current.has_conversation("c")
+
+    assert run(scenario()) == (False, True, True, True)
+
+
+def test_loading_again_does_not_erase_what_was_said_since(tmp_path):
+    """A page reload makes the host load the conversation again."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        current.load_conversation("a", [Message("user", "old"), Message("assistant", "older")])
+        await current.reply("new line", conversation_id="a")
+        current.load_conversation("a", [])
+        await current.reply("another", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    assert "new line" in run(scenario())
+
+
+def test_tools_run_and_text_still_arrives_as_it_is_generated(tmp_path):
+    class ToolUsing(Foreground):
+        async def stream_generate(self, messages, *, tools=None):
+            self.calls.append(list(messages))
+            if messages[-1].role == "tool":
+                yield LLMStreamChunk(text="It is 12:34.")
+                yield LLMStreamChunk(
+                    final=True, response=LLMResponse(text="It is 12:34.", model="foreground")
+                )
+                return
+            yield LLMStreamChunk(text="Let me check. ")
+            yield LLMStreamChunk(
+                final=True,
+                response=LLMResponse(
+                    text="Let me check. ",
+                    tool_calls=(ToolCall("one", "clock", {}),),
+                    model="foreground",
+                ),
+            )
+
+    async def scenario():
+        current = companion(tmp_path, llm=ToolUsing())
+        current.tools.register(
+            ToolDefinition("clock", "Read the clock", {"type": "object", "properties": {}}),
+            lambda: "12:34",
+        )
+        heard = []
+        result = await current.reply("what time is it", conversation_id="a", on_text_delta=heard.append)
+        await current.close()
+        return heard, result.text, [r.output for r in result.tool_results]
+
+    assert run(scenario()) == (["Let me check. ", "It is 12:34."], "It is 12:34.", ["12:34"])
+
+
+def test_a_note_from_the_host_reaches_this_reply_only(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply(
+            "is it raining", conversation_id="a", notes=("Answer yes or no first.",)
+        )
+        with_note = [message.content for message in llm.calls[-1]]
+        await current.reply("and tomorrow", conversation_id="a")
+        await current.close()
+        return with_note, [message.content for message in llm.calls[-1]]
+
+    with_note, afterwards = run(scenario())
+    assert "For the next reply only: Answer yes or no first." in with_note[-2]
+    assert with_note[-1] == "is it raining"
+    # It stays where it was said, so that the next prompt extends this one,
+    # and is not said again.
+    assert afterwards[: len(with_note)] == with_note
+    assert "Answer yes or no first." not in "".join(afterwards[len(with_note) :])
+
+
+def test_an_instruction_passed_on_every_turn_reaches_every_turn(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        newest = []
+        for text in ("is it raining", "is it cold", "is it late"):
+            await current.reply(text, conversation_id="a", notes=("Answer yes or no first.",))
+            newest.append(llm.calls[-1][-2].content)
+        await current.close()
+        return newest
+
+    for note in run(scenario()):
+        assert "For the next reply only: Answer yes or no first." in note
+
+
+def test_what_the_host_no_longer_knows_is_taken_back(tmp_path):
+    """A host whose user corrected or deleted a memory. Notes stay in the
+    conversation, so the old line has to be taken out of the note it is in."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply(
+            "hello", conversation_id="a", notes=["- about the user: lives in Taipei"]
+        )
+        await current.reply(
+            "and now", conversation_id="a", notes=["- about the user: moved to Taichung"]
+        )
+        corrected = "".join(message.content for message in llm.calls[-1])
+        await current.reply("and then", conversation_id="a")
+        await current.close()
+        return corrected, "".join(message.content for message in llm.calls[-1])
+
+    corrected, cleared = run(scenario())
+    assert "Taipei" not in corrected
+    assert "moved to Taichung" in corrected
+    assert "Taichung" not in cleared
+
+
+def test_what_the_host_knows_about_her_is_said_once_not_every_turn(tmp_path):
+    """A host with a memory of its own hands it over with every turn. A note
+    that starts with "- " is knowledge, not an instruction for one reply."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        known = ["- about the user: has a cat called Bun"]
+        await current.reply("hello", conversation_id="a", notes=known)
+        first = system_context(llm.calls[-1])
+        known.append("- about the user: works at night")
+        await current.reply("and now", conversation_id="a", notes=known)
+        await current.close()
+        return first, [m.content for m in llm.calls[-1]]
+
+    first, second = run(scenario())
+    assert "- about the user: has a cat called Bun" in first
+    assert "For the next reply only" not in first
+    assert "".join(second).count("has a cat called Bun") == 1
+    assert "- about the user: works at night" in second[-2]
+
+
+def test_the_host_can_keep_the_reply_as_it_displayed_it(tmp_path):
+    """Hosts normalize what they show: script variant, stage directions."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        current.replace_reply("Hello.")
+        await current.reply("again", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "Hello." in sent
+    assert "Hello. How are you?" not in sent
+
+
+def test_a_host_shared_by_several_callers_prepares_and_tidies_inside_the_turn(tmp_path):
+    """Two callers at once: what one of them does between its turns happens
+    during the other one's turn. Rewriting the character or registering tools
+    there is refused or lands in the wrong turn, and replace_reply() afterwards
+    may already meet the next reply."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        pianist = CharacterProfile(id="mei", name="Mei", description="A pianist.")
+
+        def prepare():
+            current.character = pianist
+
+        first = asyncio.ensure_future(current.reply("first", conversation_id="a"))
+        await llm.started.wait()
+        second = asyncio.ensure_future(
+            current.reply(
+                "second",
+                conversation_id="b",
+                before_turn=prepare,
+                remember_as=lambda text: text.upper(),
+            )
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+        llm.gate.set()
+        await first
+        result = await second
+        await current.reply("third", conversation_id="b")
+        await current.close()
+        return llm.calls[0][0].content, llm.calls[1][0].content, result.text, [
+            message.content for message in llm.calls[-1]
+        ]
+
+    first_system, second_system, returned, sent = run(scenario())
+    assert "A researcher." in first_system
+    assert "A pianist." in second_system
+    assert returned == "Hello. How are you?"
+    assert "HELLO. HOW ARE YOU?" in sent
+
+
+def test_the_character_can_be_rewritten_between_turns(tmp_path):
+    """A host that edits the persona while running must not need a restart."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        current.character = CharacterProfile(id="mei", name="Mei", description="A pianist.")
+        await current.reply("what do you do", conversation_id="a")
+        with pytest.raises(ValueError):
+            current.character = CharacterProfile(id="someone-else", name="X", description="Y")
+        await current.close()
+        return llm.calls[-1][0].content, current.snapshot().trust
+
+    system, trust = run(scenario())
+    assert "A pianist." in system
+    assert "A researcher." not in system
+    assert trust == pytest.approx(50.6)
+
+
+def test_a_picture_is_described_to_her_and_not_kept(tmp_path):
+    from ai_character_engine.vision import VisionPipeline
+    from ai_character_engine.vision.models import ImageInput, VisionAnalysis, VisionFrame
+    from ai_character_engine.vision.providers import CallableVisionProvider
+    from tests.test_vision import PNG
+
+    async def look(image, prompt):
+        return VisionAnalysis(text="A red square next to a blue circle.", provider="fake")
+
+    async def scenario():
+        llm = Foreground()
+        current = CharacterCompanion(
+            character=CharacterProfile(id="mei", name="Mei", description="A researcher."),
+            llm=llm,
+            background_llm={},
+            vision=VisionPipeline(provider=CallableVisionProvider(look)),
+        )
+        blind = companion(tmp_path)
+        frame = VisionFrame(image=ImageInput.from_bytes(PNG, mime_type="image/png"))
+        await current.reply("what is this", conversation_id="a", frames=(frame,))
+        seen = llm.calls[-1][-1].content
+        await current.reply("and now", conversation_id="a")
+        await current.close()
+        await blind.close()
+        return seen, [message.content for message in llm.calls[-1]], current.sees, blind.sees
+
+    seen, afterwards, sees, blind = run(scenario())
+    assert "what is this" in seen
+    assert "A red square next to a blue circle." in seen
+    assert "what is this" in afterwards
+    assert not any("red square" in content for content in afterwards)
+    assert (sees, blind) == (True, False)
+
+
+# --- a character whose state moves ---------------------------------------------
+
+
+def test_every_turn_builds_trust_and_survives_a_restart(tmp_path):
+    async def scenario():
+        first = companion(tmp_path)
+        await first.reply("hello", conversation_id="a")
+        await first.reply("nice weather", conversation_id="a")
+        await first.close()
+        return companion(tmp_path).snapshot()
+
+    assert run(scenario()).trust == pytest.approx(50.6)
+
+
+def test_a_warm_turn_lifts_the_mood_before_the_next_turn(tmp_path):
+    async def scenario():
+        current = companion(tmp_path, {"emotion": Worker(WARM)}, emotion_every=1)
+        await current.reply("thank you for last night", conversation_id="a")
+        await current.settle()
+        snapshot = current.snapshot()
+        llm = current.runtime.llm
+        await current.reply("anyway", conversation_id="a")
+        await current.close()
+        return snapshot, system_context(llm.calls[-1])
+
+    snapshot, context = run(scenario())
+    assert snapshot.emotion == "happy"
+    assert snapshot.favorability == pytest.approx(54.0)
+    assert "emotion: happy" in context
+
+
+def test_a_late_result_is_used_when_nothing_newer_of_its_kind_is_coming(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(warm_only_when_thanked, gate=gate)
+        current = companion(tmp_path, {"emotion": worker}, emotion_every=2)
+        await current.reply("hi", conversation_id="a")
+        await current.reply("thank you for last night", conversation_id="a")
+        await until(lambda: worker.calls)
+        await current.reply("by the way", conversation_id="a")
+        gate.set()
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    assert run(scenario()).favorability == pytest.approx(54.0)
+
+
+def test_a_late_result_gives_way_to_a_newer_one_of_its_kind(tmp_path):
+    """The coordinator accepts one emotion observation per revision. An old one
+    moved onto the current revision takes that place, and the observation that
+    belongs there is then refused as a conflict."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(warm_only_when_thanked, gate=gate)
+        current = companion(tmp_path, {"emotion": worker}, emotion_every=1)
+        await current.reply("thank you for last night", conversation_id="a")
+        await until(lambda: worker.calls)
+        await current.reply("by the way", conversation_id="a")
+        gate.set()
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return worker.abandoned, snapshot
+
+    abandoned, snapshot = run(scenario())
+    assert abandoned >= 1
+    assert snapshot.favorability == pytest.approx(50.0)
+    assert snapshot.emotion == "calm"
+
+
+def test_a_turn_that_asked_for_no_background_work_replaces_nothing(tmp_path):
+    """Proactive remarks are turns too, but nothing is scheduled after them."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(warm_only_when_thanked, gate=gate)
+        current = companion(tmp_path, {"emotion": worker}, emotion_every=1)
+        await current.reply("thank you for last night", conversation_id="a")
+        await until(lambda: worker.calls)
+        await current.reply("(a remark of her own)", conversation_id="a", skip_memory=True)
+        gate.set()
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    assert run(scenario()).favorability == pytest.approx(54.0)
+
+
+def test_a_finished_result_still_gives_way_to_the_newer_job(tmp_path):
+    """A job that finished while she was replying cannot be cancelled any more
+    when the job of that reply is scheduled."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        talking = asyncio.Event()
+        talking.set()
+        llm = Foreground(gate=talking)
+        worker = Worker(warm_only_when_thanked, gate=gate)
+        current = companion(tmp_path, {"emotion": worker}, llm=llm, emotion_every=1)
+        await current.reply("thank you for last night", conversation_id="a")
+        await until(lambda: worker.calls == 1)
+        # It gives way to this turn, which schedules nothing, and starts again.
+        await current.reply("(a remark of her own)", conversation_id="a", skip_memory=True)
+        await until(lambda: worker.calls == 2)
+        talking.clear()
+        llm.started.clear()
+        turn = asyncio.ensure_future(current.reply("by the way", conversation_id="a"))
+        await llm.started.wait()
+        gate.set()
+        await until(lambda: Worker.running == 0)
+        talking.set()
+        await turn
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    snapshot = run(scenario())
+    assert snapshot.favorability == pytest.approx(50.0)
+    assert snapshot.emotion == "calm"
+
+
+def test_a_result_that_arrives_too_late_is_dropped(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(warm_only_when_thanked, gate=gate)
+        current = companion(tmp_path, {"emotion": worker}, emotion_every=4, max_turns_late=1)
+        for text in ("one", "two", "three"):
+            await current.reply(text, conversation_id="a")
+        await current.reply("thank you for last night", conversation_id="a")
+        await until(lambda: worker.calls)
+        await current.reply("five", conversation_id="a")
+        await current.reply("six", conversation_id="a")
+        gate.set()
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    snapshot = run(scenario())
+    assert snapshot.favorability == pytest.approx(50.0)
+    assert snapshot.emotion == "neutral"
+
+
+# --- sharing one model ---------------------------------------------------------
+
+
+def test_background_work_waits_while_the_character_is_replying(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        gate.set()
+        llm = Foreground(gate=gate)
+        worker = Worker(NEUTRAL)
+        current = companion(tmp_path, {"emotion": worker}, llm=llm, emotion_every=1)
+        await current.reply("earlier", conversation_id="a")
+        gate.clear()
+        llm.started.clear()
+        turn = asyncio.ensure_future(current.reply("now", conversation_id="a"))
+        await llm.started.wait()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        calling_the_model_meanwhile = Worker.running
+        gate.set()
+        await turn
+        await current.settle()
+        await current.close()
+        return calling_the_model_meanwhile, worker.calls >= 1
+
+    assert run(scenario()) == (0, True)
+
+
+def test_the_mood_never_waits_for_other_background_work(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        workers = {
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, gate=gate),
+            "emotion": Worker(WARM),
+        }
+        current = companion(tmp_path, workers, emotion_every=2, memory_every=1)
+        await current.reply("first", conversation_id="a")
+        await until(lambda: workers["memory"].calls)
+        await current.reply("thank you for last night", conversation_id="a")
+        await until(lambda: current.snapshot().emotion == "happy")
+        mood_while_memory_still_runs = current.snapshot().emotion
+        gate.set()
+        await current.settle()
+        await current.close()
+        return mood_while_memory_still_runs
+
+    assert run(scenario()) == "happy"
+
+
+def test_after_a_reply_the_mood_is_read_before_other_work_starts(tmp_path):
+    """On one local model two calls at once both take longer. The mood decides
+    the next reply and has the least time, so it goes first."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        workers = {
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}),
+            "emotion": Worker(NEUTRAL, gate=gate),
+        }
+        current = companion(tmp_path, workers, emotion_every=1, memory_every=1)
+        await current.reply("hello", conversation_id="a")
+        await until(lambda: workers["emotion"].calls)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        started_meanwhile = workers["memory"].calls
+        gate.set()
+        await current.settle()
+        await current.close()
+        return started_meanwhile, workers["memory"].calls
+
+    assert run(scenario()) == (0, 1)
+
+
+def test_work_under_way_is_abandoned_when_she_starts_to_reply_but_only_once(tmp_path):
+    """Goal and reflection calls take longer than the pause between two turns;
+    abandoned every time, they would never finish."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(cat_fact_when_quoted, gate=gate)
+        current = companion(tmp_path, {"memory": worker}, memory_every=4)
+        for text in ("one", "two", "three"):
+            await current.reply(text, conversation_id="a")
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await until(lambda: Worker.running == 1)
+        await current.reply("five", conversation_id="a")
+        await until(lambda: worker.calls == 2)
+        after_one_reply = worker.abandoned
+        await current.reply("six", conversation_id="a")
+        for _ in range(50):
+            await asyncio.sleep(0)
+        after_two_replies = worker.abandoned
+        gate.set()
+        await current.settle()
+        found = current.memories("a")
+        await current.close()
+        return after_one_reply, after_two_replies, worker.calls, found
+
+    assert run(scenario()) == (1, 1, 2, ["The user has a cat called Bun"])
+
+
+def test_while_one_job_has_the_model_the_next_one_waits(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        workers = {
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, gate=gate),
+            "goal": Worker({"goals": [], "confidence": 0, "evidence": []}),
+        }
+        current = companion(tmp_path, workers, memory_every=1, goal_every=1)
+        await current.reply("hello", conversation_id="a")
+        await until(lambda: workers["memory"].calls)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        meanwhile = workers["goal"].calls
+        gate.set()
+        await current.settle()
+        await current.close()
+        return meanwhile, workers["goal"].calls
+
+    assert run(scenario()) == (0, 1)
+
+
+def test_the_other_background_jobs_use_the_model_one_at_a_time(tmp_path):
+    async def scenario():
+        workers = {
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, name="memory"),
+            "goal": Worker({"goals": [], "confidence": 0, "evidence": []}, name="goal"),
+            "reflection": Worker(
+                {"insight": "i", "belief_candidate": None, "confidence": 0.9, "evidence": []},
+                name="reflection",
+            ),
+        }
+        current = companion(tmp_path, workers, memory_every=1, goal_every=1, reflection_every=1)
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await current.close()
+        return list(Worker.order), Worker.most_at_once
+
+    order, most_at_once = run(scenario())
+    assert order == ["memory", "goal", "reflection"]
+    assert most_at_once == 1
+
+
+def test_a_worker_that_is_down_never_reaches_the_conversation(tmp_path):
+    async def scenario():
+        current = companion(tmp_path, {"emotion": Worker(WARM, fail=True)}, emotion_every=1)
+        result = await current.reply("thank you", conversation_id="a")
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return result.text, snapshot
+
+    text, snapshot = run(scenario())
+    assert text == "Hello. How are you?"
+    assert snapshot.emotion == "neutral"
+
+
+# --- memory, goals and thoughts ------------------------------------------------
+
+
+def cat_fact_when_quoted(messages):
+    if "I have a cat called Bun" not in messages[1].content.split("User lines to extract from:")[1]:
+        return {"items": [], "confidence": 0.5, "evidence": []}
+    return {
+        "items": [
+            {
+                "summary": "The user has a cat called Bun",
+                "kind": "fact",
+                "importance": 0.8,
+                "confidence": 0.9,
+                "evidence": "I have a cat called Bun",
+            }
+        ],
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+
+def test_what_was_learned_is_in_the_context_of_that_conversation_only(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(
+            tmp_path, {"memory": Worker(cat_fact_when_quoted)}, llm=llm, memory_every=1
+        )
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await current.settle()
+        await current.reply("what is my cat called", conversation_id="a")
+        in_a = system_context(llm.calls[-1])
+        await current.reply("what is my cat called", conversation_id="b")
+        in_b = system_context(llm.calls[-1])
+        await current.close()
+        return in_a, in_b, current.memories("a"), current.memories("b")
+
+    in_a, in_b, stored_a, stored_b = run(scenario())
+    assert "The user has a cat called Bun" in in_a
+    assert "Bun" not in in_b
+    assert stored_a == ["The user has a cat called Bun"]
+    assert stored_b == []
+
+
+def test_an_interrupted_turn_does_not_hide_what_was_said_before_it(tmp_path):
+    """Memory runs every second turn and reads what was said since its last
+    run. An interrupted turn leaves a line in the conversation without being a
+    turn; counting lines instead of looking for the last one read skipped the
+    line before it."""
+
+    async def scenario():
+        talking = asyncio.Event()
+        talking.set()
+        llm = Foreground(gate=talking)
+        current = companion(
+            tmp_path, {"memory": Worker(cat_fact_when_quoted)}, llm=llm, memory_every=2
+        )
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        talking.clear()
+        llm.started.clear()
+        turn = asyncio.ensure_future(current.reply("tell me a story", conversation_id="a"))
+        await llm.started.wait()
+        current.interrupt("Hello.")
+        with pytest.raises(TurnInterrupted):
+            await turn
+        talking.set()
+        await current.reply("ok", conversation_id="a")
+        await current.settle()
+        found = current.memories("a")
+        await current.close()
+        return found
+
+    assert run(scenario()) == ["The user has a cat called Bun"]
+
+
+def test_opening_an_old_conversation_does_not_send_all_of_it_to_be_remembered_again(tmp_path):
+    seen = []
+
+    def nothing_new(messages):
+        seen.append(messages[1].content.split("User lines to extract from:")[1])
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    async def scenario():
+        current = companion(tmp_path, {"memory": Worker(nothing_new)}, memory_every=2)
+        await current.reply("a new conversation", conversation_id="new")
+        old = []
+        for number in range(10):
+            old += [Message("user", f"old line {number}"), Message("assistant", "fine")]
+        current.load_conversation("old", old)
+        await current.reply("back again", conversation_id="old")
+        await current.settle()
+        await current.close()
+
+    run(scenario())
+    (lines,) = seen
+    assert "back again" in lines
+    assert "old line 3" not in lines
+
+
+def test_what_she_thinks_is_written_in_the_language_the_host_names(tmp_path):
+    """The workers' instructions are in English and ask for the language the
+    user writes in. A small model has to work that out from the transcript and
+    does not always: in one conversation in Chinese, four memories out of five
+    came back in English. A host that knows the language says so."""
+    asked = []
+
+    def nothing(messages):
+        asked.append(messages[1].content)
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    async def scenario():
+        named = companion(
+            tmp_path / "named", {"memory": Worker(nothing)}, memory_every=1, language="繁體中文"
+        )
+        unnamed = companion(tmp_path / "unnamed", {"memory": Worker(nothing)}, memory_every=1)
+        for current in (named, unnamed):
+            await current.reply("hello", conversation_id="a")
+            await current.settle()
+            await current.close()
+
+    run(scenario())
+    named, unnamed = asked
+    assert named.rstrip().endswith("Text values must be written in 繁體中文.")
+    assert "the language the user writes in" in unnamed
+
+
+def test_the_host_can_show_her_memory_to_its_user_and_take_the_edit_back(tmp_path):
+    """A memory page: the user reads what she remembers of a conversation,
+    corrects one line, deletes one and adds one."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(
+            tmp_path, {"memory": Worker(cat_fact_when_quoted)}, llm=llm, memory_every=1
+        )
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await current.settle()
+        await current.reply("what is my cat called", conversation_id="a")
+        before = current.memories("a")
+
+        current.rewrite_memories("a", ["The user has a dog called Rex", "", "The user lives in Taipei"])
+        await current.reply("and now", conversation_id="a")
+        sent = "".join(message.content for message in llm.calls[-1])
+        await current.close()
+        return before, current.memories("a"), current.memories("b"), sent
+
+    before, after, elsewhere, sent = run(scenario())
+    assert before == ["The user has a cat called Bun"]
+    assert after == ["The user has a dog called Rex", "The user lives in Taipei"]
+    assert elsewhere == []
+    # What the user said stays said; what she noted of it is taken back.
+    assert "The user has a cat called Bun" not in sent
+
+
+def test_she_has_all_she_remembers_of_a_conversation_not_only_what_the_words_match(tmp_path):
+    """The default retriever takes memories that share words with the newest
+    message. "hello" shares none with where the user lives, and a user who
+    then asks "guess where I am" is met by someone who has forgotten."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, memories_recalled=3)
+        current.rewrite_memories(
+            "a", [f"The user said thing number {number}" for number in range(5)]
+        )
+        current.rewrite_memories("b", ["The user lives in Taipei"])
+        await current.reply("hello", conversation_id="b")
+        in_b = system_context(llm.calls[-1])
+        await current.reply("number 4 please", conversation_id="a")
+        in_a = system_context(llm.calls[-1])
+        await current.close()
+        return in_b, in_a
+
+    in_b, in_a = run(scenario())
+    assert "The user lives in Taipei" in in_b
+    assert "thing number" not in in_b
+    # No more than the host allows, and what the message is about comes first.
+    assert in_a.count("The user said thing number") == 3
+    assert "The user said thing number 4" in in_a
+
+
+def test_an_edit_forgets_only_what_the_user_saw_and_removed(tmp_path):
+    """A memory page shows A; while it is open a background job adds B; the
+    user saves "A and C". B was never shown, so it is not what the user
+    removed."""
+
+    async def scenario():
+        current = companion(tmp_path)
+        current.rewrite_memories("a", ["A"])
+        shown = current.memories("a")
+        current.rewrite_memories("a", ["A", "B"])  # arrived after the page was shown
+        current.rewrite_memories("a", ["A", "C"], edited_from=shown)
+        await current.close()
+        return current.memories("a")
+
+    assert run(scenario()) == ["A", "B", "C"]
+
+
+def test_her_memory_can_be_read_and_edited_while_she_makes_a_remark_of_her_own(tmp_path):
+    """A turn that is kept out of memory takes the memory manager away from the
+    runtime for its duration. The memory page of a host is open meanwhile."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        current.rewrite_memories("a", ["The user lives in Taipei"])
+        remark = asyncio.ensure_future(
+            current.reply("(a remark of her own)", conversation_id="a", skip_memory=True)
+        )
+        await llm.started.wait()
+        shown = current.memories("a")
+        current.rewrite_memories("a", ["The user lives in Taichung"])
+        llm.gate.set()
+        await remark
+        await current.close()
+        return shown, current.memories("a")
+
+    assert run(scenario()) == (["The user lives in Taipei"], ["The user lives in Taichung"])
+
+
+def test_an_edited_memory_survives_a_restart(tmp_path):
+    async def scenario():
+        first = companion(tmp_path)
+        first.rewrite_memories("a", ["The user lives in Taipei"])
+        await first.close()
+        return companion(tmp_path).memories("a")
+
+    assert run(scenario()) == ["The user lives in Taipei"]
+
+
+def test_a_late_memory_lands_in_the_conversation_it_came_from(tmp_path):
+    """The coordinator writes memory into whatever scope is current when it
+    commits. If the user has moved to another conversation by then, something
+    private crosses into it."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(cat_fact_when_quoted, gate=gate)
+        current = companion(tmp_path, {"memory": worker}, memory_every=1)
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await until(lambda: worker.calls)
+        await current.reply("hello", conversation_id="b")
+        gate.set()
+        await current.settle()
+        found = current.memories("a"), current.memories("b")
+        await current.close()
+        return found
+
+    assert run(scenario()) == (["The user has a cat called Bun"], [])
+
+
+def test_a_fact_the_user_stated_is_kept_however_late_it_is_extracted(tmp_path):
+    """Memory jobs queue behind everything else. Dropping a late one loses the
+    facts of those turns for good: no later job reads the same lines."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(cat_fact_when_quoted, gate=gate)
+        current = companion(tmp_path, {"memory": worker}, memory_every=4, max_turns_late=1)
+        for text in ("one", "two", "three"):
+            await current.reply(text, conversation_id="a")
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await until(lambda: worker.calls)
+        for text in ("five", "six", "seven"):
+            await current.reply(text, conversation_id="a")
+        gate.set()
+        await current.settle()
+        found = current.memories("a")
+        await current.close()
+        return found
+
+    assert run(scenario()) == ["The user has a cat called Bun"]
+
+
+def goal_citing_the_event(messages):
+    event_id = re.search(r'"event": \{.*?"id": "([^"]+)"', messages[1].content).group(1)
+    return {
+        "goals": [
+            {
+                "objective": "Finish the drawing and show it",
+                "horizon": "short_term",
+                "urgency": 0.8,
+                "conflict_key": None,
+                "motivation_signals": [
+                    {
+                        "kind": "explicit_request",
+                        "strength": 0.9,
+                        "source_type": "event",
+                        "source_id": event_id,
+                        "rationale": "The user asked to see it",
+                    }
+                ],
+                "confidence": 0.9,
+            }
+        ],
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+
+def test_goals_and_thoughts_are_kept_and_reach_the_next_reply(tmp_path):
+    async def scenario():
+        workers = {
+            "goal": Worker(goal_citing_the_event),
+            "reflection": Worker(
+                {
+                    "insight": "They are looking forward to the drawing",
+                    "belief_candidate": None,
+                    "confidence": 0.9,
+                    "evidence": [],
+                }
+            ),
+        }
+        current = companion(tmp_path, workers, goal_every=1, reflection_every=1)
+        await current.reply("show me when it is done", conversation_id="a")
+        await current.settle()
+        await current.close()
+
+        llm = Foreground()
+        reopened = companion(tmp_path, llm=llm)
+        await reopened.reply("hello again", conversation_id="a")
+        await reopened.close()
+        return reopened.snapshot(), system_context(llm.calls[-1])
+
+    snapshot, context = run(scenario())
+    assert list(snapshot.goals) == ["Finish the drawing and show it"]
+    assert list(snapshot.thoughts) == ["They are looking forward to the drawing"]
+    assert "Finish the drawing and show it" in context
+    assert "They are looking forward to the drawing" in context
+
+
+# --- interruption --------------------------------------------------------------
+
+
+def test_interrupted_during_playback_she_remembers_only_what_was_heard(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        await current.reply("tell me", conversation_id="a")
+        current.interrupt("Hello.")
+        history = [message.content for message in current.runtime.history]
+        await current.close()
+        return history
+
+    assert run(scenario()) == ["tell me", "Hello. [Interrupted by user]"]
+
+
+def test_interrupted_while_generating_the_turn_ends_and_both_sides_are_kept(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        turn = asyncio.ensure_future(current.reply("tell me", conversation_id="a"))
+        await llm.started.wait()
+        current.interrupt("Hello.")
+        with pytest.raises(TurnInterrupted):
+            await turn
+        history = [message.content for message in current.runtime.history]
+        llm.gate.set()
+        await current.reply("sorry, go on", conversation_id="a")
+        await current.close()
+        return history, current.busy
+
+    history, busy = run(scenario())
+    assert history == ["tell me", "Hello. [Interrupted by user]"]
+    assert busy is False
+
+
+def test_background_work_goes_on_after_an_interrupted_turn(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        worker = Worker(WARM)
+        current = companion(tmp_path, {"emotion": worker}, llm=llm, emotion_every=1)
+        turn = asyncio.ensure_future(current.reply("tell me", conversation_id="a"))
+        await llm.started.wait()
+        current.interrupt("Hello.")
+        with pytest.raises(TurnInterrupted):
+            await turn
+        llm.gate.set()
+        await current.reply("thank you for last night", conversation_id="a")
+        await asyncio.wait_for(current.settle(), 2)
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot.emotion
+
+    assert run(scenario()) == "happy"
+
+
+def test_an_interruption_reaches_the_turn_it_was_meant_for(tmp_path):
+    """Two conversations at once: one reply is being generated, the other one
+    waits for it. Interrupting the one that waits must not cut the other."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        first = asyncio.ensure_future(current.reply("first", conversation_id="a"))
+        await llm.started.wait()
+        second = asyncio.ensure_future(current.reply("second", conversation_id="b"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        current.interrupt("", conversation_id="b")
+        llm.gate.set()
+        finished = await first
+        with pytest.raises(TurnInterrupted):
+            await second
+        await current.reply("again", conversation_id="a")
+        await current.close()
+        return finished.text, [message.content for message in llm.calls[-1]]
+
+    text, sent = run(scenario())
+    assert text == "Hello. How are you?"
+    assert "Hello. How are you?" in sent
+    assert "second" not in sent
+
+
+def test_an_interruption_without_a_name_is_for_the_reply_that_can_be_heard(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        talking = asyncio.ensure_future(current.reply("first", conversation_id="a"))
+        await llm.started.wait()
+        waiting = asyncio.ensure_future(current.reply("second", conversation_id="b"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        current.interrupt("Hello.")
+        with pytest.raises(TurnInterrupted):
+            await talking
+        llm.gate.set()
+        answered = await waiting
+        await current.close()
+        return answered.text
+
+    assert run(scenario()) == "Hello. How are you?"
+
+
+def test_two_turns_of_one_conversation_are_told_apart_by_the_name_the_host_gave_them(tmp_path):
+    """The same conversation open in two windows: one reply is being
+    generated, the next one waits. The host interrupts the first."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        talking = asyncio.ensure_future(
+            current.reply("first", conversation_id="a", turn_id="window 1")
+        )
+        await llm.started.wait()
+        waiting = asyncio.ensure_future(
+            current.reply("second", conversation_id="a", turn_id="window 2")
+        )
+        for _ in range(20):
+            await asyncio.sleep(0)
+        current.interrupt("Hello.", turn_id="window 1")
+        with pytest.raises(TurnInterrupted):
+            await talking
+        llm.gate.set()
+        await waiting
+        history = [message.content for message in current.runtime.history]
+        await current.close()
+        return history
+
+    assert run(scenario()) == [
+        "first",
+        "Hello. [Interrupted by user]",
+        "second",
+        "Hello. How are you?",
+    ]
+
+
+def test_interrupting_a_reply_that_was_played_does_not_reach_the_one_being_generated(tmp_path):
+    """Two conversations: the reply of one is being played, the reply of the
+    other is being generated. The listener of the first interrupts."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="window 1")
+        llm.gate.clear()
+        llm.started.clear()
+        talking = asyncio.ensure_future(
+            current.reply("second", conversation_id="b", turn_id="window 2")
+        )
+        await llm.started.wait()
+        current.interrupt("Hello.", conversation_id="a", turn_id="window 1")
+        llm.gate.set()
+        answered = await talking
+        history = [message.content for message in current.runtime.history]
+        await current.close()
+        return answered.text, history
+
+    assert run(scenario()) == ("Hello. How are you?", ["second", "Hello. How are you?"])
+
+
+def test_interrupting_a_turn_that_has_not_begun_leaves_the_last_reply_alone(tmp_path):
+    """Without a conversation named, the interruption is for the turn asked
+    for last, not for a reply that was played to the end."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("tell me", conversation_id="a")
+        async with current._turn_lock:  # a commit of background work holds it
+            turn = asyncio.ensure_future(current.reply("and then", conversation_id="a"))
+            for _ in range(20):
+                await asyncio.sleep(0)
+            current.interrupt("")
+        with pytest.raises(TurnInterrupted):
+            await turn
+        history = [message.content for message in current.runtime.history]
+        await current.close()
+        return history, len(llm.calls)
+
+    assert run(scenario()) == (["tell me", "Hello. How are you?"], 1)
+
+
+def test_a_reply_being_played_in_another_conversation_can_still_be_interrupted(tmp_path):
+    """A's reply is being played while B is given a short reply. A's listener
+    interrupts: the conversation at hand is B's by then, but A's reply is the
+    one that was cut short."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="window 1")
+        await current.reply("second", conversation_id="b", turn_id="window 2")
+        current.interrupt("Hello.", conversation_id="a", turn_id="window 1")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "Hello. [Interrupted by user]" in sent
+    assert "Hello. How are you?" not in sent
+
+
+def test_interrupting_a_remark_of_her_own_does_not_touch_the_reply_before_it(tmp_path):
+    """A remark kept out of memory is not in the conversation. An interruption
+    of it must not fall on the reply that was played to the end before."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("(remark)", conversation_id="a", turn_id="w2", skip_memory=True)
+        await current.reply("second", conversation_id="b", turn_id="w3")
+        current.interrupt("Hel", conversation_id="a", turn_id="w2")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "Hello. How are you?" in sent
+    assert "[Interrupted by user]" not in "".join(sent)
+
+
+def test_a_reply_being_played_elsewhere_is_cut_while_another_is_being_generated(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        llm.gate.clear()
+        llm.started.clear()
+        talking = asyncio.ensure_future(current.reply("second", conversation_id="b", turn_id="w2"))
+        await llm.started.wait()
+        current.interrupt("Hello.", conversation_id="a", turn_id="w1")
+        llm.gate.set()
+        answered = await talking
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return answered.text, [message.content for message in llm.calls[-1]]
+
+    text, sent = run(scenario())
+    assert text == "Hello. How are you?"
+    assert "Hello. [Interrupted by user]" in sent
+
+
+def test_a_reply_played_in_the_same_conversation_is_cut_while_the_next_is_generated(tmp_path):
+    """Two windows on one conversation: the first reply is still being played
+    when the second window's reply begins. Interrupting the first must cut
+    that reply, not be dropped because the model is busy."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        llm.gate.clear()
+        llm.started.clear()
+        talking = asyncio.ensure_future(current.reply("second", conversation_id="a", turn_id="w2"))
+        await llm.started.wait()
+        current.interrupt("Hel", conversation_id="a", turn_id="w1")
+        llm.gate.set()
+        answered = await talking
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return answered.text, [message.content for message in llm.calls[-1]]
+
+    text, sent = run(scenario())
+    assert text == "Hello. How are you?"
+    assert sent.count("Hello. How are you?") == 1
+    assert "Hel [Interrupted by user]" in sent
+    assert sent.index("Hel [Interrupted by user]") < sent.index("second")
+
+
+def test_a_memory_with_a_line_break_can_still_be_taken_back(tmp_path):
+    """A host's memory page is one line per memory; a summary with a line
+    break came back as two lines and could never be removed."""
+
+    async def scenario():
+        current = companion(tmp_path)
+        current.rewrite_memories("a", ["The user has a cat\ncalled Bun"])
+        shown = current.memories("a")
+        current.rewrite_memories("a", [], edited_from=shown)
+        await current.close()
+        return shown, current.memories("a")
+
+    assert run(scenario()) == (["The user has a cat called Bun"], [])
+
+
+def test_a_host_that_cancels_its_own_task_can_report_what_was_heard_afterwards(tmp_path):
+    """Hosts commonly interrupt by cancelling the task that awaits the reply
+    and only then learn from the frontend how much was heard."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        turn = asyncio.ensure_future(current.reply("tell me", conversation_id="a"))
+        await llm.started.wait()
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        current.interrupt("Hello.")
+        history = [message.content for message in current.runtime.history]
+        await current.close()
+        return history
+
+    assert run(scenario()) == ["tell me", "Hello. [Interrupted by user]"]
+
+
+# --- lifecycle -----------------------------------------------------------------
+
+
+def test_without_a_storage_directory_nothing_is_written(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    async def scenario():
+        current = CharacterCompanion(
+            character=CharacterProfile(id="mei", name="Mei", description="A researcher."),
+            llm=Foreground(),
+        )
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+
+    run(scenario())
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_flushing_saves_state_without_stopping_the_companion(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        await current.reply("hello", conversation_id="a")
+        (tmp_path / "engine" / "state.json").unlink()
+        current.flush()
+        saved = (tmp_path / "engine" / "state.json").is_file()
+        await current.reply("still there", conversation_id="a")
+        await current.close()
+        return saved, current.snapshot().trust
+
+    saved, trust = run(scenario())
+    assert saved is True
+    assert trust == pytest.approx(50.6)
+
+
+def test_a_closed_companion_refuses_further_turns(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        await current.close()
+        with pytest.raises(RuntimeError):
+            await current.reply("hello", conversation_id="a")
+
+    run(scenario())
+
+
+def test_retiring_lets_her_finish_her_sentence_and_nothing_more(tmp_path):
+    """A host replaces the companion when its settings are saved, which can be
+    while she is talking. Cutting her off there would end the host's turn with
+    a cancellation nobody asked for."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        worker = Worker(WARM)
+        current = companion(tmp_path, {"emotion": worker}, llm=llm, emotion_every=1)
+        talking = asyncio.ensure_future(current.reply("hello", conversation_id="a"))
+        await llm.started.wait()
+        waiting = asyncio.ensure_future(current.reply("and me", conversation_id="b"))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        current.retire()
+        llm.gate.set()
+        finished = await talking
+        # Its own error, so that a host can ask the successor instead.
+        with pytest.raises(CompanionClosed):
+            await waiting
+        for _ in range(50):
+            await asyncio.sleep(0)
+        await current.close()
+        return finished.text, len(llm.calls), worker.calls
+
+    assert run(scenario()) == ("Hello. How are you?", 1, 0)
+
+
+def test_a_retired_companion_has_saved_and_writes_no_more(tmp_path):
+    """A host replaces a companion from synchronous code, when its settings
+    change. The successor reads the stored state at once, and nothing the old
+    one still had under way may overwrite it."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(WARM, gate=gate)
+        retired = companion(tmp_path, {"emotion": worker}, emotion_every=1)
+        await retired.reply("thank you for last night", conversation_id="a")
+        await until(lambda: worker.calls)
+        retired.retire()
+
+        successor = companion(tmp_path)
+        await successor.reply("hello", conversation_id="a")
+        gate.set()
+        for _ in range(50):
+            await asyncio.sleep(0)
+        with pytest.raises(RuntimeError):
+            await retired.reply("still there?", conversation_id="a")
+        await retired.close()
+        await successor.close()
+        return companion(tmp_path).snapshot()
+
+    snapshot = run(scenario())
+    assert snapshot.trust == pytest.approx(50.6)
+    assert snapshot.emotion == "neutral"
+
+
+def test_a_companion_belongs_to_the_event_loop_of_its_first_turn(tmp_path):
+    current = companion(tmp_path)
+    assert current.usable_in_running_loop() is True
+
+    async def first():
+        await current.reply("hi", conversation_id="a")
+        return current.usable_in_running_loop()
+
+    async def later():
+        return current.usable_in_running_loop()
+
+    assert run(first()) is True
+    assert run(later()) is False
+
+
+def test_a_long_life_does_not_fill_the_memory(tmp_path):
+    """Measured over 800 turns before this: 28 KiB kept per turn, in the
+    records of finished background work, each with a copy of the conversation,
+    in the ledger of events, in the coordinator's decisions and in timers."""
+
+    async def scenario():
+        workers = {
+            "emotion": Worker(NEUTRAL),
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}),
+        }
+        current = companion(
+            tmp_path, workers, emotion_every=1, memory_every=1, records_kept=8
+        )
+        for number in range(30):
+            await current.reply(f"line {number}", conversation_id="a")
+            await current.settle()
+        loop = asyncio.get_running_loop()
+        kept = {
+            "tasks": current._tasks.tracked_tasks,
+            "handles": len(current._background.handles()),
+            "decisions": current._commits.remembered_decisions,
+            "ledger": len(current.runtime.memory_manager.ledger.list_for_character("mei:a")),
+            "timers": sum(1 for handle in loop._scheduled if not handle.cancelled()),
+        }
+        await current.close()
+        return kept
+
+    kept = run(scenario())
+    assert kept["tasks"] <= 8
+    assert kept["handles"] <= 8
+    assert kept["decisions"] <= 8
+    assert kept["ledger"] <= 8
+    assert kept["timers"] <= 2
+
+
+def test_the_event_loop_can_shut_down_without_close(tmp_path):
+    import threading
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(NEUTRAL, gate=gate)
+        current = companion(tmp_path, {"emotion": worker}, emotion_every=1)
+        await current.reply("hello", conversation_id="a")
+        await until(lambda: worker.calls)
+
+    thread = threading.Thread(target=lambda: asyncio.run(scenario()), daemon=True)
+    thread.start()
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_a_memory_the_background_wrote_with_a_line_break_is_shown_and_taken_back_as_one_line(tmp_path):
+    """Only the host's own edits went through the one-line form; a memory the
+    background extraction wrote with a line break came back as two lines and
+    the page could not take it back."""
+    from ai_character_engine.memory.models import MemoryRecord
+
+    async def scenario():
+        current = companion(tmp_path)
+        current._memory_store.add(
+            MemoryRecord(
+                character_id=current._scope("a"),
+                summary="The user has a cat\ncalled Bun",
+                importance=0.8,
+            )
+        )
+        shown = current.memories("a")
+        current.rewrite_memories("a", [], edited_from=shown)
+        left = current.memories("a")
+        await current.close()
+        return shown, left
+
+    assert run(scenario()) == (["The user has a cat called Bun"], [])
+
+
+def test_interrupting_an_older_turn_of_the_conversation_at_hand_leaves_the_newest_reply(tmp_path):
+    """Two replies of one conversation, both finished. A late interruption
+    of the first cannot mean the second: the first was heard whole before
+    the second began."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("second", conversation_id="a", turn_id="w2")
+        current.interrupt("Hel", conversation_id="a", turn_id="w1")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert sent.count("Hello. How are you?") == 2
+    assert not any("[Interrupted by user]" in content for content in sent)
+
+
+def test_interrupting_a_kept_conversation_touches_only_that_turns_reply(tmp_path):
+    """The newest message of a kept conversation may be a later turn's
+    record, cut short while she spoke. A late interruption of the reply
+    before it cuts that reply, wherever it is, and not the record."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        llm.gate.clear()
+        llm.started.clear()
+        cut = asyncio.ensure_future(current.reply("second", conversation_id="a", turn_id="w2"))
+        await llm.started.wait()
+        current.interrupt("Hel", conversation_id="a", turn_id="w2")
+        with pytest.raises(TurnInterrupted):
+            await cut
+        llm.gate.set()
+        await current.reply("elsewhere", conversation_id="b")
+        current.interrupt("Hello.", conversation_id="a", turn_id="w1")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert sent.index("Hello. [Interrupted by user]") < sent.index("second")
+    assert sent.index("Hel [Interrupted by user]") > sent.index("second")
+    assert "Hello. How are you?" not in sent
+
+
+def test_a_hosts_own_model_call_waits_for_her_reply_like_her_background_work(tmp_path):
+    """A host has model calls of its own beside hers, on the same local model:
+    a memory of its own to tidy, a translation. Made through the companion,
+    such a call gives way to the reply once and takes its turn with the
+    background workers instead of slowing the reply down."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        started: list[str] = []
+
+        async def tidy():
+            started.append("tidy" if not llm.started.is_set() or llm.gate.is_set() else "tidy-during-reply")
+            return "tidied"
+
+        talking = asyncio.ensure_future(current.reply("hello", conversation_id="a"))
+        await llm.started.wait()
+        aside = asyncio.ensure_future(current.aside(tidy))
+        for _ in range(20):
+            await asyncio.sleep(0)
+        during = list(started)
+        llm.gate.set()
+        await talking
+        result = await aside
+        await current.close()
+        return during, result, started
+
+    assert run(scenario()) == ([], "tidied", ["tidy"])
+
+
+def test_a_hosts_own_model_call_is_refused_once_she_is_closed(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        await current.close()
+
+        async def tidy():
+            return "tidied"
+
+        with pytest.raises(CompanionClosed):
+            await current.aside(tidy)
+
+    run(scenario())
+
+
+def test_a_reply_the_host_did_not_use_is_taken_back_with_the_words_it_answered(tmp_path):
+    """A host may throw a reply away, one that repeats what she just said, and
+    ask the same question again with a hint. Kept, the exchange would stand
+    twice in the conversation, once with a reply nobody heard."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("tell me more", conversation_id="a", turn_id="w2")
+        current.take_back("a")
+        await current.reply("tell me more, differently", conversation_id="a", turn_id="w3")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "tell me more" not in sent
+    assert sent.count("Hello. How are you?") == 1
+    assert sent.index("first") < sent.index("tell me more, differently")
+
+
+def test_taking_back_touches_only_the_newest_exchange_and_only_once(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("second", conversation_id="a", turn_id="w2")
+        current.take_back("a")
+        current.take_back("a")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "first" in sent
+    assert "second" not in sent
+    assert sent.count("Hello. How are you?") == 1
+
+
+def test_a_kept_conversation_can_have_its_newest_exchange_taken_back(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("second", conversation_id="a", turn_id="w2")
+        await current.reply("elsewhere", conversation_id="b")
+        current.take_back("a")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return [message.content for message in llm.calls[-1]]
+
+    sent = run(scenario())
+    assert "first" in sent
+    assert "second" not in sent
+
+
+# --- what she keeps in mind ----------------------------------------------------
+
+
+def _goal(character_id, objective, urgency, *, updated_at=None):
+    from ai_character_engine.goals.models import (
+        GoalEvidenceRef,
+        GoalHorizon,
+        GoalRecord,
+        MotivationKind,
+        MotivationSignal,
+    )
+
+    record = GoalRecord(
+        character_id,
+        objective,
+        GoalHorizon.SHORT_TERM,
+        urgency,
+        0.9,
+        (
+            MotivationSignal(
+                kind=MotivationKind.EXPLICIT_REQUEST,
+                strength=0.9,
+                evidence=GoalEvidenceRef(source_type="event", source_id="e1", excerpt="please"),
+                rationale="The user asked",
+            ),
+        ),
+    )
+    if updated_at is not None:
+        from dataclasses import replace
+
+        record = replace(record, updated_at=updated_at)
+    return record
+
+
+def _goal_lines(messages):
+    return [
+        line
+        for message in messages
+        for line in message.content.splitlines()
+        if line.startswith("- goal: ")
+    ]
+
+
+def test_only_the_few_goals_that_matter_most_are_in_her_mind(tmp_path):
+    """Every active goal went into the prompt, bounded by tokens alone. A 9B
+    model's goals are many and uneven; a few, the most pressing first, keep
+    her focused and the prompt short."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        store = current.runtime.goal_manager.store
+        for number, urgency in enumerate((0.2, 0.9, 0.5, 0.7, 0.3)):
+            store.add_goal(_goal("mei", f"Goal number {number}", urgency))
+        await current.reply("hello", conversation_id="a")
+        shown = current.snapshot().goals
+        await current.close()
+        return _goal_lines(llm.calls[-1]), shown
+
+    lines, shown = run(scenario())
+    assert lines == ["- goal: Goal number 1", "- goal: Goal number 3", "- goal: Goal number 2"]
+    assert list(shown) == ["Goal number 1", "Goal number 3", "Goal number 2"]
+
+
+def test_how_many_goals_she_keeps_in_mind_is_a_setting(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, goals_shown=1)
+        store = current.runtime.goal_manager.store
+        for number, urgency in enumerate((0.2, 0.9)):
+            store.add_goal(_goal("mei", f"Goal number {number}", urgency))
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        return _goal_lines(llm.calls[-1])
+
+    assert run(scenario()) == ["- goal: Goal number 1"]
+
+
+def test_a_goal_untouched_for_too_long_leaves_the_prompt_not_only_the_snapshot(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        store = current.runtime.goal_manager.store
+        store.add_goal(_goal("mei", "Fresh goal", 0.5))
+        store.add_goal(
+            _goal("mei", "Stale goal", 0.9, updated_at=datetime.now(UTC) - timedelta(days=30))
+        )
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        return _goal_lines(llm.calls[-1])
+
+    assert run(scenario()) == ["- goal: Fresh goal"]
+
+
+def test_how_many_thoughts_she_keeps_in_mind_is_a_setting(tmp_path):
+    from ai_character_engine.long_term_cognition.models import ReflectionRecord
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, thoughts_shown=1)
+        store = current.runtime.long_term_cognition.store
+        for number in range(3):
+            store.add_reflection(
+                ReflectionRecord("mei", f"Thought number {number}", 0.9)
+            )
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        return [
+            line
+            for message in llm.calls[-1]
+            for line in message.content.splitlines()
+            if line.startswith("- thought: ")
+        ]
+
+    assert run(scenario()) == ["- thought: Thought number 2"]
+
+
+# --- what a sixth review found ---------------------------------------------------
+
+
+def test_taking_back_after_a_turn_that_failed_leaves_the_exchange_that_was_heard(tmp_path):
+    """A turn that ends in an error records nothing; the newest reply is still
+    the one before it, which the user heard whole. A host that asks again
+    after the error must not lose that exchange."""
+    from ai_character_engine.host.bridge import HostBridgeError
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        llm.parts = ("",)
+        with pytest.raises(HostBridgeError):
+            await current.reply("second", conversation_id="a", turn_id="w2")
+        taken = current.take_back("a")
+        llm.parts = ("Hello. ", "How are you?")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return taken, [message.content for message in llm.calls[-1]]
+
+    taken, sent = run(scenario())
+    assert taken is False
+    assert "first" in sent
+    assert sent.count("Hello. How are you?") == 1
+
+
+def test_taking_back_after_a_remark_kept_out_of_memory_takes_nothing(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("(a remark of her own)", conversation_id="a", skip_memory=True)
+        taken = current.take_back("a")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return taken, [message.content for message in llm.calls[-1]]
+
+    taken, sent = run(scenario())
+    assert taken is False
+    assert "first" in sent
+
+
+def test_taking_back_a_remark_she_made_on_her_own_leaves_the_exchange_before_it(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("(say something)", conversation_id="a", proactive=True, turn_id="w2")
+        taken = current.take_back("a")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return taken, [message.content for message in llm.calls[-1]]
+
+    taken, sent = run(scenario())
+    assert taken is True
+    assert "first" in sent
+    assert sent.count("Hello. How are you?") == 1
+
+
+def test_taking_back_leaves_no_note_behind_for_the_removed_messages(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        await current.reply("second", conversation_id="a", turn_id="w2")
+        current.take_back("a")
+        active_ok = all(
+            any(anchor is message for message in current.runtime.history)
+            for anchor, _ in current.runtime.context_notes
+        )
+        await current.reply("third", conversation_id="a", turn_id="w3")
+        await current.reply("elsewhere", conversation_id="b")
+        current.take_back("a")
+        history, notes = current._kept["a"]
+        kept_ok = all(any(anchor is message for message in history) for anchor, _ in notes)
+        await current.close()
+        return active_ok, kept_ok
+
+    assert run(scenario()) == (True, True)
+
+
+def test_taking_back_waits_for_no_turn_and_refuses_while_one_runs(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        llm.gate.clear()
+        llm.started.clear()
+        talking = asyncio.ensure_future(current.reply("second", conversation_id="a", turn_id="w2"))
+        await llm.started.wait()
+        taken = current.take_back("a")
+        llm.gate.set()
+        await talking
+        await current.close()
+        return taken
+
+    assert run(scenario()) is False
+
+
+def test_a_reply_the_host_replaced_can_still_be_taken_back_or_cut(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="w1")
+        current.replace_reply("Hello, how are you?")
+        taken = current.take_back("a")
+        await current.reply("go on", conversation_id="a")
+        await current.close()
+        return taken, [message.content for message in llm.calls[-1]]
+
+    taken, sent = run(scenario())
+    assert taken is True
+    assert "first" not in sent
+
+
+def test_a_hosts_own_call_made_during_the_reply_still_goes_after_her_workers(tmp_path):
+    async def scenario():
+        Worker.reset()
+        workers = {
+            "emotion": Worker(WARM, name="emotion"),
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, name="memory"),
+        }
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, workers, llm=llm, emotion_every=1, memory_every=1)
+
+        async def tidy():
+            Worker.order.append("aside")
+            return "tidied"
+
+        talking = asyncio.ensure_future(current.reply("hello", conversation_id="a"))
+        await llm.started.wait()
+        aside = asyncio.ensure_future(current.aside(tidy))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        llm.gate.set()
+        await talking
+        await aside
+        await current.settle()
+        await current.close()
+        return list(Worker.order)
+
+    assert run(scenario()) == ["emotion", "memory", "aside"]
+
+
+def test_a_hosts_own_call_still_waiting_when_she_retires_is_refused(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        made = []
+
+        async def tidy():
+            made.append(1)
+            return "tidied"
+
+        talking = asyncio.ensure_future(current.reply("hello", conversation_id="a"))
+        await llm.started.wait()
+        aside = asyncio.ensure_future(current.aside(tidy))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        current.retire()
+        llm.gate.set()
+        await talking
+        with pytest.raises(CompanionClosed):
+            await aside
+        await current.close()
+        return made
+
+    assert run(scenario()) == []
+
+
+def test_a_goal_pushed_out_by_a_more_pressing_one_is_not_said_to_be_given_up(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, goals_shown=2)
+        store = current.runtime.goal_manager.store
+        store.add_goal(_goal("mei", "Goal A", 0.5))
+        store.add_goal(_goal("mei", "Goal B", 0.4))
+        await current.reply("hello", conversation_id="a")
+        store.add_goal(_goal("mei", "Goal C", 0.9))
+        await current.reply("again", conversation_id="a")
+        await current.close()
+        return [
+            line
+            for message in llm.calls[-1]
+            for line in message.content.splitlines()
+            if "goal" in line
+        ]
+
+    lines = run(scenario())
+    assert "- goal: Goal C" in lines
+    assert not any(line.startswith("- no longer a goal:") for line in lines)

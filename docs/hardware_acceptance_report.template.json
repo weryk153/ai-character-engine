@@ -1,0 +1,26 @@
+{
+  "status": "pending_human_confirmation",
+  "expected_turns": 5,
+  "recorded_turns": 0,
+  "successful_turns": 0,
+  "success_rate": 0.0,
+  "microphone_turns": 0,
+  "complete_metric_turns": 0,
+  "tool_calls": 0,
+  "successful_tool_results": 0,
+  "failed_tool_results": 0,
+  "automatic_checks_passed": false,
+  "human_confirmation": {
+    "live_microphone": null,
+    "heard_speaker_audio": null,
+    "no_severe_audio_issue": null
+  },
+  "latency_ms": {
+    "stt_latency_ms": {"n": 0, "p50": null, "p95": null},
+    "llm_ttft_ms": {"n": 0, "p50": null, "p95": null},
+    "llm_total_latency_ms": {"n": 0, "p50": null, "p95": null},
+    "tts_ttfa_ms": {"n": 0, "p50": null, "p95": null},
+    "end_to_end_latency_ms": {"n": 0, "p50": null, "p95": null}
+  },
+  "full_barge_in_supported": false
+}

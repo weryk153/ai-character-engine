@@ -1,0 +1,40 @@
+{
+  "model_sha256": "b5fffb730d99b27ffdd64f6c1f039f1b6c5c4cfaa502d474a90374b226b8b48e",
+  "expression_map": {
+    "aa": "A",
+    "ih": "I",
+    "ou": "U",
+    "ee": "E",
+    "oh": "O",
+    "blink": "Blink",
+    "blinkLeft": "Blink_L",
+    "blinkRight": "Blink_R",
+    "angry": "Angry",
+    "happy": "Joy",
+    "relaxed": "Fun",
+    "sad": "Sorrow",
+    "surprised": "Surprised",
+    "neutral": "Neutral"
+  },
+  "animation_map": {},
+  "external_animations": [],
+  "required_expressions": [
+    "aa",
+    "blink"
+  ],
+  "required_bones": [
+    "head"
+  ],
+  "head_bone": "head",
+  "mouth_gain": 1.0,
+  "expression_gain": 1.0,
+  "blink_gain": 1.0,
+  "gaze_yaw_scale": 1.0,
+  "gaze_pitch_scale": 1.0,
+  "max_gaze_yaw_deg": 35.0,
+  "max_gaze_pitch_deg": 25.0,
+  "head_motion_scale": 1.0,
+  "max_head_yaw_delta_deg": 10.0,
+  "max_head_pitch_delta_deg": 8.0,
+  "max_head_roll_delta_deg": 5.0
+}

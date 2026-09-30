@@ -1,0 +1,34 @@
+{
+  "engine_version": "0.45.0",
+  "expected_payload": {
+    "_schema_version": 1,
+    "base_revision": 0,
+    "character_id": "char-a",
+    "claim": null,
+    "confidence": 0.9,
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "evidence": [],
+    "id": "ref-v045-1",
+    "insight": "The user may prefer concise answers.",
+    "metadata": {},
+    "record_type": "reflection",
+    "source_proposal_id": null,
+    "source_task_id": null,
+    "status": "provisional"
+  },
+  "fixture_id": "v045-reflection",
+  "fixture_schema_version": 1,
+  "metadata": {
+    "purpose": "sealed v0.45 legacy replay fixture"
+  },
+  "payload": {
+    "character_id": "char-a",
+    "confidence": 0.9,
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "id": "ref-v045-1",
+    "insight": "The user may prefer concise answers.",
+    "record_type": "reflection"
+  },
+  "source_schema_version": 0,
+  "surface": "reflection"
+}

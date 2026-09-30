@@ -1,0 +1,31 @@
+{
+  "engine_version": "0.45.0",
+  "expected_payload": {
+    "_schema_version": 1,
+    "character_id": "char-a",
+    "closed_at": null,
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "expires_at": null,
+    "id": "session-v045-1",
+    "last_activity": "2026-09-01T12:00:00+00:00",
+    "metadata": {},
+    "runtime_snapshot": null,
+    "status": "active",
+    "user_id": "user-a",
+    "version": 1
+  },
+  "fixture_id": "v045-session",
+  "fixture_schema_version": 1,
+  "metadata": {
+    "purpose": "sealed v0.45 legacy replay fixture"
+  },
+  "payload": {
+    "character_id": "char-a",
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "id": "session-v045-1",
+    "last_activity": "2026-09-01T12:00:00+00:00",
+    "user_id": "user-a"
+  },
+  "source_schema_version": 0,
+  "surface": "session"
+}

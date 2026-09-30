@@ -1,0 +1,2 @@
+{"case_id":"coffee","character_id":"demo","query":"What drink does the user like?","relevant_memory_ids":["coffee"]}
+{"case_id":"movie","character_id":"demo","query":"Which Kurosawa movie does the user love?","relevant_memory_ids":["seven-samurai"]}

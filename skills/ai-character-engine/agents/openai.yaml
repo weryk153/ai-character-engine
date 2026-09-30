@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Character Engine"
+  short_description: "Install and integrate AI Character Engine: models, memory, tools and character hosts"
+  default_prompt: "Use $ai-character-engine to connect an AI character to the current project."

@@ -1,0 +1,43 @@
+{
+  "engine_version": "0.45.0",
+  "expected_payload": {
+    "_schema_version": 1,
+    "character_id": "char-a",
+    "claim": {
+      "object": "concise",
+      "predicate": "prefers_response_style",
+      "subject": "user"
+    },
+    "confidence": 0.88,
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "evidence": [],
+    "id": "belief-v045-1",
+    "metadata": {},
+    "record_type": "belief",
+    "source_reflection_ids": [],
+    "status": "active",
+    "support_count": 0,
+    "updated_at": "2026-09-01T12:00:00+00:00"
+  },
+  "fixture_id": "v045-belief",
+  "fixture_schema_version": 1,
+  "metadata": {
+    "purpose": "sealed v0.45 legacy replay fixture"
+  },
+  "payload": {
+    "character_id": "char-a",
+    "claim": {
+      "object": "concise",
+      "predicate": "prefers_response_style",
+      "subject": "user"
+    },
+    "confidence": 0.88,
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "id": "belief-v045-1",
+    "record_type": "belief",
+    "support_count": 0,
+    "updated_at": "2026-09-01T12:00:00+00:00"
+  },
+  "source_schema_version": 0,
+  "surface": "belief"
+}

@@ -1,0 +1,4 @@
+include README.md LICENSE
+prune tests
+prune examples
+global-exclude *.pyc *.pyo .DS_Store

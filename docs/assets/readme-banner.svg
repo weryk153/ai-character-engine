@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="250" viewBox="0 0 1600 250" role="img" aria-labelledby="title desc">
+  <title id="title">AI Character Engine</title>
+  <desc id="desc">A Python SDK for characters with memory, goals and tools.</desc>
+  <defs>
+    <linearGradient id="background" x2="1" y2="0"><stop stop-color="#faf0e0"/><stop offset="1" stop-color="#ffdeed"/></linearGradient>
+    <linearGradient id="orb" x2="1" y2="1"><stop stop-color="#9783bd"/><stop offset="1" stop-color="#e99cb8"/></linearGradient>
+  </defs>
+  <path fill="url(#background)" d="M0 0h1600v250H0z"/>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="78" y="119" font-size="70" font-weight="700" letter-spacing="-2" fill="#17171d">AI Character Engine</text>
+    <text x="82" y="172" font-size="31" font-weight="500" fill="#65616b">A Python SDK for characters with memory, goals and tools.</text>
+  </g>
+  <g transform="translate(1398 125)" fill="none">
+    <circle r="82" stroke="#c798b6" stroke-width="1.5" opacity=".5"/>
+    <circle r="59" stroke="#b4a0c5" stroke-width="1.5" opacity=".55"/>
+    <path d="M0 0L0-82M0 0L78-25M0 0L48 66M0 0L-48 66M0 0L-78-25" stroke="#b4a0c5" stroke-width="2"/>
+    <circle r="29" fill="url(#orb)"/>
+    <circle r="13" fill="#fff" opacity=".85"/>
+    <g fill="#fff" stroke="#b89bbd" stroke-width="2"><circle cy="-82" r="10"/><circle cx="78" cy="-25" r="10"/><circle cx="48" cy="66" r="10"/><circle cx="-48" cy="66" r="10"/><circle cx="-78" cy="-25" r="10"/></g>
+  </g>
+</svg>

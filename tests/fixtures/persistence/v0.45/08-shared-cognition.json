@@ -1,0 +1,33 @@
+{
+  "engine_version": "0.45.0",
+  "expected_payload": {
+    "_schema_version": 1,
+    "audience_character_ids": [],
+    "content": "It is raining.",
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "id": "shared-v045-1",
+    "kind": "observation",
+    "metadata": {},
+    "owner_character_id": "char-a",
+    "record_type": "shared_cognition",
+    "source_id": null,
+    "source_type": "host",
+    "visibility": "public"
+  },
+  "fixture_id": "v045-shared_cognition",
+  "fixture_schema_version": 1,
+  "metadata": {
+    "purpose": "sealed v0.45 legacy replay fixture"
+  },
+  "payload": {
+    "content": "It is raining.",
+    "created_at": "2026-09-01T12:00:00+00:00",
+    "id": "shared-v045-1",
+    "kind": "observation",
+    "owner_character_id": "char-a",
+    "record_type": "shared_cognition",
+    "visibility": "public"
+  },
+  "source_schema_version": 0,
+  "surface": "shared_cognition"
+}

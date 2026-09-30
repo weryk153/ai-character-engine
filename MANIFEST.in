@@ -1,0 +1,6 @@
+include README.md README.*.md LICENSE
+prune tests
+prune examples
+global-exclude *.pyc *.pyo .DS_Store
+recursive-include docs/assets *.svg
+recursive-include skills/ai-character-engine *.md *.yaml

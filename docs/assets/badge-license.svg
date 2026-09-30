@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="152" height="28" viewBox="0 0 152 28" role="img" aria-label="license: Apache-2.0">
+  <title>license: Apache-2.0</title>
+  <clipPath id="clip"><rect width="152" height="28" rx="4"/></clipPath>
+  <g clip-path="url(#clip)"><path fill="#55565a" d="M0 0h59v28H0z"/><path fill="#3a8b68" d="M59 0h93v28H59z"/></g>
+  <g fill="#fff" font-family="Verdana, Arial, sans-serif" font-size="12" text-anchor="middle"><text x="29.5" y="18.5">license</text><text x="105.5" y="18.5">Apache-2.0</text></g>
+</svg>

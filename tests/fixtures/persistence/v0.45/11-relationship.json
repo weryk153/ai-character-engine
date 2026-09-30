@@ -1,0 +1,24 @@
+{
+  "engine_version": "0.45.0",
+  "expected_payload": {
+    "_schema_version": 1,
+    "character_id": "char-a",
+    "favorability": 50.0,
+    "relationship_stage": "stranger",
+    "trust": 50.0,
+    "updated_at": "2026-09-01T12:00:00+00:00",
+    "user_id": "user-a"
+  },
+  "fixture_id": "v045-relationship",
+  "fixture_schema_version": 1,
+  "metadata": {
+    "purpose": "sealed v0.45 legacy replay fixture"
+  },
+  "payload": {
+    "character_id": "char-a",
+    "updated_at": "2026-09-01T12:00:00+00:00",
+    "user_id": "user-a"
+  },
+  "source_schema_version": 0,
+  "surface": "relationship"
+}

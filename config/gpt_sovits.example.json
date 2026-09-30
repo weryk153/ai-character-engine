@@ -1,0 +1,7 @@
+{
+  "api_url": "http://127.0.0.1:9880/tts",
+  "ref_audio_path": "/absolute/path/to/reference.wav",
+  "prompt_lang": "ja",
+  "prompt_text": "Exact transcript of your reference audio",
+  "text_lang": "zh"
+}

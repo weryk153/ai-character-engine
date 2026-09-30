@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="114" height="28" viewBox="0 0 114 28" role="img" aria-label="version: 1.0.0">
+  <title>version: 1.0.0</title>
+  <clipPath id="clip"><rect width="114" height="28" rx="4"/></clipPath>
+  <g clip-path="url(#clip)"><path fill="#55565a" d="M0 0h60v28H0z"/><path fill="#267cb7" d="M60 0h54v28H60z"/></g>
+  <g fill="#fff" font-family="Verdana, Arial, sans-serif" font-size="12" text-anchor="middle"><text x="30.0" y="18.5">version</text><text x="87.0" y="18.5">1.0.0</text></g>
+</svg>
