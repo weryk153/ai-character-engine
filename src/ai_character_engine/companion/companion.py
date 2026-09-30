@@ -166,6 +166,17 @@ class _Turn:
 
 
 _ANY = object()
+# How she is asked to speak up; not kept in the conversation.
+SPEAK_UP_INSTRUCTION = (
+    "Nobody has said anything for a while. Speak up on your own, in character, as if "
+    "the thought just came to you. You are not replying to anyone: do not answer the "
+    "user's last message again. Do one of these, whichever is most natural now: carry "
+    "on with something still open in the conversation, bring up something you want or "
+    "have been thinking about, or simply turn to the user. Say one thing only, in a "
+    "sentence or two, with at most one question, and nothing you have already said."
+)
+# What stays in the conversation before a remark she made on her own.
+REMARK_EVENT = "The user had been quiet for a while; you spoke up on your own."
 # After every worker: the workers are ranked by their place in _WORKERS.
 _HOST_RANK = 1_000
 
@@ -324,7 +335,7 @@ class CharacterCompanion:
         self._released = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._turns: list[_Turn] = []
-        self._unfinished: tuple[str | None, str] | None = None
+        self._unfinished: tuple[str | None, str, str | None] | None = None
         # Per conversation: the lines the host passed as what it knows.
         self._told: dict[str | None, frozenset[str]] = {}
         # Per conversation: the turn that made its newest reply, and the reply.
@@ -618,6 +629,77 @@ class CharacterCompanion:
         conversation keeps of it, for a host that shows replies normalized.
         ``turn_id`` is the host's own name for this turn, for interrupt().
         """
+        return await self._run(
+            text,
+            conversation_id=conversation_id,
+            frames=frames,
+            on_text_delta=on_text_delta,
+            skip_memory=skip_memory,
+            proactive=proactive,
+            notes=notes,
+            before_turn=before_turn,
+            remember_as=remember_as,
+            turn_id=turn_id,
+            remark=None,
+        )
+
+    async def speak_up(
+        self,
+        conversation_id: str | None = None,
+        *,
+        frames: tuple[VisionFrame, ...] = (),
+        on_text_delta: Callable[[str], Awaitable[None] | None] | None = None,
+        notes: Sequence[str] = (),
+        before_turn: Callable[[], None] | None = None,
+        remember_as: Callable[[str], str] | None = None,
+        turn_id: Any = None,
+        keep: bool = True,
+    ) -> CharacterRunResult:
+        """She speaks up on her own; the host decides when (the user has been
+        quiet, a timer, an event).
+
+        What she says comes from her: what is still open in the conversation,
+        what she wants and what she has been thinking about, or simply turning
+        to the user. ``notes`` are what the host suggests for this remark only
+        (topics the user likes, news), in the form reply() takes them.
+
+        The instruction is not kept. What she said is, after a short event
+        saying she spoke up on her own, as the conversation's newest reply; cut
+        short, what was heard of it. ``keep=False`` keeps nothing, for a host
+        that filters what she says and keeps what was spoken itself with
+        remember_remark().
+        """
+        return await self._run(
+            SPEAK_UP_INSTRUCTION,
+            conversation_id=conversation_id,
+            frames=frames,
+            on_text_delta=on_text_delta,
+            skip_memory=True,
+            proactive=True,
+            notes=notes,
+            before_turn=before_turn,
+            remember_as=remember_as,
+            turn_id=turn_id,
+            remark="keep" if keep else "drop",
+        )
+
+    async def _run(
+        self,
+        text: str,
+        *,
+        conversation_id: str | None,
+        frames: tuple[VisionFrame, ...],
+        on_text_delta: Callable[[str], Awaitable[None] | None] | None,
+        skip_memory: bool,
+        proactive: bool,
+        notes: Sequence[str],
+        before_turn: Callable[[], None] | None,
+        remember_as: Callable[[str], str] | None,
+        turn_id: Any,
+        remark: str | None,
+    ) -> CharacterRunResult:
+        """One turn. ``remark`` is None for a reply, "keep" or "drop" for a
+        remark she made on her own (see speak_up)."""
         if self._closed:
             raise CompanionClosed("companion is closed")
         if self._loop is None:
@@ -634,7 +716,7 @@ class CharacterCompanion:
                     # Interrupted before she began to answer. It is still the
                     # conversation's last turn: the reply before it was heard.
                     self._last_turn[conversation_id] = next(self._serial)
-                    self._bridge.record_interrupted_turn(text, turn.heard)
+                    self._record_interrupted(conversation_id, text, turn.heard, remark)
                     raise TurnInterrupted("The reply was interrupted.")
                 self._unfinished = None
                 if before_turn is not None:
@@ -660,9 +742,9 @@ class CharacterCompanion:
                         if turn.heard is None:
                             # The host cancelled its own task. It may tell us
                             # later how much was heard; see interrupt().
-                            self._unfinished = (conversation_id, text)
+                            self._unfinished = (conversation_id, text, remark)
                             raise
-                        self._bridge.record_interrupted_turn(text, turn.heard)
+                        self._record_interrupted(conversation_id, text, turn.heard, remark)
                         self._save_state()
                         raise TurnInterrupted("The reply was interrupted.") from None
                     finally:
@@ -676,6 +758,9 @@ class CharacterCompanion:
                             self.runtime.history[-1],
                         )
                         self._newest_turn[conversation_id] = serial
+                    if remark == "keep":
+                        said = remember_as(result.text) if remember_as else result.text
+                        self._keep_remark(conversation_id, said, turn_id)
                     handles: tuple = ()
                     if self._background is not None and not skip_memory and not self._closed:
                         handles = await self._background.schedule_after_foreground(result)
@@ -727,27 +812,39 @@ class CharacterCompanion:
         makes it the conversation's newest reply (``take_back`` and ``interrupt``
         treat it like one). Waits for a reply under way.
         """
-        remark = remark.strip()
-        if not remark:
+        if not remark.strip():
             return
         async with self._turn_lock:
             if self._closed:
                 raise CompanionClosed("companion is closed")
             self._switch_to(conversation_id)
-            event = self.runtime.context_builder.event_to_message(
-                CharacterEvent(
-                    type="proactive_remark",
-                    source="host",
-                    content="The user had been quiet for a while; you spoke up on your own.",
-                )
-            )
-            reply = Message("assistant", remark)
-            self.runtime.history.extend([event, reply])
-            serial = next(self._serial)
-            self._last_turn[conversation_id] = serial
-            self._newest_turn[conversation_id] = serial
-            self._newest_reply[conversation_id] = (None, reply)
+            self._keep_remark(conversation_id, remark)
             self._save_state()
+
+    def _keep_remark(self, conversation_id: str | None, remark: str, turn_id: Any = None) -> None:
+        """Call with the turn lock held and the conversation at hand."""
+        remark = remark.strip()
+        if not remark:
+            return
+        event = self.runtime.context_builder.event_to_message(
+            CharacterEvent(type="proactive_remark", source="host", content=REMARK_EVENT)
+        )
+        reply = Message("assistant", remark)
+        self.runtime.history.extend([event, reply])
+        serial = next(self._serial)
+        self._last_turn[conversation_id] = serial
+        self._newest_turn[conversation_id] = serial
+        self._newest_reply[conversation_id] = (turn_id, reply)
+
+    def _record_interrupted(
+        self, conversation_id: str | None, text: str, heard: str, remark: str | None
+    ) -> None:
+        """What was heard of a turn cut short. A remark keeps what was heard of
+        it as hers; its instruction is never recorded as the user's words."""
+        if remark is None:
+            self._bridge.record_interrupted_turn(text, heard)
+        elif remark == "keep" and heard.strip():
+            self._keep_remark(conversation_id, f"{heard.strip()} [Interrupted by user]")
 
     def take_back(self, conversation_id: str | None = None) -> bool:
         """The host did not use the newest reply of the conversation.
@@ -850,14 +947,18 @@ class CharacterCompanion:
                 self._newest_reply.pop(self._active, None)
             return
         if self._unfinished is not None and meant(self._unfinished[0]):
-            conversation, text = self._unfinished
+            conversation, text, remark = self._unfinished
             self._unfinished = None
             if conversation == self._active:
-                self._bridge.record_interrupted_turn(text, heard_response)
+                self._record_interrupted(conversation, text, heard_response, remark)
         elif meant(self._active):
             newest = self._newest_reply.get(self._active)
             if turn_id is None or (newest and newest[0] == turn_id):
                 self._bridge.interrupt(heard_response)
+                # A remark she made on her own was kept by the companion, not by
+                # a turn of the bridge: cut that very message.
+                if newest and _cut(self.runtime.history, newest[1], heard_response):
+                    self._newest_reply.pop(self._active, None)
         self._save_state()
 
     def _cut_what_waited(self) -> None:

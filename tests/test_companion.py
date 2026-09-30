@@ -2377,3 +2377,127 @@ def test_an_empty_remark_is_not_kept(tmp_path):
 
     before, after = run(scenario())
     assert after == before
+
+
+# --- speaking up on her own --------------------------------------------------------
+
+
+def test_she_speaks_up_on_her_own_and_remembers_what_she_said(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("I am building a time machine", conversation_id="a")
+        result = await current.speak_up("a")
+        spoken_prompt = llm.calls[-1]
+        await current.reply("ok", conversation_id="a")
+        await current.close()
+        return result.text, spoken_prompt, llm.calls[-1]
+
+    text, spoken_prompt, after = run(scenario())
+    assert text == "Hello. How are you?"
+    # She was told to speak up, as the newest message, not as the user's words.
+    assert spoken_prompt[-1].role == "event"
+    assert "Speak up on your own" in spoken_prompt[-1].content
+    # What stays is what she said, after a short event; not the instruction.
+    contents = [message.content for message in after]
+    assert not any("Speak up on your own" in content for content in contents)
+    at = contents.index("Hello. How are you?", contents.index("I am building a time machine") + 2)
+    assert after[at].role == "assistant" and after[at - 1].role == "event"
+
+
+def test_speaking_up_brings_what_she_wants_to_mind(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        current.runtime.goal_manager.store.add_goal(_goal("mei", "Ask how the drawing went", 0.8))
+        await current.speak_up("a")
+        await current.close()
+        return "\n".join(message.content for message in llm.calls[-1])
+
+    assert "- goal: Ask how the drawing went" in run(scenario())
+
+
+def test_what_the_host_suggests_is_for_that_remark_only(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a", notes=["Topics the user likes: astronomy"])
+        during = "\n".join(message.content for message in llm.calls[-1])
+        await current.reply("hi", conversation_id="a")
+        after = "\n".join(message.content for message in llm.calls[-1])
+        await current.close()
+        return during, after
+
+    during, after = run(scenario())
+    assert "Topics the user likes: astronomy" in during
+    assert "Topics the user likes: astronomy" not in after
+
+
+def test_a_host_that_keeps_the_remark_itself_can_say_so(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hello", conversation_id="a")
+        before = [message.content for message in current.runtime.history]
+        await current.speak_up("a", keep=False)
+        after = [message.content for message in current.runtime.history]
+        await current.close()
+        return before, after
+
+    before, after = run(scenario())
+    assert after == before
+
+
+def test_a_remark_cut_short_keeps_what_was_heard_and_never_the_instruction(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        speaking = asyncio.ensure_future(current.speak_up("a", turn_id="p1"))
+        await llm.started.wait()
+        current.interrupt("Hello.", conversation_id="a", turn_id="p1")
+        with pytest.raises(TurnInterrupted):
+            await speaking
+        history = [(message.role, message.content) for message in current.runtime.history]
+        await current.close()
+        return history
+
+    history = run(scenario())
+    assert history[-1] == ("assistant", "Hello. [Interrupted by user]")
+    assert history[-2][0] == "event"
+    assert not any("Speak up on your own" in content for _, content in history)
+    assert not any(role == "user" for role, _ in history)
+
+
+def test_a_remark_the_host_cancelled_and_reported_afterwards_is_kept_as_hers(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        speaking = asyncio.ensure_future(current.speak_up("a"))
+        await llm.started.wait()
+        speaking.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await speaking
+        current.interrupt("Hello.", conversation_id="a")
+        history = [(message.role, message.content) for message in current.runtime.history]
+        await current.close()
+        return history
+
+    history = run(scenario())
+    assert history[-1] == ("assistant", "Hello. [Interrupted by user]")
+    assert not any(role == "user" for role, _ in history)
+
+
+def test_a_remark_interrupted_while_it_is_played_is_cut_to_what_was_heard(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hello", conversation_id="a")
+        await current.speak_up("a", turn_id="p1")
+        current.interrupt("Hello.", conversation_id="a", turn_id="p1")
+        history = [(message.role, message.content) for message in current.runtime.history]
+        await current.close()
+        return history
+
+    history = run(scenario())
+    assert history[-1] == ("assistant", "Hello. [Interrupted by user]")
+    assert history[1] == ("assistant", "Hello. How are you?")
