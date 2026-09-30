@@ -144,7 +144,7 @@ asyncio.run(main())
 ## 🔌 モデルと連携
 
 - **LLM**：OpenAI Responses と OpenAI 互換 Chat Completions。互換性のある LM Studio、Ollama、vLLM のエンドポイントや、自作 client を利用できます。[プロバイダー例](examples/README.md)。
-- **音声とアバター**：音声 extra、[VRM アダプター](packages/renderer-vrm/README.md)を必要に応じて追加。インストールだけではモデルのダウンロードやサービス起動は行いません。
+- **音声とアバター**：音声 extra や [VRM アダプター](packages/renderer-vrm/README.md) を必要に応じて追加。インストールだけではモデルのダウンロードやサービス起動は行いません。
 - **ローカル／リモート**：コアにクラウドサービスや API キーは必須ではありません。通信の有無は選択したプロバイダーとツールで決まります。
 
 ## 📂 サンプルとドキュメント

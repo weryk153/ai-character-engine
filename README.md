@@ -144,7 +144,7 @@ A host that talks to one character — a chat window, a voice application, a des
 ## 🔌 Models and integrations
 
 - **LLMs:** OpenAI Responses and OpenAI-compatible Chat Completions, including compatible LM Studio, Ollama and vLLM endpoints. You can also implement your own client. See [provider examples](examples/README.md).
-- **Voice and avatars:** Install audio extras, or the [VRM adapter](packages/renderer-vrm/README.md) as needed. Installing a package does not download models or start services.
+- **Voice and avatars:** Install audio extras or the [VRM adapter](packages/renderer-vrm/README.md) as needed. Installing a package does not download models or start services.
 - **Local or remote:** The core does not require a cloud service or API key. Local models can use local endpoints; your chosen providers and tools determine network use.
 
 ## 📂 Examples and docs

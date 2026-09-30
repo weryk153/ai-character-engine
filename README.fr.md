@@ -34,7 +34,7 @@ AI Character Engine permet de créer des compagnons IA, des PNJ et des assistant
 
 Le moteur gère conversations, mémoire à long terme, émotions, relations, réflexions, croyances et objectifs. Le modèle génère les réponses. Les données du personnage restent hors du modèle : vous pouvez les consulter, les corriger, les sauvegarder et les réutiliser avec un autre modèle.
 
-Commencez par le texte ou intégrez le moteur à un personnage de bureau, une interface vocale ou un jeu. Le cœur est indépendant d’un modèle ou d’un moteur de rendu particulier. L’adaptateur VRM est facultatifs. Compatible Linux, macOS et Windows avec Python 3.11–3.13.
+Commencez par le texte ou intégrez le moteur à un personnage de bureau, une interface vocale ou un jeu. Le cœur est indépendant d’un modèle ou d’un moteur de rendu particulier. L’adaptateur VRM est facultatif. Compatible Linux, macOS et Windows avec Python 3.11–3.13.
 
 ## ✨ Fonctionnalités
 

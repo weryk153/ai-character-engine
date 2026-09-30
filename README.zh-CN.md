@@ -30,68 +30,68 @@
 
 ## 专案简介
 
-AI Character Engine 是开发 AI 陪伴角色、游戏 NPC 和虚拟助理的 Python SDK。你可以设定角色的个性，让它记住互动、追踪未完成的事，并透过工具操作你的应用程序。
+AI Character Engine 是开发 AI 陪伴角色、游戏 NPC 和虚拟助手的 Python SDK。你可以设置角色的个性，让它记住交互、跟踪未完成的事，并通过工具操作你的应用程序。
 
-角色的资料由引擎管理：对话与长期记忆、情绪与关系状态、对经历的反思、累积的信念，以及正在进行的目标。模型负责生成回应；这些资料保存在模型之外，可以检查、修改和持久化。换一个模型时，也能继续使用原有的角色资料。
+角色的数据由引擎管理：对话与长期记忆、情绪与关系状态、对经历的反思、累积的信念，以及正在进行的目标。模型负责生成响应；这些数据保存在模型之外，可以检查、修改和持久化。换一个模型时，也能继续使用原有的角色数据。
 
-你可以先做纯文字聊天，也可以接到既有桌面角色、语音介面或游戏里。核心不绑定特定模型或渲染器；VRM adapter 可依需要安装。支援 Linux、macOS、Windows，Python 3.11–3.13。
+你可以先做纯文字聊天，也可以接到既有桌面角色、语音界面或游戏里。核心不绑定特定模型或渲染器；VRM adapter 可依需要安装。支持 Linux、macOS、Windows，Python 3.11–3.13。
 
 ## ✨ 功能亮点
 
 ### 🧠 记忆与角色状态
 
-- **长期记忆**：保存互动中值得留下的内容，检索与当前话题相关的记忆。支援记忆更正、合并与遗忘。
+- **长期记忆**：保存交互中值得留下的内容，检索与当前话题相关的记忆。支持记忆更正、合并与遗忘。
 - **反思与信念**：从过去的事件整理理解，保留支持它的证据。来源不足或互相矛盾的内容有各自的处理流程，不会因模型多说几次就变成事实。
 - **情绪与关系**：提供情绪、精力、信任、好感与关系阶段等状态，由你的政策决定如何随互动更新。
-- **Session 保存**：保存、还原对话与关系资料，让使用者下次回来接着聊。
+- **Session 保存**：保存、还原对话与关系数据，让用户下次回来接着聊。
 
 ### 🎯 目标与行动
 
-- **持续目标**：追踪角色正在做什么，保留动机与进行中、受阻、暂停、完成等状态。换了话题，目标仍可以留下。
-- **工具呼叫**：把查资料、读取游戏状态或执行应用程序操作注册成工具，交由模型在回合中使用。工具实作与权限由应用程序控制。
-- **主动互动**：Autonomy 宿主提供触发与排程机制，可依你设定的条件发起互动；需要配置允许的行动与执行时机。
+- **持续目标**：跟踪角色正在做什么，保留动机与进行中、受阻、暂停、完成等状态。换了话题，目标仍可以留下。
+- **工具调用**：把查数据、读取游戏状态或执行应用程序操作注册成工具，交由模型在回合中使用。工具实现与权限由应用程序控制。
+- **主动交互**：Autonomy 宿主提供触发与调度机制，可依你设置的条件发起交互；需要配置允许的行动与执行时机。
 
-### ⚡ 背景认知与多模型
+### ⚡ 后台认知与多模型
 
-- **边对话、边整理**：前景处理使用者的回合，背景执行摘要、反思等工作，搭配并发上限、超时与取消。
-- **模型分工**：对话、摘要、反思、视觉等认知角色可以共用一个模型，也可以分配到不同端点，设定 fallback。
+- **边对话、边整理**：前台处理用户的回合，后台执行摘要、反思等工作，搭配并发上限、超时与取消。
+- **模型分工**：对话、摘要、反思、视觉等认知角色可以共用一个模型，也可以分配到不同端点，配置 fallback。
 - **专家协作**：可选的规划者、专家与验证者流程，让指定任务交给不同角色分析，再收集结果。
 
 ### 🌍 多角色与世界互动
 
-- **各自的记忆与想法**：多个角色保有自己的状态与认知资料，透过明确讯息交流。
+- **各自的记忆与想法**：多个角色保有自己的状态与认知数据，通过明确消息交流。
 - **按角色接收观察**：世界事件依感知规则送给角色。例如只有看见门打开的 NPC 才收到这项观察；世界更新不会自动让所有角色都知道。
-- **接入你的世界**：世界状态、事件与观察有对应介面；游戏的移动、物理与渲染留在宿主。
+- **接入你的世界**：世界状态、事件与观察有对应接口；游戏的移动、物理与渲染留在宿主。
 
 ### 🎙️ 语音、视觉与虚拟角色
 
-- **即时输入**：接收文字及正规化的视觉、音讯等观察，交由 live runtime 协调。
-- **语音对话**：提供语音辨识、流式合成、播放与打断的介面和整合流程；使用前需配置 provider 与装置。
+- **实时输入**：接收文字及标准化的视觉、音频等观察，交由 live runtime 协调。
+- **语音对话**：提供语音识别、流式合成、播放与打断的接口和集成流程；使用前需配置 provider 与设备。
 - **表情与唇形**：输出表情、行为与唇形提示，让宿主映射到自己的角色模型。VRM adapter 可另外接入。
 
-另外提供事件追踪、持久化回放、认知评估、HTTP／SSE／WebSocket 服务介面，以及离线 SFT／LoRA 训练工具。这些都是可选模组；可以先跑一个文字角色，再逐步接上需要的部分。
+另外提供事件跟踪、持久化回放、认知评估、HTTP／SSE／WebSocket 服务接口，以及离线 SFT／LoRA 训练工具。这些都是可选模块；可以先跑一个文字角色，再逐步接上需要的部分。
 
 ## 🏗️ 架构
 
-`CharacterRuntime` 是单一角色的入口，负责组合上下文、呼叫模型与工具，再记录这一轮的结果。角色设定与当前状态、记忆、信念、目标分开储存，依各自的预算放入上下文。
+`CharacterRuntime` 是单一角色的入口，负责组合上下文、调用模型与工具，再记录这一轮的结果。角色设定与当前状态、记忆、信念、目标分开存储，依各自的预算放入上下文。
 
 ```mermaid
 flowchart TD
-    App["你的应用程序／游戏／角色介面"] <--> Runtime["CharacterRuntime"]
+    App["你的应用程序／游戏／角色界面"] <--> Runtime["CharacterRuntime"]
     Context["角色设定 · 状态 · 记忆 · 信念 · 目标"] --> Runtime
     Runtime <--> Models["模型与认知角色路由"]
     Runtime <--> Tools["应用程序工具"]
     Runtime --> Record["回合纪录与状态更新"]
     Record --> Context
     Runtime --> Snapshot["只读快照"]
-    Snapshot --> Workers["背景摘要 · 反思 · 认知工作"]
+    Snapshot --> Workers["后台摘要 · 反思 · 认知工作"]
     Workers --> Commit["提案检查与提交"]
     Commit --> Context
 ```
 
-背景 worker 使用快照工作，结果提交前会检查来源与版本，避免旧任务覆盖新的角色状态。模型、语音服务、renderer 都透过介面接入，角色资料的写入仍由 runtime 与提交流程协调。
+后台 worker 使用快照工作，结果提交前会检查来源与版本，避免旧任务覆盖新的角色状态。模型、语音服务、renderer 都通过接口接入，角色数据的写入仍由 runtime 与提交流程协调。
 
-[完整架构说明](docs/architecture.md)包含前景／背景资料流、多角色隔离、世界感知与扩充介面。
+[完整架构说明](docs/architecture.md)包含前台／后台数据流、多角色隔离、世界感知与扩展接口。
 
 ## 🚀 快速上手
 
@@ -109,7 +109,7 @@ python -m venv .venv
 python -m pip install .
 ```
 
-先启动一个本机 OpenAI 兼容模型服务，例如 LM Studio。把下方的 `your-loaded-model` 换成已载入的模型名称，网址则依服务设定调整。两次呼叫共用同一个角色，第二轮会收到前面的对话。
+先启动一个本地 OpenAI 兼容模型服务，例如 LM Studio。把下方的 `your-loaded-model` 换成已加载的模型名称，地址则依服务配置调整。两次调用共用同一个角色，第二轮会收到前面的对话。
 
 ```python
 import asyncio
@@ -143,20 +143,20 @@ asyncio.run(main())
 
 ## 🔌 模型与整合
 
-- **LLM**：OpenAI Responses 与 OpenAI 兼容 Chat Completions；可接 LM Studio、Ollama、vLLM 等兼容端点，也可实作自己的 client。见 [provider 示例](examples/README.md)。
-- **语音与 avatar**：依需要安装音讯 extra 或 [VRM adapter](packages/renderer-vrm/README.md)。包不会自动下载模型或启动服务。
-- **本机或远端**：核心不要求云端服务或 API key。本机模型可以走本机端点；外部服务与工具是否连网，由你的配置决定。
+- **LLM**：OpenAI Responses 与 OpenAI 兼容 Chat Completions；可接 LM Studio、Ollama、vLLM 等兼容端点，也可实现自己的 client。见 [provider 示例](examples/README.md)。
+- **语音与 avatar**：依需要安装音频 extra 或 [VRM adapter](packages/renderer-vrm/README.md)。包不会自动下载模型或启动服务。
+- **本地或远程**：核心不要求云端服务或 API key。本地模型可以走本地端点；外部服务与工具是否联网，由你的配置决定。
 
 ## 📂 示例与文件
 
 - [角色伙伴](examples/companion_chat.py)：一个会记得你、会改变、可以被打断的角色，接本地的 OpenAI 兼容端点。
-- [互动聊天](examples/basic_chat.py)／[工具呼叫](examples/tool_chat.py)：配置 `.env` 中的模型与凭证后执行。
-- [Session](examples/session_runtime.py)：使用暂存储存与离线 client 示范保存、还原。
-- [HTTP／SSE／WebSocket](examples/character_service.py)：接入网页或行动端的服务示例，预设使用离线 client；正式使用需配置模型与验证。
+- [交互式聊天](examples/basic_chat.py)／[工具调用](examples/tool_chat.py)：配置 `.env` 中的模型与凭证后运行。
+- [Session](examples/session_runtime.py)：使用临时存储与离线 client 示范保存、还原。
+- [HTTP／SSE／WebSocket](examples/character_service.py)：接入网页或移动端的服务示例，默认使用离线 client；正式使用需配置模型与验证。
 - [Autonomy](examples/autonomy_host.py)：角色触发与生命周期整合。
 - [记忆修正](tests/scenarios/memory_revision.py)、[反思与信念](tests/scenarios/reflection_long_term_cognition.py)、[目标](tests/scenarios/goal_motivation_runtime.py)、[世界感知](tests/scenarios/world_environment.py)：可执行的回归场景，展示认知机制的配置与预期结果。
 
-[API 参考](docs/api-reference.md) · [设定](docs/configuration.md) · [部署与维运](docs/operations.md) · [扩充开发](docs/extensions.md)
+[API 参考](docs/api-reference.md) · [配置](docs/configuration.md) · [部署与运维](docs/operations.md) · [扩展开发](docs/extensions.md)
 
 ## 开发与授权
 

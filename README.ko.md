@@ -144,7 +144,7 @@ asyncio.run(main())
 ## 🔌 모델과 연동
 
 - **LLM**: OpenAI Responses와 OpenAI 호환 Chat Completions. 호환되는 LM Studio, Ollama, vLLM 엔드포인트 또는 직접 구현한 client를 사용할 수 있습니다. [프로바이더 예제](examples/README.md).
-- **음성과 아바타**: 음성 extra, [VRM 어댑터](packages/renderer-vrm/README.md)를 필요에 따라 설치합니다. 설치만으로 모델을 다운로드하거나 서비스를 시작하지는 않습니다.
+- **음성과 아바타**: 음성 extra나 [VRM 어댑터](packages/renderer-vrm/README.md)를 필요에 따라 설치합니다. 설치만으로 모델을 다운로드하거나 서비스를 시작하지는 않습니다.
 - **로컬 또는 원격**: 코어에 클라우드 서비스나 API 키는 필수가 아닙니다. 네트워크 사용은 선택한 프로바이더와 도구에 따라 달라집니다.
 
 ## 📂 예제와 문서

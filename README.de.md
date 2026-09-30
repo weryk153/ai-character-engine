@@ -144,7 +144,7 @@ Ein Host, der mit einer einzigen Figur spricht – ein Chatfenster, eine Spracha
 ## 🔌 Modelle und Integrationen
 
 - **LLM:** OpenAI Responses und OpenAI-kompatible Chat Completions, darunter kompatible Endpunkte von LM Studio, Ollama und vLLM. Eigene Clients sind ebenfalls möglich. [Provider-Beispiele](examples/README.md).
-- **Sprache und Avatare:** Audio-Extras, und [VRM-Adapter](packages/renderer-vrm/README.md) nach Bedarf. Paketinstallation lädt keine Modelle herunter und startet keine Dienste.
+- **Sprache und Avatare:** Audio-Extras und [VRM-Adapter](packages/renderer-vrm/README.md) nach Bedarf. Paketinstallation lädt keine Modelle herunter und startet keine Dienste.
 - **Lokal oder entfernt:** Der Kern verlangt weder Cloud noch API-Schlüssel. Anbieter und Werkzeuge bestimmen die Netzwerknutzung.
 
 ## 📂 Beispiele und Dokumentation
