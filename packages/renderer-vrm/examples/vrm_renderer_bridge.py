@@ -1,9 +1,16 @@
-"""Offline renderer bridge integration using the checked-in VRM manifest fixture."""
+"""Compile engine avatar cues into renderer packets for a VRM model.
+
+    python vrm_renderer_bridge.py            # a model with the standard VRM 1.0 vocabulary
+    python vrm_renderer_bridge.py model.vrm  # your own VRM 0.x or 1.0 model
+
+No model file ships with the engine; bring your own.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 from ai_character_engine_vrm import (
@@ -11,15 +18,49 @@ from ai_character_engine_vrm import (
     VRMCalibrationProfile,
     VRMModelManifest,
     VRMRendererBridge,
+    inspect_vrm_path,
 )
 from ai_character_engine.live import LiveEventType, LiveRuntimeEvent
 
-ROOT = Path(__file__).resolve().parent
+# The preset expressions and humanoid bones of the VRM 1.0 specification.
+STANDARD_EXPRESSIONS = (
+    "aa", "ih", "ou", "ee", "oh", "blink", "blinkLeft", "blinkRight",
+    "happy", "angry", "sad", "relaxed", "surprised", "neutral",
+)
+STANDARD_BONES = (
+    "hips", "spine", "chest", "upperChest", "neck", "head", "leftEye", "rightEye",
+    *(
+        f"{side}{part}"
+        for side in ("left", "right")
+        for part in (
+            "Shoulder", "UpperArm", "LowerArm", "Hand", "UpperLeg", "LowerLeg", "Foot", "Toes",
+            "ThumbMetacarpal", "ThumbProximal", "ThumbDistal",
+            *(f"{finger}{joint}" for finger in ("Index", "Middle", "Ring", "Little")
+              for joint in ("Proximal", "Intermediate", "Distal")),
+        )
+    ),
+)
+
+
+def standard_manifest() -> VRMModelManifest:
+    return VRMModelManifest(
+        model_name="Standard VRM 1.0",
+        model_version=None,
+        spec_version="1.0",
+        generator=None,
+        sha256="0" * 64,
+        expressions=STANDARD_EXPRESSIONS,
+        custom_expressions=(),
+        humanoid_bones=STANDARD_BONES,
+        animation_names=(),
+        extensions=("VRMC_vrm",),
+        look_at_type="bone",
+    )
 
 
 async def main() -> None:
-    manifest = VRMModelManifest.load(ROOT / "vroid_base_vrm_manifest.json")
-    profile = VRMCalibrationProfile.load(ROOT / "vroid_base_vrm_calibration.json")
+    manifest = inspect_vrm_path(Path(sys.argv[1])) if len(sys.argv) > 1 else standard_manifest()
+    profile = VRMCalibrationProfile.for_manifest(manifest)
     transport = RecordingRendererTransport()
     bridge = VRMRendererBridge(manifest, profile, transport=transport)
 
