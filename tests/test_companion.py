@@ -2384,7 +2384,7 @@ def test_an_empty_remark_is_not_kept(tmp_path):
 
 def test_she_speaks_up_on_her_own_and_remembers_what_she_said(tmp_path):
     async def scenario():
-        llm = Foreground()
+        llm = Scripted("Hello. How are you?", "Mind the load on Amadeus.", "Good.")
         current = companion(tmp_path, llm=llm)
         await current.reply("I am building a time machine", conversation_id="a")
         result = await current.speak_up("a")
@@ -2394,14 +2394,14 @@ def test_she_speaks_up_on_her_own_and_remembers_what_she_said(tmp_path):
         return result.text, spoken_prompt, llm.calls[-1]
 
     text, spoken_prompt, after = run(scenario())
-    assert text == "Hello. How are you?"
+    assert text == "Mind the load on Amadeus."
     # She was told to speak up, as the newest message, not as the user's words.
     assert spoken_prompt[-1].role == "event"
     assert "Speak up on your own" in spoken_prompt[-1].content
     # What stays is what she said, after a short event; not the instruction.
     contents = [message.content for message in after]
     assert not any("Speak up on your own" in content for content in contents)
-    at = contents.index("Hello. How are you?", contents.index("I am building a time machine") + 2)
+    at = contents.index("Mind the load on Amadeus.")
     assert after[at].role == "assistant" and after[at - 1].role == "event"
 
 
@@ -2489,17 +2489,17 @@ def test_a_remark_the_host_cancelled_and_reported_afterwards_is_kept_as_hers(tmp
 
 def test_a_remark_interrupted_while_it_is_played_is_cut_to_what_was_heard(tmp_path):
     async def scenario():
-        llm = Foreground()
+        llm = Scripted("Hello. How are you?", "Mind the load. Or else.")
         current = companion(tmp_path, llm=llm)
         await current.reply("hello", conversation_id="a")
         await current.speak_up("a", turn_id="p1")
-        current.interrupt("Hello.", conversation_id="a", turn_id="p1")
+        current.interrupt("Mind the load.", conversation_id="a", turn_id="p1")
         history = [(message.role, message.content) for message in current.runtime.history]
         await current.close()
         return history
 
     history = run(scenario())
-    assert history[-1] == ("assistant", "Hello. [Interrupted by user]")
+    assert history[-1] == ("assistant", "Mind the load. [Interrupted by user]")
     assert history[1] == ("assistant", "Hello. How are you?")
 
 
@@ -2516,21 +2516,74 @@ def test_a_host_can_ask_her_to_speak_up_in_its_own_words(tmp_path):
     assert "Speak up on your own" not in event
 
 
-def test_she_is_told_what_she_said_on_her_own_last_time(tmp_path):
-    """A small model copied its previous remark word for word, although the
-    remark was in the conversation: speaking up looks the same every time."""
+class Scripted(Foreground):
+    """Answers each call with the next of the given replies."""
+
+    def __init__(self, *replies):
+        super().__init__()
+        self.replies = list(replies)
+
+    async def stream_generate(self, messages, *, tools=None):
+        self.calls.append(list(messages))
+        text = self.replies.pop(0) if self.replies else "…"
+        self.started.set()
+        yield LLMStreamChunk(text=text)
+        yield LLMStreamChunk(final=True, response=LLMResponse(text=text, model="scripted"))
+
+
+def test_she_never_says_the_same_thing_on_her_own_twice(tmp_path):
+    """A small model copied its previous remark word for word, even with the
+    remark in the conversation and a rule against it. The engine checks what
+    she is about to say against what she said, and asks again."""
 
     async def scenario():
-        llm = Foreground(parts=("Mind the load on Amadeus.",))
+        llm = Scripted(
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "Mind the load on Amadeus, or your time machine breaks too!",
+            "How is Bun doing tonight?",
+        )
         current = companion(tmp_path, llm=llm)
         await current.speak_up("a")
-        first = llm.calls[-1][-1].content
-        llm.parts = ("How is the cat?",)
-        await current.speak_up("a")
-        second = llm.calls[-1][-1].content
+        heard: list[str] = []
+        result = await current.speak_up("a", on_text_delta=heard.append)
+        kept = [message.content for message in current.runtime.history if message.role == "assistant"]
         await current.close()
-        return first, second
+        return result.text, "".join(heard), kept, len(llm.calls)
 
-    first, second = run(scenario())
-    assert "Mind the load on Amadeus." not in first
-    assert "Mind the load on Amadeus." in second
+    text, heard, kept, calls = run(scenario())
+    assert text == "How is Bun doing tonight?"
+    assert heard == "How is Bun doing tonight?"
+    assert kept == [
+        "Mind the load on Amadeus, or your time machine breaks too.",
+        "How is Bun doing tonight?",
+    ]
+    assert calls == 3
+
+
+def test_she_stays_quiet_rather_than_repeat_herself(tmp_path):
+    async def scenario():
+        llm = Scripted(*(["Mind the load on Amadeus."] * 5))
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        heard: list[str] = []
+        result = await current.speak_up("a", on_text_delta=heard.append)
+        kept = [message.content for message in current.runtime.history if message.role == "assistant"]
+        await current.close()
+        return result.text, heard, kept
+
+    text, heard, kept = run(scenario())
+    assert text == ""
+    assert heard == []
+    assert kept == ["Mind the load on Amadeus."]
+
+
+def test_a_remark_that_repeats_a_reply_she_gave_is_not_said_either(tmp_path):
+    async def scenario():
+        llm = Scripted("Hello. How are you?", "Hello. How are you?", "What are you reading?")
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "What are you reading?"

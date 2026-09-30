@@ -13,6 +13,7 @@ policies that were needed.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import itertools
 import json
 import logging
@@ -20,6 +21,7 @@ import os
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -182,15 +184,43 @@ Do not mix the choices: ending one thing and tacking on an unrelated question so
 - One thing at a time, at most one question. If you asked a question the last time you spoke up, do not ask one now.
 - Do not sound like you are reading from notes or a news feed, and do not ask empty questions ("anything new?", "what do you want to talk about?").
 - Do not say that you are speaking up, and never mention topic lists, news feeds or any other mechanism. Just say it."""
-# Added to the instruction: what she said the last time she spoke up.
-LAST_REMARK = (
-    "The last time you spoke up on your own, you said: \"{remark}\" "
-    "Say something different; do not repeat it, not even in other words."
+# Asked again when what she was about to say repeats what she said. Her words
+# are not quoted: a small model echoes a quoted line back.
+ALREADY_SAID = (
+    "What you were about to say repeats something you already said in this "
+    "conversation. Say something else, or turn to the user in a new way."
 )
+# How often she is asked again before she stays quiet instead.
+REMARK_ATTEMPTS = 3
+# How many of her latest lines a remark is checked against.
+LINES_CHECKED = 8
 # What stays in the conversation before a remark she made on her own.
 REMARK_EVENT = "The user had been quiet for a while; you spoke up on your own."
 # After every worker: the workers are ranked by their place in _WORKERS.
 _HOST_RANK = 1_000
+
+
+def _plain(text: str) -> str:
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def _repeats(text: str, lines: Sequence[str]) -> bool:
+    """Whether ``text`` says again what one of ``lines`` said: nearly the same
+    line, or most of it taken over word for word."""
+    new = _plain(text)
+    if not new:
+        return True
+    for line in lines:
+        old = _plain(line)
+        if not old:
+            continue
+        matcher = SequenceMatcher(None, new, old, autojunk=False)
+        if matcher.ratio() >= 0.8:
+            return True
+        longest = matcher.find_longest_match(0, len(new), 0, len(old)).size
+        if longest >= 12 and longest >= 0.6 * min(len(new), len(old)):
+            return True
+    return False
 
 
 def _interrupted(heard: str) -> Message:
@@ -740,23 +770,22 @@ class CharacterCompanion:
                 self._last_turn[conversation_id] = serial
                 self._take_back_what_the_host_no_longer_knows(conversation_id, notes)
                 self._notes = tuple(note for note in notes if note.strip())
-                if remark is not None:
-                    last = self._last_remark()
-                    if last:
-                        text = f"{text}\n\n{LAST_REMARK.format(remark=last)}"
                 self._access.foreground_started()
                 try:
                     turn.generating = True
                     try:
-                        result = await self._tasks.run_foreground_turn(
-                            lambda: self._bridge.process(
-                                text,
-                                frames=frames,
-                                skip_memory=skip_memory,
-                                proactive=proactive,
-                                on_text_delta=on_text_delta,
+                        if remark is None:
+                            result = await self._tasks.run_foreground_turn(
+                                lambda: self._bridge.process(
+                                    text,
+                                    frames=frames,
+                                    skip_memory=skip_memory,
+                                    proactive=proactive,
+                                    on_text_delta=on_text_delta,
+                                )
                             )
-                        )
+                        else:
+                            result = await self._something_new(text, frames, on_text_delta)
                     except asyncio.CancelledError:
                         if turn.heard is None:
                             # The host cancelled its own task. It may tell us
@@ -777,7 +806,7 @@ class CharacterCompanion:
                             self.runtime.history[-1],
                         )
                         self._newest_turn[conversation_id] = serial
-                    if remark == "keep":
+                    if remark == "keep" and result.text:
                         said = remember_as(result.text) if remember_as else result.text
                         self._keep_remark(conversation_id, said, turn_id)
                     handles: tuple = ()
@@ -840,18 +869,37 @@ class CharacterCompanion:
             self._keep_remark(conversation_id, remark)
             self._save_state()
 
-    def _last_remark(self) -> str | None:
-        """The last remark she made on her own in the conversation at hand."""
-        history = self.runtime.history
-        for index in range(len(history) - 1, 0, -1):
-            before = history[index - 1]
-            if (
-                history[index].role == "assistant"
-                and before.role == "event"
-                and REMARK_EVENT in before.content
-            ):
-                return history[index].content
-        return None
+    async def _something_new(self, text, frames, on_text_delta) -> CharacterRunResult:
+        """A remark she has not made before. Generated whole before any of it is
+        passed on; asked again when it repeats one of her latest lines; nothing
+        at all rather than a repetition."""
+        mine = [
+            message.content
+            for message in self.runtime.history
+            if message.role == "assistant" and message.content
+        ][-LINES_CHECKED:]
+        asked = text
+        result = None
+        for _ in range(REMARK_ATTEMPTS):
+            said: list[str] = []
+            result = await self._tasks.run_foreground_turn(
+                lambda: self._bridge.process(
+                    asked,
+                    frames=frames,
+                    skip_memory=True,
+                    proactive=True,
+                    on_text_delta=said.append,
+                )
+            )
+            if not _repeats(result.text, mine):
+                if on_text_delta is not None and said:
+                    delivered = on_text_delta("".join(said))
+                    if inspect.isawaitable(delivered):
+                        await delivered
+                return result
+            asked = f"{text}\n\n{ALREADY_SAID}"
+        # Nothing new to say: better quiet than the same line again.
+        return replace(result, response=replace(result.response, text=""))
 
     def _keep_remark(self, conversation_id: str | None, remark: str, turn_id: Any = None) -> None:
         """Call with the turn lock held and the conversation at hand."""
