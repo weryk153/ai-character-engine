@@ -50,8 +50,10 @@ async def offline_generate(self, messages, *, tools=None):
     return LLMResponse(text="{}", model="offline")
 async def offline_stream(self, messages, *, tools=None):
     calls.append([(m.role, m.content) for m in messages])
-    yield LLMStreamChunk(text="Hello Alex.")
-    yield LLMStreamChunk(final=True, response=LLMResponse(text="Hello Alex.", model="offline"))
+    # She does not say the same thing twice, so the second answer differs.
+    text = "Hello Alex." if len(calls) == 1 else "You asked me to call you Alex."
+    yield LLMStreamChunk(text=text)
+    yield LLMStreamChunk(final=True, response=LLMResponse(text=text, model="offline"))
 with patch.object(OpenAICompatibleChatClient, "generate", offline_generate):
     with patch.object(OpenAICompatibleChatClient, "stream_generate", offline_stream):
         exec(EXAMPLE, {"__name__": "__main__"})
@@ -66,7 +68,8 @@ assert ("assistant", "Hello Alex.") in calls[1]
         env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.count("Hello Alex.") == 2
+    assert "Hello Alex." in result.stdout
+    assert "You asked me to call you Alex." in result.stdout
     assert (tmp_path / "companion-data/guide/state.json").is_file()
 
 

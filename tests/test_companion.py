@@ -1383,18 +1383,21 @@ def test_a_reply_played_in_the_same_conversation_is_cut_while_the_next_is_genera
         await current.reply("first", conversation_id="a", turn_id="w1")
         llm.gate.clear()
         llm.started.clear()
+        llm.parts = ("Sure. ", "Let us begin.")
         talking = asyncio.ensure_future(current.reply("second", conversation_id="a", turn_id="w2"))
         await llm.started.wait()
         current.interrupt("Hel", conversation_id="a", turn_id="w1")
         llm.gate.set()
         answered = await talking
+        llm.parts = ("Right. ", "Go on then.")
         await current.reply("go on", conversation_id="a")
         await current.close()
         return answered.text, [message.content for message in llm.calls[-1]]
 
     text, sent = run(scenario())
-    assert text == "Hello. How are you?"
-    assert sent.count("Hello. How are you?") == 1
+    assert text == "Sure. Let us begin."
+    assert "Hello. How are you?" not in sent
+    assert sent.count("Sure. Let us begin.") == 1
     assert "Hel [Interrupted by user]" in sent
     assert sent.index("Hel [Interrupted by user]") < sent.index("second")
 
@@ -1631,7 +1634,7 @@ def test_interrupting_an_older_turn_of_the_conversation_at_hand_leaves_the_newes
     the second began."""
 
     async def scenario():
-        llm = Foreground()
+        llm = Scripted("Hello. How are you?", "Fine. Tell me more.", "Go on then.")
         current = companion(tmp_path, llm=llm)
         await current.reply("first", conversation_id="a", turn_id="w1")
         await current.reply("second", conversation_id="a", turn_id="w2")
@@ -1641,7 +1644,8 @@ def test_interrupting_an_older_turn_of_the_conversation_at_hand_leaves_the_newes
         return [message.content for message in llm.calls[-1]]
 
     sent = run(scenario())
-    assert sent.count("Hello. How are you?") == 2
+    assert sent.count("Hello. How are you?") == 1
+    assert sent.count("Fine. Tell me more.") == 1
     assert not any("[Interrupted by user]" in content for content in sent)
 
 
@@ -2587,3 +2591,61 @@ def test_a_remark_that_repeats_a_reply_she_gave_is_not_said_either(tmp_path):
         return result.text
 
     assert run(scenario()) == "What are you reading?"
+
+
+# --- not repeating herself in a reply -------------------------------------------------
+
+
+def test_a_sentence_she_already_said_is_not_said_again_in_a_reply(tmp_path):
+    """When the user answered her remark, a small model said the remark again
+    word for word before answering. A sentence that repeats one of her latest
+    lines is not passed on, and is not kept."""
+
+    async def scenario():
+        llm = Scripted(
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "Mind the load on Amadeus, or your time machine breaks too. Good, go check it now.",
+        )
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        heard: list[str] = []
+        await current.reply("ok, checking", conversation_id="a", on_text_delta=heard.append)
+        kept = current.runtime.history[-1].content
+        await current.close()
+        return "".join(heard), kept
+
+    heard, kept = run(scenario())
+    assert heard.strip() == "Good, go check it now."
+    assert kept.strip() == "Good, go check it now."
+
+
+def test_a_short_word_she_says_often_is_not_a_repetition(tmp_path):
+    async def scenario():
+        llm = Scripted("Hmm. I see what you mean.", "Hmm. Then try the other way round.")
+        current = companion(tmp_path, llm=llm)
+        await current.reply("it failed", conversation_id="a")
+        heard: list[str] = []
+        await current.reply("again", conversation_id="a", on_text_delta=heard.append)
+        await current.close()
+        return "".join(heard)
+
+    assert run(scenario()) == "Hmm. Then try the other way round."
+
+
+def test_a_reply_that_would_be_all_repetition_is_asked_again(tmp_path):
+    async def scenario():
+        llm = Scripted(
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "Then go and look at the cooling first.",
+        )
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        heard: list[str] = []
+        result = await current.reply("ok", conversation_id="a", on_text_delta=heard.append)
+        await current.close()
+        return result.text, "".join(heard)
+
+    text, heard = run(scenario())
+    assert heard == "Then go and look at the cooling first."
+    assert text == "Then go and look at the cooling first."

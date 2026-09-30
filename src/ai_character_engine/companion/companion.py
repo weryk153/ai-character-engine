@@ -223,6 +223,82 @@ def _repeats(text: str, lines: Sequence[str]) -> bool:
     return False
 
 
+_SENTENCE_ENDS = "。！？!?…\n"
+_CLOSERS = "」』）)】\"'”’"
+# Sentences shorter than this ("Hmm.", "嗯。") are not checked: saying them
+# again is not repeating oneself.
+_SHORTEST_CHECKED = 8
+
+
+def _sentences(text: str) -> tuple[list[str], str]:
+    """The complete sentences at the start of ``text``, and what is left."""
+    done, start, index = [], 0, 0
+    while index < len(text):
+        char = text[index]
+        end = char in _SENTENCE_ENDS or (
+            char == "." and (index + 1 == len(text) or text[index + 1].isspace())
+        )
+        if end and (char != "." or index + 1 < len(text)):
+            index += 1
+            while index < len(text) and (text[index] in _CLOSERS or text[index] in _SENTENCE_ENDS):
+                index += 1
+            while index < len(text) and text[index] == " ":
+                index += 1
+            done.append(text[start:index])
+            start = index
+            continue
+        index += 1
+    return done, text[start:]
+
+
+def _repeats_a_line(sentence: str, lines: Sequence[str]) -> bool:
+    new = _plain(sentence)
+    if len(new) < _SHORTEST_CHECKED:
+        return False
+    for line in lines:
+        if new in _plain(line):
+            return True
+        said, rest = _sentences(line)
+        for old in [*said, rest]:
+            old = _plain(old)
+            if old and SequenceMatcher(None, new, old, autojunk=False).ratio() >= 0.85:
+                return True
+    return False
+
+
+class _SentenceGate:
+    """Passes a reply on sentence by sentence, leaving out any sentence that
+    repeats one of her latest lines."""
+
+    def __init__(self, lines: Sequence[str], forward) -> None:
+        self._lines = lines
+        self._forward = forward
+        self._pending = ""
+        self.passed = ""
+        self.dropped = 0
+
+    async def __call__(self, delta: str) -> None:
+        self._pending += delta
+        done, self._pending = _sentences(self._pending)
+        for sentence in done:
+            await self._offer(sentence)
+
+    async def finish(self) -> None:
+        rest, self._pending = self._pending, ""
+        if rest:
+            await self._offer(rest)
+
+    async def _offer(self, sentence: str) -> None:
+        if _repeats_a_line(sentence, self._lines):
+            self.dropped += 1
+            return
+        self.passed += sentence
+        if self._forward is not None:
+            delivered = self._forward(sentence)
+            if inspect.isawaitable(delivered):
+                await delivered
+
+
 def _interrupted(heard: str) -> Message:
     return Message("assistant", f"{heard.strip()} [Interrupted by user]".strip())
 
@@ -775,14 +851,8 @@ class CharacterCompanion:
                     turn.generating = True
                     try:
                         if remark is None:
-                            result = await self._tasks.run_foreground_turn(
-                                lambda: self._bridge.process(
-                                    text,
-                                    frames=frames,
-                                    skip_memory=skip_memory,
-                                    proactive=proactive,
-                                    on_text_delta=on_text_delta,
-                                )
+                            result = await self._reply_without_repeating(
+                                text, frames, skip_memory, proactive, on_text_delta
                             )
                         else:
                             result = await self._something_new(text, frames, on_text_delta)
@@ -868,6 +938,63 @@ class CharacterCompanion:
             self._switch_to(conversation_id)
             self._keep_remark(conversation_id, remark)
             self._save_state()
+
+    async def _reply_without_repeating(
+        self, text, frames, skip_memory, proactive, on_text_delta
+    ) -> CharacterRunResult:
+        """A reply passed on sentence by sentence, without the sentences that
+        repeat one of her latest lines; what is kept is what was passed on. A
+        reply that was nothing but repetition, and used no tool, is asked
+        again once."""
+        mine = [
+            message.content
+            for message in self.runtime.history
+            if message.role == "assistant" and message.content
+        ][-LINES_CHECKED:]
+        asked = text
+        for attempt in range(2):
+            before = self.runtime.history[-1] if self.runtime.history else None
+            gate = _SentenceGate(mine, on_text_delta)
+            result = await self._tasks.run_foreground_turn(
+                lambda: self._bridge.process(
+                    asked,
+                    frames=frames,
+                    skip_memory=skip_memory,
+                    proactive=proactive,
+                    on_text_delta=gate,
+                )
+            )
+            await gate.finish()
+            if not gate.dropped:
+                return result
+            said = gate.passed.strip()
+            if said or result.tool_results or attempt == 1:
+                if not skip_memory:
+                    self._bridge.replace_reply(said)
+                return replace(result, response=replace(result.response, text=said))
+            if not self._undo_turn(before):
+                return replace(result, response=replace(result.response, text=""))
+            asked = f"{text}\n\n{ALREADY_SAID}"
+        raise AssertionError("unreachable")
+
+    def _undo_turn(self, before: Message | None) -> bool:
+        """Take out what the turn just made, back to ``before``; False when
+        that message is no longer in the history."""
+        history = self.runtime.history
+        if before is None:
+            gone, kept = list(history), []
+        else:
+            at = next((i for i, m in enumerate(history) if m is before), None)
+            if at is None:
+                return False
+            gone, kept = history[at + 1 :], history[: at + 1]
+        self.runtime.history[:] = kept
+        self.runtime.context_notes = [
+            (anchor, note)
+            for anchor, note in self.runtime.context_notes
+            if not any(anchor is m for m in gone)
+        ]
+        return True
 
     async def _something_new(self, text, frames, on_text_delta) -> CharacterRunResult:
         """A remark she has not made before. Generated whole before any of it is
