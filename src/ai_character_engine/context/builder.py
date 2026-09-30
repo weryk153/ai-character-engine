@@ -118,6 +118,11 @@ def without_lines(note: Message, gone) -> Message | None:
     return note if content == note.content else Message(role="user", content=content)
 
 
+# A goal still held but pushed out of mind by more pressing ones. Not given up:
+# it comes back as a goal when there is room for it again.
+SET_ASIDE_LINE = "- set aside for now: "
+
+
 def _last_word_on_goals(said: Sequence[str]) -> dict[str, bool]:
     """objective -> whether the newest note about it calls it a goal."""
     wanted: dict[str, bool] = {}
@@ -126,6 +131,8 @@ def _last_word_on_goals(said: Sequence[str]) -> dict[str, bool]:
             wanted[line.removeprefix("- goal: ")] = True
         elif line.startswith("- no longer a goal: "):
             wanted[line.removeprefix("- no longer a goal: ")] = False
+        elif line.startswith(SET_ASIDE_LINE):
+            wanted[line.removeprefix(SET_ASIDE_LINE)] = False
     return wanted
 
 
@@ -660,10 +667,16 @@ class ContextBuilder:
             for goal in goals
             if goal.status is GoalStatus.ACTIVE and not wanted.get(goal.objective)
         ]
+        in_mind = {goal.objective for goal in goals if goal.status is GoalStatus.ACTIVE}
         lines += [
             f"- no longer a goal: {objective}"
             for objective, active in wanted.items()
             if active and objective not in still_wanted
+        ]
+        lines += [
+            f"{SET_ASIDE_LINE}{objective}"
+            for objective, active in wanted.items()
+            if active and objective in still_wanted and objective not in in_mind
         ]
         known = set(said)
         for line in (

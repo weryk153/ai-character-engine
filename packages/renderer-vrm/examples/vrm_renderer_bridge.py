@@ -26,9 +26,10 @@ from ai_character_engine.live import LiveEventType, LiveRuntimeEvent
 STANDARD_EXPRESSIONS = (
     "aa", "ih", "ou", "ee", "oh", "blink", "blinkLeft", "blinkRight",
     "happy", "angry", "sad", "relaxed", "surprised", "neutral",
+    "lookUp", "lookDown", "lookLeft", "lookRight",
 )
 STANDARD_BONES = (
-    "hips", "spine", "chest", "upperChest", "neck", "head", "leftEye", "rightEye",
+    "hips", "spine", "chest", "upperChest", "neck", "head", "leftEye", "rightEye", "jaw",
     *(
         f"{side}{part}"
         for side in ("left", "right")

@@ -630,7 +630,9 @@ class CharacterCompanion:
                     raise CompanionClosed("companion is closed")
                 self._switch_to(conversation_id)
                 if turn.heard is not None:
-                    # Interrupted before she began to answer.
+                    # Interrupted before she began to answer. It is still the
+                    # conversation's last turn: the reply before it was heard.
+                    self._last_turn[conversation_id] = next(self._serial)
                     self._bridge.record_interrupted_turn(text, turn.heard)
                     raise TurnInterrupted("The reply was interrupted.")
                 self._unfinished = None

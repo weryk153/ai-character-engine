@@ -35,7 +35,7 @@ see [contributing](../CONTRIBUTING.md).
 ## Final acceptance
 
 The collector runs soak/failure injection, same-profile performance, architecture
-checks, offline lock validation, four package builds and clean wheel/sdist installs.
+checks, offline lock validation, two package builds (four artifacts) and clean wheel/sdist installs.
 Packaging checks verify Apache-2.0 metadata and exact LICENSE bytes. Fresh-install
 imports run outside the source tree in isolated environments and verify package
 versions and import locations.

@@ -2088,3 +2088,192 @@ def test_a_goal_pushed_out_by_a_more_pressing_one_is_not_said_to_be_given_up(tmp
     lines = run(scenario())
     assert "- goal: Goal C" in lines
     assert not any(line.startswith("- no longer a goal:") for line in lines)
+
+# --- what she keeps in mind, and taking back after unusual turns ------------------
+
+
+def _roles(history):
+    return [(m.role, m.content[:30]) for m in history]
+
+
+def test_taking_back_after_a_turn_interrupted_before_she_began_takes_nothing(tmp_path):
+    """Turn a2 is interrupted before she began (nothing heard). It is the
+    conversation's last turn and it failed; take_back must refuse."""
+
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        llm.gate.set()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("first", conversation_id="a", turn_id="a1")
+        llm.gate.clear()
+        llm.started.clear()
+        b = asyncio.ensure_future(current.reply("other", conversation_id="b", turn_id="b1"))
+        await llm.started.wait()
+        a2 = asyncio.ensure_future(current.reply("second", conversation_id="a", turn_id="a2"))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        current.interrupt("", conversation_id="a", turn_id="a2")
+        llm.gate.set()
+        await b
+        with pytest.raises(TurnInterrupted):
+            await a2
+        before = _roles(current.runtime.history)
+        taken = current.take_back("a")
+        after = _roles(current.runtime.history)
+        await current.close()
+        return taken, before, after
+
+    taken, before, after = run(scenario())
+    assert taken is False, (before, after)
+
+
+def test_taking_back_a_reply_that_used_a_tool_leaves_the_exchange_before_it(tmp_path):
+    class ToolUsing(Foreground):
+        async def stream_generate(self, messages, *, tools=None):
+            self.calls.append(list(messages))
+            if messages[-1].role == "tool":
+                yield LLMStreamChunk(text="It is 12:34.")
+                yield LLMStreamChunk(final=True, response=LLMResponse(text="It is 12:34.", model="f"))
+                return
+            if "time" not in messages[-1].content and "time" not in str(messages[-2:]):
+                yield LLMStreamChunk(text="Hi.")
+                yield LLMStreamChunk(final=True, response=LLMResponse(text="Hi.", model="f"))
+                return
+            yield LLMStreamChunk(text="Let me check. ")
+            yield LLMStreamChunk(
+                final=True,
+                response=LLMResponse(text="Let me check. ", tool_calls=(ToolCall("one", "clock", {}),), model="f"),
+            )
+
+    async def scenario():
+        current = companion(tmp_path, llm=ToolUsing())
+        current.tools.register(
+            ToolDefinition("clock", "Read the clock", {"type": "object", "properties": {}}),
+            lambda: "12:34",
+        )
+        await current.reply("hello", conversation_id="a")
+        h0 = _roles(current.runtime.history)
+        await current.reply("what time is it", conversation_id="a")
+        h1 = _roles(current.runtime.history)
+        taken = current.take_back("a")
+        h2 = _roles(current.runtime.history)
+        await current.close()
+        return h0, h1, taken, h2
+
+    h0, h1, taken, h2 = run(scenario())
+    assert taken and h2 == h0, (h1, h2)
+
+
+def test_taking_back_a_reply_about_a_picture_leaves_the_exchange_before_it(tmp_path):
+    from ai_character_engine.vision import VisionPipeline
+    from ai_character_engine.vision.models import ImageInput, VisionAnalysis, VisionFrame
+    from ai_character_engine.vision.providers import CallableVisionProvider
+    from tests.test_vision import PNG
+
+    async def look(image, prompt):
+        return VisionAnalysis(text="A red square.", provider="fake")
+
+    async def scenario():
+        llm = Foreground()
+        current = CharacterCompanion(
+            character=CharacterProfile(id="mei", name="Mei", description="A researcher."),
+            llm=llm,
+            background_llm={},
+            vision=VisionPipeline(provider=CallableVisionProvider(look)),
+        )
+        await current.reply("hi", conversation_id="a")
+        h0 = _roles(current.runtime.history)
+        frame = VisionFrame(image=ImageInput.from_bytes(PNG, mime_type="image/png"))
+        await current.reply("what is this", conversation_id="a", frames=(frame,))
+        taken = current.take_back("a")
+        h2 = _roles(current.runtime.history)
+        notes = current.runtime.context_notes
+        ok = all(any(a is m for m in current.runtime.history) for a, _ in notes)
+        await current.close()
+        return h0, taken, h2, ok
+
+    h0, taken, h2, ok = run(scenario())
+    assert taken and h2 == h0 and ok
+
+
+def test_the_goals_in_the_conversation_are_the_goals_in_mind(tmp_path):
+    """Notes stay in the conversation. A goal pushed out of mind by a more
+    pressing one was still standing there as a goal: the prompt carried every
+    goal ever announced, not goals_shown of them."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, goals_shown=1)
+        store = current.runtime.goal_manager.store
+        store.add_goal(_goal("mei", "Goal A", 0.5))
+        await current.reply("hello", conversation_id="a")
+        store.add_goal(_goal("mei", "Goal B", 0.9))
+        await current.reply("again", conversation_id="a")
+        store.add_goal(_goal("mei", "Goal C", 0.95))
+        await current.reply("more", conversation_id="a")
+        shown = current.snapshot().goals
+        await current.close()
+        return shown, [
+            line
+            for message in llm.calls[-1]
+            for line in message.content.splitlines()
+            if line.startswith(("- goal: ", "- no longer a goal: ", "- set aside for now: "))
+        ]
+
+    shown, lines = run(scenario())
+    in_mind = {}
+    for line in lines:
+        if line.startswith("- goal: "):
+            in_mind[line.removeprefix("- goal: ")] = True
+        else:
+            in_mind[line.split(": ", 1)[1]] = False
+    assert [goal for goal, held in in_mind.items() if held] == list(shown) == ["Goal C"]
+    assert not any(line.startswith("- no longer a goal:") for line in lines)
+
+
+def test_a_hosts_own_call_does_not_wait_for_work_that_never_ends(tmp_path):
+    async def scenario():
+        current = companion(tmp_path, foreground_patience_seconds=0.2)
+        stuck = asyncio.ensure_future(asyncio.Event().wait())
+        current._pending.add(stuck)
+
+        async def tidy():
+            return "tidied"
+
+        result = await asyncio.wait_for(current.aside(tidy), timeout=2)
+        current._pending.discard(stuck)
+        stuck.cancel()
+        await current.close()
+        return result
+
+    assert run(scenario()) == "tidied"
+
+
+def test_a_hosts_own_call_queued_behind_a_worker_is_refused_once_she_retires(tmp_path):
+    async def scenario():
+        Worker.reset()
+        gate = asyncio.Event()
+        workers = {"memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, gate=gate, name="memory")}
+        current = companion(tmp_path, workers, memory_every=1, foreground_patience_seconds=0.2)
+        await current.reply("hello", conversation_id="a")
+        for _ in range(50):
+            await asyncio.sleep(0)
+        made = []
+
+        async def tidy():
+            made.append(1)
+            return "x"
+
+        aside = asyncio.ensure_future(current.aside(tidy))
+        await asyncio.sleep(0.4)  # past the patience: now queued in ModelAccess behind the worker
+        current.retire()
+        gate.set()
+        try:
+            result = await aside
+        except CompanionClosed:
+            result = "closed"
+        await current.close()
+        return result, made, list(Worker.order)
+
+    result, made, order = run(scenario())
+    assert result == "closed" and made == [], (result, made, order)
