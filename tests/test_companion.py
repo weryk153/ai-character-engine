@@ -2696,3 +2696,27 @@ def test_a_sentence_with_a_new_opening_on_an_old_one_is_still_a_repetition(tmp_p
         return result.text
 
     assert run(scenario()) == "How is Bun taking the rain?"
+
+
+def test_an_old_sentence_retold_with_small_changes_is_still_a_repetition(tmp_path):
+    """Most of the words kept, in order, with a few swapped along the way: no
+    long run is copied and the whole is not nearly identical, yet it is the
+    same sentence again."""
+
+    async def scenario():
+        llm = Scripted(
+            "Since you agree, put the failed run aside; I just saw Tokyo Banana went on sale"
+            " here as custard puffs, and that sounds tastier than the formula we mixed."
+            " Weren't you annoyed? Have a bite and swap the taste of failure for something"
+            " sweet.",
+            "Put the failures aside, I saw Tokyo Banana went on sale here too as custard"
+            " puffs, tastier than the formula we mixed.",
+            "How is Bun taking the rain?",
+        )
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "How is Bun taking the rain?"

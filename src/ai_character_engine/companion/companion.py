@@ -268,7 +268,15 @@ def _repeats_a_line(sentence: str, lines: Sequence[str]) -> bool:
         said, rest = _sentences(line)
         for old in [*said, rest]:
             old = _plain(old)
-            if old and SequenceMatcher(None, new, old, autojunk=False).ratio() >= 0.85:
+            if not old:
+                continue
+            matcher = SequenceMatcher(None, new, old, autojunk=False)
+            if matcher.ratio() >= 0.85:
+                return True
+            # Retold with a few words swapped along the way: most of it still
+            # comes from the old sentence, in order, in pieces.
+            kept = sum(block.size for block in matcher.get_matching_blocks() if block.size >= 4)
+            if kept >= 0.8 * len(new):
                 return True
     return False
 
