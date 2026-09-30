@@ -1018,12 +1018,22 @@ class CharacterCompanion:
                     on_text_delta=said.append,
                 )
             )
-            if not _repeats(result.text, mine):
-                if on_text_delta is not None and said:
-                    delivered = on_text_delta("".join(said))
+            # Sentences she already said are left out; what is left must not
+            # repeat her either.
+            done, rest = _sentences(result.text)
+            kept = "".join(
+                sentence for sentence in [*done, rest] if not _repeats_a_line(sentence, mine)
+            ).strip()
+            # A word or two left over ("Hello.") once the rest was left out is
+            # not a remark of its own; a short remark as it came is.
+            left_over = kept != result.text.strip()
+            enough = not left_over or len(_plain(kept)) >= _SHORTEST_CHECKED
+            if kept and enough and not _repeats(kept, mine):
+                if on_text_delta is not None:
+                    delivered = on_text_delta(kept)
                     if inspect.isawaitable(delivered):
                         await delivered
-                return result
+                return replace(result, response=replace(result.response, text=kept))
             asked = f"{text}\n\n{ALREADY_SAID}"
         # Nothing new to say: better quiet than the same line again.
         return replace(result, response=replace(result.response, text=""))

@@ -2649,3 +2649,34 @@ def test_a_reply_that_would_be_all_repetition_is_asked_again(tmp_path):
     text, heard = run(scenario())
     assert heard == "Then go and look at the cooling first."
     assert text == "Then go and look at the cooling first."
+
+
+def test_a_remark_leaves_out_a_sentence_she_already_said(tmp_path):
+    async def scenario():
+        llm = Scripted(
+            "The typhoon turned. Better look at the weather map than sulk over the failed run.",
+            "Put the failure aside for now. Better look at the weather map than sulk over the failed run.",
+        )
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        heard: list[str] = []
+        result = await current.speak_up("a", on_text_delta=heard.append)
+        kept = current.runtime.history[-1].content
+        await current.close()
+        return result.text, "".join(heard), kept
+
+    text, heard, kept = run(scenario())
+    assert text.strip() == "Put the failure aside for now."
+    assert heard.strip() == "Put the failure aside for now."
+    assert kept.strip() == "Put the failure aside for now."
+
+
+def test_a_short_remark_of_her_own_is_still_a_remark(tmp_path):
+    async def scenario():
+        llm = Scripted("喂，還醒著嗎？")
+        current = companion(tmp_path, llm=llm)
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "喂，還醒著嗎？"
