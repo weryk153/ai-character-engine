@@ -38,6 +38,7 @@ from ai_character_engine.cognition import (
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
 from ai_character_engine.context.builder import ContextBuilder, one_line
+from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals import GoalManager
 from ai_character_engine.goals.models import GoalRecord
 from ai_character_engine.goals.store import InMemoryGoalStore, JsonlGoalStore
@@ -714,6 +715,39 @@ class CharacterCompanion:
         newest = self._newest_reply.get(self._active)
         if newest and before is not None and newest[1] is before and history[-1] is not before:
             self._newest_reply[self._active] = (newest[0], history[-1])
+
+    async def remember_remark(self, conversation_id: str | None, remark: str) -> None:
+        """Keep a remark she made on her own in the conversation.
+
+        A host that prompts her to speak up often sends a long instruction it
+        does not want kept, and makes that turn with ``skip_memory``. The remark
+        was then forgotten with the instruction: she repeated her remarks, and
+        when the user answered one she said it again. This keeps what she
+        actually said, after a short event saying she spoke up on her own, and
+        makes it the conversation's newest reply (``take_back`` and ``interrupt``
+        treat it like one). Waits for a reply under way.
+        """
+        remark = remark.strip()
+        if not remark:
+            return
+        async with self._turn_lock:
+            if self._closed:
+                raise CompanionClosed("companion is closed")
+            self._switch_to(conversation_id)
+            event = self.runtime.context_builder.event_to_message(
+                CharacterEvent(
+                    type="proactive_remark",
+                    source="host",
+                    content="The user had been quiet for a while; you spoke up on your own.",
+                )
+            )
+            reply = Message("assistant", remark)
+            self.runtime.history.extend([event, reply])
+            serial = next(self._serial)
+            self._last_turn[conversation_id] = serial
+            self._newest_turn[conversation_id] = serial
+            self._newest_reply[conversation_id] = (None, reply)
+            self._save_state()
 
     def take_back(self, conversation_id: str | None = None) -> bool:
         """The host did not use the newest reply of the conversation.

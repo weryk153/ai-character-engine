@@ -2277,3 +2277,103 @@ def test_a_hosts_own_call_queued_behind_a_worker_is_refused_once_she_retires(tmp
 
     result, made, order = run(scenario())
     assert result == "closed" and made == [], (result, made, order)
+
+
+# --- what she said on her own ------------------------------------------------------
+
+
+def test_a_remark_she_made_on_her_own_stays_in_the_conversation(tmp_path):
+    """A host prompts her to speak up with a long instruction it does not want
+    kept. Kept out of memory, the remark was forgotten too: she repeated her
+    remarks, and when the user answered one she said it again word for word.
+    remember_remark keeps what she said, after a short line saying why."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("I am building a time machine", conversation_id="a")
+        await current.remember_remark("a", "Mind the load on Amadeus.")
+        await current.reply("ok, checking", conversation_id="a")
+        await current.close()
+        return llm.calls[-1]
+
+    sent = run(scenario())
+    contents = [message.content for message in sent]
+    at = contents.index("Mind the load on Amadeus.")
+    assert sent[at].role == "assistant"
+    assert sent[at - 1].role == "event"
+    assert contents.index("ok, checking") > at
+    assert contents.count("Mind the load on Amadeus.") == 1
+
+
+def test_a_remark_goes_to_the_conversation_it_was_made_in(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hello", conversation_id="a")
+        await current.reply("hello", conversation_id="b")
+        await current.remember_remark("a", "Still there?")
+        await current.reply("yes", conversation_id="a")
+        in_a = [message.content for message in llm.calls[-1]]
+        await current.reply("and here?", conversation_id="b")
+        in_b = [message.content for message in llm.calls[-1]]
+        await current.close()
+        return in_a, in_b
+
+    in_a, in_b = run(scenario())
+    assert "Still there?" in in_a
+    assert "Still there?" not in in_b
+
+
+def test_a_remark_waits_for_the_reply_under_way(tmp_path):
+    async def scenario():
+        llm = Foreground(gate=asyncio.Event())
+        current = companion(tmp_path, llm=llm)
+        talking = asyncio.ensure_future(current.reply("hello", conversation_id="a"))
+        await llm.started.wait()
+        remark = asyncio.ensure_future(current.remember_remark("a", "By the way."))
+        for _ in range(5):
+            await asyncio.sleep(0)
+        early = remark.done()
+        llm.gate.set()
+        await talking
+        await remark
+        history = [message.content for message in current.runtime.history]
+        await current.close()
+        return early, history
+
+    early, history = run(scenario())
+    assert early is False
+    assert history[-1] == "By the way."
+    assert history.index("Hello. How are you?") < history.index("By the way.")
+
+
+def test_a_remark_can_be_taken_back_like_a_reply(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hello", conversation_id="a")
+        before = [message.content for message in current.runtime.history]
+        await current.remember_remark("a", "By the way.")
+        taken = current.take_back("a")
+        after = [message.content for message in current.runtime.history]
+        await current.close()
+        return taken, before, after
+
+    taken, before, after = run(scenario())
+    assert taken is True
+    assert after == before
+
+
+def test_an_empty_remark_is_not_kept(tmp_path):
+    async def scenario():
+        current = companion(tmp_path)
+        await current.reply("hello", conversation_id="a")
+        before = list(current.runtime.history)
+        await current.remember_remark("a", "   ")
+        after = list(current.runtime.history)
+        await current.close()
+        return before, after
+
+    before, after = run(scenario())
+    assert after == before

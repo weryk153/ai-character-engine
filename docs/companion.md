@@ -109,6 +109,7 @@ prompt extends the one before it and the inference server can reuse its work
 | `companion.character = profile` | Rewrite the persona between turns; the id cannot change |
 | `companion.tools.register(definition, handler)` | Give the character a tool |
 | `memories(conversation_id)` / `rewrite_memories(conversation_id, lines, edited_from=shown)` | Show what she remembers of a conversation, and take the user's edit back: a shown line that is gone is forgotten, a new line is remembered; what arrived while the page was open stays |
+| `remember_remark(conversation_id, text)` | Keep a remark she made on her own when the turn that made it was kept out of memory (a long instruction the host does not want kept): what she said stays in the conversation after a short event, so she neither repeats it nor says it again when the user answers |
 | `aside(make_call)` | A model call of the host's own on the same local model (a memory of its own to tidy, a translation): it waits while she replies, gives way once to a reply that starts, and takes its turn after her workers |
 
 ## Conversations
