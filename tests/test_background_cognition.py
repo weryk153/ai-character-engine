@@ -472,7 +472,7 @@ async def test_background_queue_admission_failure_never_fails_committed_foregrou
         await bg.collect_all()
     assert len(runtime.history) == 2
 
-def test_v032_public_api_exports_background_cognition_contracts():
+def test_public_api_exports_background_cognition_contracts():
     import ai_character_engine as ace
 
     assert ace.__version__ == "1.0.0"

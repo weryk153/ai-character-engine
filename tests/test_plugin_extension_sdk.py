@@ -615,7 +615,7 @@ def test_plugin_manager_does_not_auto_discover_or_auto_load_installed_plugins(mo
     assert called is False
 
 
-def test_v041_public_exports_and_versions():
+def test_public_exports_and_versions():
     import ai_character_engine as ace
 
     assert ace.__version__ == "1.0.0"
@@ -623,7 +623,7 @@ def test_v041_public_exports_and_versions():
     assert ace.ExtensionPoint.TOOL.value == "tool"
 
 
-def test_v041_all_three_package_versions_match():
+def test_package_versions_match():
     import tomllib
 
     root = Path(__file__).resolve().parents[1]
@@ -632,14 +632,14 @@ def test_v041_all_three_package_versions_match():
     assert (core, vrm) == ("1.0.0", "1.0.0")
 
 
-def test_v041_document_extension_trust_boundary():
+def test_docs_describe_extension_trust_boundary():
     root = Path(__file__).resolve().parents[1]
     guide = (root / "docs" / "extensions.md").read_text(encoding="utf-8")
     assert "not a security sandbox" in guide
     assert "activation is not authority" in guide
 
 
-def test_v041_offline_example_runs_without_external_plugin_or_provider():
+def test_offline_example_runs_without_external_plugin_or_provider():
     import os
     import subprocess
     import sys

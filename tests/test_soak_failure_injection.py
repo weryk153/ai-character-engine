@@ -449,7 +449,7 @@ def test_stability_core_has_no_product_renderer_or_vendor_vocabulary():
         assert token not in text
 
 
-def test_v044_version_and_public_stability_exports():
+def test_version_and_public_stability_exports():
     assert ace.__version__ == "1.0.0"
     for name in (
         "SoakHarness",

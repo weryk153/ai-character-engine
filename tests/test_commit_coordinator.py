@@ -466,7 +466,7 @@ async def test_what_was_decided_long_ago_is_let_go():
     assert coordinator.remembered_decisions == 4
 
 
-def test_v033_version():
+def test_package_version():
     import ai_character_engine as ace
     assert ace.__version__ == "1.0.0"
 

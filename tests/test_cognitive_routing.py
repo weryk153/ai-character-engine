@@ -382,7 +382,7 @@ async def test_dialogue_role_client_can_power_character_runtime_without_provider
     assert models.last_decision.role is CognitiveRole.DIALOGUE
 
 
-def test_v031_public_api_exports_cognitive_contracts():
+def test_public_api_exports_cognitive_contracts():
     import ai_character_engine as ace
 
     assert ace.__version__ == "1.0.0"

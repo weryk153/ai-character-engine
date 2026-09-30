@@ -202,7 +202,7 @@ def test_stable_manifest_exactly_matches_current_root_api():
     assert report.issues == ()
 
 
-def test_v047_sealed_to_v048_stable_has_no_breaking_change():
+def test_last_sealed_api_to_stable_has_no_breaking_change():
     report = compare_public_api_manifests(load_public_api_manifest(SEALED_V047), load_public_api_manifest(STABLE))
     assert report.compatible
     assert not report.breaking
@@ -320,7 +320,7 @@ def test_release_candidate_tooling_is_not_exported_into_frozen_root_api():
     assert not hasattr(ace, "evaluate_release_candidate")
 
 
-def test_v048_versions_and_contracts_remain_synchronized():
+def test_versions_and_contracts_remain_synchronized():
     from ai_character_engine_vrm import __version__ as vrm_version
 
     assert (ace.__version__, vrm_version) == ("1.0.0", "1.0.0")

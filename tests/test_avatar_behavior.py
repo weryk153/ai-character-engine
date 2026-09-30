@@ -222,7 +222,7 @@ async def test_tts_turn_enters_speaking_behavior_phase():
     assert phases == ["thinking", "speaking", "idle"]
 
 
-async def test_no_behavior_runtime_preserves_v027_nonstreaming_contract():
+async def test_no_behavior_runtime_keeps_the_nonstreaming_contract():
     live = LiveCharacterOrchestrator(
         CharacterHostBridge(runtime()),
         tts=TTS(),

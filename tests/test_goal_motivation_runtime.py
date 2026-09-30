@@ -272,7 +272,7 @@ def goal_proposal(
 
 
 @pytest.mark.asyncio
-async def test_goal_manager_is_opt_in_and_v034_host_stays_review_only():
+async def test_goal_manager_is_opt_in_and_a_host_without_it_stays_review_only():
     commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine()))
     result = await commits.commit(goal_proposal())
     assert result.status is CommitStatus.REVIEW_REQUIRED
@@ -730,7 +730,7 @@ async def test_goal_status_model_shortcut_is_not_supported():
     assert result.reason == "unsupported_target"
 
 
-def test_v035_public_api_contract_pre_version_bump():
+def test_public_api_exports_goal_contracts():
     import ai_character_engine as ace
 
     assert ace.GoalManager is GoalManager

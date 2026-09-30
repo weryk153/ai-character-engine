@@ -90,7 +90,7 @@ def test_persistence_contract_versions_are_explicit_and_independent():
 
 
 @pytest.mark.parametrize("surface", list(PersistenceSurface))
-def test_sealed_v045_fixture_migrates_exactly_to_expected_v1(surface):
+def test_sealed_fixture_migrates_exactly_to_the_current_schema(surface):
     fixture = load_persistence_replay_fixture(fixture_path(surface))
     assert fixture.engine_version == "0.45.0"
     assert fixture.source_schema_version == 0
@@ -204,7 +204,7 @@ def test_duplicate_registry_edge_is_rejected():
         registry.register(PersistenceSurface.MEMORY, 0, 1, lambda payload: payload)
 
 
-def test_fixture_directory_verifies_all_sealed_v045_surfaces():
+def test_fixture_directory_verifies_all_sealed_surfaces():
     results = verify_persistence_fixture_directory(FIXTURES)
     assert len(results) == len(PersistenceSurface) == 11
     assert all(result.passed for result in results)
@@ -479,7 +479,7 @@ def test_persistence_public_api_is_exported_from_root():
         assert hasattr(ace, name)
 
 
-def test_v046_versions_and_contract_versions_are_aligned():
+def test_package_and_contract_versions_are_aligned():
     from ai_character_engine.distributed import DISTRIBUTED_PROTOCOL_VERSION
     from ai_character_engine.extensions import EXTENSION_API_VERSION
     from ai_character_engine.compatibility import PUBLIC_API_CONTRACT_VERSION
@@ -494,7 +494,7 @@ def test_v046_versions_and_contract_versions_are_aligned():
     ) == (1, 1, 1, 1)
 
 
-def test_v045_sealed_public_api_to_v046_is_additive_only():
+def test_sealed_api_upgrade_only_adds_symbols():
     baseline = load_public_api_manifest(SEALED_V045)
     sealed_v046 = load_public_api_manifest(ROOT / "tests/fixtures/api" / "public_api_v0.46_sealed.json")
     report = compare_public_api_manifests(baseline, sealed_v046)

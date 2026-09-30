@@ -275,7 +275,7 @@ async def test_nonstreaming_tts_can_use_text_viseme_fallback():
     assert next(e for e in events if e.type is LiveEventType.AVATAR_RESET).data["reason"] == "completed"
 
 
-async def test_no_avatar_runtime_preserves_v026_event_contract():
+async def test_no_avatar_runtime_keeps_the_event_contract():
     live = LiveCharacterOrchestrator(
         CharacterHostBridge(runtime(NonStreamingLLM())),
         tts=PlainTTS(),

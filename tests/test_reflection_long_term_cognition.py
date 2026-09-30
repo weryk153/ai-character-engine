@@ -286,7 +286,7 @@ async def test_reflection_without_structured_claim_is_durable_but_not_forced_int
 
 
 @pytest.mark.asyncio
-async def test_no_manager_preserves_v033_review_required_behavior():
+async def test_without_a_manager_reflection_stays_review_required():
     commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine()))
     result = await commits.commit(reflection_proposal(event_id="evt-1"))
     assert result.status is CommitStatus.REVIEW_REQUIRED
@@ -561,7 +561,7 @@ def test_cognition_evidence_independence_is_source_based_not_excerpt_based():
     assert a.independence_key != c.independence_key
 
 
-def test_v034_public_api_and_version():
+def test_public_api_and_version():
     import ai_character_engine as ace
 
     assert ace.__version__ == "1.0.0"

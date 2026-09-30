@@ -9,7 +9,7 @@ from ai_character_engine.release_candidate import evaluate_release_candidate
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_sealed_v048_to_v1_is_exact_and_stable():
+def test_last_sealed_api_to_v1_is_exact_and_stable():
     gates = {gate.name: gate for gate in evaluate_release_candidate(ROOT).gates}
     assert gates["api.v048_upgrade"].status.value == "pass"
     assert gates["api.stable_manifest"].status.value == "pass"

@@ -415,7 +415,7 @@ def test_world_runtime_has_no_auto_delivery_api():
     assert not hasattr(WorldRuntime, "sync_beliefs")
 
 
-def test_v040_public_exports_and_version():
+def test_public_exports_and_version():
     import ai_character_engine as ace
 
     assert ace.__version__ == "1.0.0"
@@ -423,14 +423,14 @@ def test_v040_public_exports_and_version():
     assert ace.WorldPerceptionScope.PUBLIC.value == "public"
 
 
-def test_v040_document_world_perception_boundary():
+def test_docs_describe_world_perception_boundary():
     root = Path(__file__).resolve().parents[1]
     guide = (root / "docs" / "architecture.md").read_text(encoding="utf-8")
     assert "World truth is not character knowledge" in guide
     assert "authoritative=false" in guide
 
 
-def test_v040_offline_example_runs_without_provider():
+def test_offline_example_runs_without_provider():
     import os
     import subprocess
     import sys

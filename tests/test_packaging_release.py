@@ -368,7 +368,7 @@ def test_release_symbols_are_exported_from_root_package():
     assert all(hasattr(ace, name) for name in expected)
 
 
-def test_sealed_v046_public_api_is_046_and_current_v047_is_additive_only():
+def test_later_sealed_api_only_adds_symbols():
     from ai_character_engine.compatibility import build_public_api_manifest, compare_public_api_manifests, load_public_api_manifest
 
     baseline = load_public_api_manifest(SEALED_V046)

@@ -139,7 +139,7 @@ async def run_collaboration(
     return result, collaboration, tasks
 
 
-def test_v036_roles_exist_without_provider_or_model_ids():
+def test_roles_exist_without_provider_or_model_ids():
     assert CognitiveRole.PLANNER.value == "planner"
     assert CognitiveRole.TOOL.value == "tool"
     assert CognitiveRole.VERIFIER.value == "verifier"
@@ -730,5 +730,5 @@ async def test_collaboration_task_output_never_contains_authoritative_task_propo
     assert result.output.metadata["collaboration"]["authoritative"] is False
 
 
-def test_v036_core_version():
+def test_core_version():
     assert ace.__version__ == "1.0.0"

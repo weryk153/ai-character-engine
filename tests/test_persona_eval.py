@@ -300,7 +300,7 @@ def test_cli_exit_codes_output_and_input_protection(tmp_path):
     assert bad.read_text() == '{'
 
 
-def test_v011_public_api_still_available():
+def test_retrieval_evaluation_api_is_exported():
     from ai_character_engine.memory import (
         RetrievalEvalCase, RetrievalEvalDataset, RetrievalEvaluator,
         RetrievalComparisonReport, QueryRewriter, IdentityQueryRewriter,

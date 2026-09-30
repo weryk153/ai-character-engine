@@ -420,7 +420,7 @@ def test_task_request_payload_is_copied_from_host_input():
     payload["nested"]["value"] = 99
     assert request.payload["nested"]["value"] == 1
 
-def test_v030_public_api_exports_multitask_contracts():
+def test_public_api_exports_multitask_contracts():
     import ai_character_engine as ace
 
     assert ace.__version__ == "1.0.0"

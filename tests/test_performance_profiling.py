@@ -452,7 +452,7 @@ def test_performance_public_api_is_exported_from_root():
         assert hasattr(ace, name)
 
 
-def test_v045_version_and_contract_versions_remain_independent():
+def test_package_and_contract_versions_are_independent():
     from ai_character_engine.distributed import DISTRIBUTED_PROTOCOL_VERSION
     from ai_character_engine.extensions import EXTENSION_API_VERSION
     from ai_character_engine.compatibility import PUBLIC_API_CONTRACT_VERSION
@@ -462,7 +462,7 @@ def test_v045_version_and_contract_versions_remain_independent():
     assert (PUBLIC_API_CONTRACT_VERSION, EXTENSION_API_VERSION, DISTRIBUTED_PROTOCOL_VERSION) == (1, 1, 1)
 
 
-def test_v044_sealed_public_api_to_v045_is_additive_only():
+def test_sealed_api_upgrade_only_adds_symbols():
     from ai_character_engine.compatibility import build_public_api_manifest, compare_public_api_manifests, load_public_api_manifest
 
     baseline = load_public_api_manifest(ROOT / "tests/fixtures/api" / "public_api_v0.44_sealed.json")

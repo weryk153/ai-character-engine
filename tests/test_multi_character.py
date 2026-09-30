@@ -427,7 +427,7 @@ def test_multi_character_package_does_not_import_cognition_authority_modules_dir
     assert "ai_character_engine.commit" not in source
 
 
-def test_v039_public_exports_and_version():
+def test_public_exports_and_version():
     import ai_character_engine as ace
     assert ace.__version__ == "1.0.0"
     assert ace.MultiCharacterRuntime is MultiCharacterRuntime
@@ -435,14 +435,14 @@ def test_v039_public_exports_and_version():
     assert ace.KnowledgeVisibility.PUBLIC.value == "public"
 
 
-def test_v039_document_authority_boundaries():
+def test_docs_describe_authority_boundaries():
     root = Path(__file__).resolve().parents[1]
     guide = (root / "docs" / "architecture.md").read_text(encoding="utf-8")
     assert "A second character is another authority boundary" in guide
     assert "does not auto-promote" in guide
 
 
-def test_v039_offline_example_runs_without_provider():
+def test_offline_example_runs_without_provider():
     import os
     import subprocess
     import sys

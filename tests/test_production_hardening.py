@@ -328,7 +328,7 @@ def test_production_runtime_has_no_memory_belief_goal_or_state_write_api():
     assert not public.intersection(forbidden)
 
 
-def test_v038_public_version_and_exports():
+def test_public_version_and_exports():
     assert ace.__version__ == "1.0.0"
     assert ace.ProductionHardeningRuntime is ProductionHardeningRuntime
     assert ace.DegradedMode is DegradedMode

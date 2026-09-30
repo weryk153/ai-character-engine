@@ -564,7 +564,7 @@ def test_distributed_package_has_no_cloud_queue_vendor_dependency_tokens():
         assert token not in text
 
 
-def test_public_api_exports_v042_distributed_runtime():
+def test_public_api_exports_distributed_runtime():
     assert ace.__version__ == "1.0.0"
     assert ace.DISTRIBUTED_PROTOCOL_VERSION == 1
     assert ace.DistributedWorker is DistributedWorker
@@ -630,7 +630,7 @@ def test_worker_config_rejects_invalid_heartbeat_and_timeout():
         DistributedWorkerConfig(default_task_timeout_s=0)
 
 
-def test_v042_docs_lock_authority_delivery_and_next_scope():
+def test_docs_describe_worker_authority_and_delivery():
     guide = (ROOT / "docs" / "operations.md").read_text(encoding="utf-8")
     assert "Remote execution is not remote authority" in guide
     assert "At-least-once execution" in guide
@@ -639,7 +639,7 @@ def test_v042_docs_lock_authority_delivery_and_next_scope():
 
 
 
-def test_v042_offline_example_runs_without_network_or_provider():
+def test_offline_example_runs_without_network_or_provider():
     import os
     import subprocess
     import sys
