@@ -2501,3 +2501,36 @@ def test_a_remark_interrupted_while_it_is_played_is_cut_to_what_was_heard(tmp_pa
     history = run(scenario())
     assert history[-1] == ("assistant", "Hello. [Interrupted by user]")
     assert history[1] == ("assistant", "Hello. How are you?")
+
+
+def test_a_host_can_ask_her_to_speak_up_in_its_own_words(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a", instruction="對方已經有一段時間沒講話了。請你自然地開口。")
+        await current.close()
+        return llm.calls[-1][-1].content
+
+    event = run(scenario())
+    assert "對方已經有一段時間沒講話了。請你自然地開口。" in event
+    assert "Speak up on your own" not in event
+
+
+def test_she_is_told_what_she_said_on_her_own_last_time(tmp_path):
+    """A small model copied its previous remark word for word, although the
+    remark was in the conversation: speaking up looks the same every time."""
+
+    async def scenario():
+        llm = Foreground(parts=("Mind the load on Amadeus.",))
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        first = llm.calls[-1][-1].content
+        llm.parts = ("How is the cat?",)
+        await current.speak_up("a")
+        second = llm.calls[-1][-1].content
+        await current.close()
+        return first, second
+
+    first, second = run(scenario())
+    assert "Mind the load on Amadeus." not in first
+    assert "Mind the load on Amadeus." in second

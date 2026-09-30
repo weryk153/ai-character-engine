@@ -166,14 +166,26 @@ class _Turn:
 
 
 _ANY = object()
-# How she is asked to speak up; not kept in the conversation.
-SPEAK_UP_INSTRUCTION = (
-    "Nobody has said anything for a while. Speak up on your own, in character, as if "
-    "the thought just came to you. You are not replying to anyone: do not answer the "
-    "user's last message again. Do one of these, whichever is most natural now: carry "
-    "on with something still open in the conversation, bring up something you want or "
-    "have been thinking about, or simply turn to the user. Say one thing only, in a "
-    "sentence or two, with at most one question, and nothing you have already said."
+# How she is asked to speak up; not kept in the conversation. A host may pass
+# its own, in the language she speaks.
+SPEAK_UP_INSTRUCTION = """Nobody has said anything for a while. Speak up on your own, in character.
+
+You are not replying to anyone. You answered the user's last message long ago: do not answer it again, and do not open as if responding ("as you said", "since you put it that way").
+
+Three choices are equally fine; take whichever is most natural right now, not always the first:
+1. Carry on with what was just being talked about, if something about it is still open: add a new point or ask about it. Do not restate what was already said.
+2. Bring up something new: something you want to do or have been thinking about, or something the host suggests below. Start with it directly; do not announce a change of topic.
+3. Simply turn to the user: say their name, what is on your mind right now, or ask what they are doing.
+
+Do not mix the choices: ending one thing and tacking on an unrelated question sounds like two people talking.
+
+- One thing at a time, at most one question. If you asked a question the last time you spoke up, do not ask one now.
+- Do not sound like you are reading from notes or a news feed, and do not ask empty questions ("anything new?", "what do you want to talk about?").
+- Do not say that you are speaking up, and never mention topic lists, news feeds or any other mechanism. Just say it."""
+# Added to the instruction: what she said the last time she spoke up.
+LAST_REMARK = (
+    "The last time you spoke up on your own, you said: \"{remark}\" "
+    "Say something different; do not repeat it, not even in other words."
 )
 # What stays in the conversation before a remark she made on her own.
 REMARK_EVENT = "The user had been quiet for a while; you spoke up on your own."
@@ -654,6 +666,7 @@ class CharacterCompanion:
         remember_as: Callable[[str], str] | None = None,
         turn_id: Any = None,
         keep: bool = True,
+        instruction: str | None = None,
     ) -> CharacterRunResult:
         """She speaks up on her own; the host decides when (the user has been
         quiet, a timer, an event).
@@ -667,10 +680,12 @@ class CharacterCompanion:
         saying she spoke up on her own, as the conversation's newest reply; cut
         short, what was heard of it. ``keep=False`` keeps nothing, for a host
         that filters what she says and keeps what was spoken itself with
-        remember_remark().
+        remember_remark(). ``instruction`` replaces the engine's own, for a
+        host that asks in the language she speaks; what she said the last time
+        she spoke up is added to either.
         """
         return await self._run(
-            SPEAK_UP_INSTRUCTION,
+            instruction or SPEAK_UP_INSTRUCTION,
             conversation_id=conversation_id,
             frames=frames,
             on_text_delta=on_text_delta,
@@ -725,6 +740,10 @@ class CharacterCompanion:
                 self._last_turn[conversation_id] = serial
                 self._take_back_what_the_host_no_longer_knows(conversation_id, notes)
                 self._notes = tuple(note for note in notes if note.strip())
+                if remark is not None:
+                    last = self._last_remark()
+                    if last:
+                        text = f"{text}\n\n{LAST_REMARK.format(remark=last)}"
                 self._access.foreground_started()
                 try:
                     turn.generating = True
@@ -820,6 +839,19 @@ class CharacterCompanion:
             self._switch_to(conversation_id)
             self._keep_remark(conversation_id, remark)
             self._save_state()
+
+    def _last_remark(self) -> str | None:
+        """The last remark she made on her own in the conversation at hand."""
+        history = self.runtime.history
+        for index in range(len(history) - 1, 0, -1):
+            before = history[index - 1]
+            if (
+                history[index].role == "assistant"
+                and before.role == "event"
+                and REMARK_EVENT in before.content
+            ):
+                return history[index].content
+        return None
 
     def _keep_remark(self, conversation_id: str | None, remark: str, turn_id: Any = None) -> None:
         """Call with the turn lock held and the conversation at hand."""
