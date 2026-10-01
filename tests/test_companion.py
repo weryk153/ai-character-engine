@@ -2902,7 +2902,7 @@ def test_said_again_about_herself_it_replaces_what_she_held(tmp_path):
     "first, then",
     [
         (("Mei likes cats.", "I like cats"), ("Mei does not like cats.", "I don't like cats")),
-        (("紅莉栖喜歡貓。", "我喜歡貓"), ("紅莉栖不喜歡貓。", "我不喜歡貓")),
+        (("小梅喜歡貓。", "我喜歡貓"), ("小梅不喜歡貓。", "我不喜歡貓")),
         (("Mei's favourite colour is blue.", "blue"), ("Mei's favourite colour is red.", "red")),
         (("Mei likes horror films.", "I like horror"), ("Mei dislikes horror films.", "dislike")),
     ],
