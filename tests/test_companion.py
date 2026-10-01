@@ -3357,3 +3357,53 @@ def test_what_she_said_before_the_engine_kept_it_is_older_than_what_it_kept(tmp_
     # In the order given, before the rest; the oldest goes first.
     assert held == ["Old two", "Recent one", "Recent two"]
     assert lines == [f"{SELF_LINE}Recent one", f"{SELF_LINE}Recent two"]
+
+
+@pytest.mark.parametrize(
+    "said",
+    [
+        "請隨時保持警惕，他們就在附近。",
+        "Let me know if you want to come along tomorrow!",
+        "Is there anything else you remember about that night?",
+        "店員說：「有什麼可以幫您的嗎？」",
+        "如果還有其他問題，隨時告訴我。我先去煮水。那壺茶還熱著。",
+    ],
+)
+def test_words_like_an_assistants_are_fine_in_character(tmp_path, said):
+    """A guard, a friend, a scene retold: such words were taken for an
+    assistant's closing and dropped. A closing comes at the end, in her own
+    voice."""
+
+    async def scenario():
+        llm = Scripted(said, said)
+        current = companion(tmp_path, llm=llm)
+        heard: list[str] = []
+        reply = await current.reply("and then?", conversation_id="a", on_text_delta=heard.append)
+        remark = await current.speak_up("b")
+        await current.close()
+        return "".join(heard), reply.text, remark.text
+
+    assert run(scenario()) == (said, said, said)
+
+
+def test_an_assistants_closing_at_the_end_is_still_left_out(tmp_path):
+    async def scenario():
+        llm = Scripted("這段程式應該沒問題了。祝你程式編寫一切順利！")
+        current = companion(tmp_path, llm=llm)
+        result = await current.reply("好了嗎", conversation_id="a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "這段程式應該沒問題了。"
+
+
+def test_naming_again_what_she_mentioned_in_a_reply_is_not_quoting_herself(tmp_path):
+    async def scenario():
+        llm = Scripted("我最近在追「進擊的巨人」。", "我昨天看了「進擊的巨人」最終季，結局比想像中安靜。")
+        current = companion(tmp_path, llm=llm)
+        await current.reply("最近在看什麼", conversation_id="a")
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "我昨天看了「進擊的巨人」最終季，結局比想像中安靜。"
