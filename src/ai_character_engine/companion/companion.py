@@ -18,6 +18,7 @@ import itertools
 import json
 import logging
 import os
+import re
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -208,6 +209,17 @@ ALREADY_SAID = (
     "What you were about to say repeats something you already said in this "
     "conversation. Say something else, or turn to the user in a new way."
 )
+# Asked again for the other reasons a sentence is left out; none of them
+# quotes her words either.
+NOT_AN_ASSISTANT = (
+    "What you were about to say sounds like an assistant offering help, not like "
+    "you. Stay in character."
+)
+NOTHING_TO_ACKNOWLEDGE = (
+    "What you were about to say only acknowledges something, and nobody said "
+    "anything to acknowledge. Say something of your own."
+)
+NO_QUESTION = "Do not ask a question this time; say something without one."
 # How often she is asked again before she stays quiet instead.
 REMARK_ATTEMPTS = 3
 # How many of her latest lines a remark is checked against.
@@ -255,6 +267,99 @@ _CLOSERS = "」』）)】\"'”’"
 # Sentences shorter than this ("Hmm.", "嗯。") are not checked: saying them
 # again is not repeating oneself.
 _SHORTEST_CHECKED = 8
+
+
+# Support closings that break character. Small models fall into them at the end
+# of a reply, whatever the persona says; compared casefolded.
+ASSISTANT_SPEAK = (
+    "let me know if",
+    "feel free to ask",
+    "how can i help",
+    "is there anything else",
+    "i'm here to help",
+    "i am here to help",
+    "有什麼可以幫",
+    "有什麼我可以幫",
+    "如果還有其他問題",
+    "如果需要進一步",
+    "如果你需要任何",
+    "需要幫忙的話",
+    "隨時告訴我",
+    "隨時問我",
+    "請隨時",
+    "我很樂意聆聽並提供幫助",
+    "提供幫助或討論其他話題",
+    "希望我們的交流能",
+    "請告訴我你現在最關心",
+    "我可以盡力回答",
+    "有什么可以帮",
+    "有什么我可以帮",
+    "如果还有其他问题",
+    "如果需要进一步",
+    "如果你需要任何",
+    "需要帮忙的话",
+    "随时告诉我",
+    "随时问我",
+    "请随时",
+    "我很乐意聆听并提供帮助",
+    "提供帮助或讨论其他话题",
+    "希望我们的交流能",
+    "请告诉我你现在最关心",
+    "我可以尽力回答",
+)
+# A remark that is nothing but one of these acknowledges what nobody said.
+# Compared as _plain() of each part between punctuation.
+ACKNOWLEDGEMENTS = frozenset(
+    {
+        "嗯", "嗯嗯", "嗯哼", "恩", "好", "好吧", "好的", "好啊", "好喔", "好哦", "行",
+        "是", "是的", "是啊", "對", "對啊", "對呀", "对", "对啊", "对呀", "沒錯", "没错",
+        "喔", "哦", "噢", "了解", "知道了", "明白", "確實", "确实",
+        "ok", "okay", "yeah", "yes", "yep", "yup", "sure", "right", "alright", "fine",
+        "mm", "mmm", "hmm", "mmhmm", "uhhuh", "isee", "gotit", "noted",
+        "うん", "はい", "ええ", "そう", "そうだね", "なるほど",
+    }
+)
+# Quoted words: 「」, 『』, “” or "".
+_QUOTED = re.compile(r"「([^」]*)」|『([^』]*)』|“([^”]*)”|\"([^\"]*)\"")
+# Quoted words shorter than this are not taken for her own.
+_SHORTEST_QUOTE = 4
+
+
+def _sounds_like_an_assistant(sentence: str) -> bool:
+    said = " ".join(sentence.casefold().replace("’", "'").split())
+    return any(phrase in said for phrase in ASSISTANT_SPEAK)
+
+
+def _only_acknowledges(text: str) -> bool:
+    parts = [_plain(part) for part in re.split(r"[^\w\s-]+", text)]
+    parts = [part for part in parts if part]
+    return bool(parts) and all(part in ACKNOWLEDGEMENTS for part in parts)
+
+
+def _is_question(sentence: str) -> bool:
+    return sentence.rstrip().rstrip(_CLOSERS).rstrip().endswith(("?", "？"))
+
+
+def _quoting_herself(text: str, lines: Sequence[str]) -> list[tuple[int, int]]:
+    """Where ``text`` quotes words of hers from ``lines``: a model with nobody
+    to answer quotes its own words back and reacts to them."""
+    mine = [_plain(line) for line in lines]
+    spans = []
+    for match in _QUOTED.finditer(text):
+        quoted = _plain(next(group for group in match.groups() if group is not None))
+        if len(quoted) >= _SHORTEST_QUOTE and any(quoted in line for line in mine):
+            spans.append(match.span())
+    return spans
+
+
+def _asked_again(text: str, reasons: set[str]) -> str:
+    notes = {
+        "repeat": ALREADY_SAID,
+        "assistant": NOT_AN_ASSISTANT,
+        "acknowledgement": NOTHING_TO_ACKNOWLEDGE,
+        "question": NO_QUESTION,
+    }
+    return "\n\n".join([text, *(notes[reason] for reason in notes if reason in reasons)])
 
 
 def _sentences(text: str) -> tuple[list[str], str]:
@@ -308,16 +413,32 @@ def _repeats_a_line(sentence: str, lines: Sequence[str]) -> bool:
     return False
 
 
+def _left_out(sentence: str, lines: Sequence[str]) -> str | None:
+    """Why a sentence of a reply is left out: "" when it is nothing but
+    punctuation, which a host shows as an empty subtitle; None when it is
+    passed on."""
+    if not _plain(sentence):
+        return ""
+    if _sounds_like_an_assistant(sentence):
+        return "assistant"
+    if _repeats_a_line(sentence, lines):
+        return "repeat"
+    return None
+
+
 class _SentenceGate:
     """Passes a reply on sentence by sentence, leaving out any sentence that
-    repeats one of her latest lines."""
+    repeats one of her latest lines or talks like an assistant, and any that
+    is nothing but punctuation."""
 
     def __init__(self, lines: Sequence[str], forward) -> None:
         self._lines = lines
         self._forward = forward
         self._pending = ""
         self.passed = ""
-        self.dropped = 0
+        self.left_out = 0
+        # Why sentences with words in them were left out.
+        self.reasons: set[str] = set()
 
     async def __call__(self, delta: str) -> None:
         self._pending += delta
@@ -331,14 +452,40 @@ class _SentenceGate:
             await self._offer(rest)
 
     async def _offer(self, sentence: str) -> None:
-        if _repeats_a_line(sentence, self._lines):
-            self.dropped += 1
+        reason = _left_out(sentence, self._lines)
+        if reason is not None:
+            self.left_out += 1
+            if reason:
+                self.reasons.add(reason)
             return
         self.passed += sentence
         if self._forward is not None:
             delivered = self._forward(sentence)
             if inspect.isawaitable(delivered):
                 await delivered
+
+
+def _what_a_remark_keeps(
+    text: str, lines: Sequence[str], statement_only: bool
+) -> tuple[str, set[str]]:
+    """The sentences of a remark that may be passed on, and why the others
+    with words in them were left out."""
+    reasons: set[str] = set()
+    quoted = _quoting_herself(text, lines)
+    kept, at = [], 0
+    done, rest = _sentences(text)
+    for sentence in [*done, rest]:
+        start, at = at, at + len(sentence)
+        reason = _left_out(sentence, lines)
+        if reason is None and any(start < end and begin < at for begin, end in quoted):
+            reason = "repeat"
+        if reason is None and statement_only and _is_question(sentence):
+            reason = "question"
+        if reason is None:
+            kept.append(sentence)
+        elif reason:
+            reasons.add(reason)
+    return "".join(kept).strip(), reasons
 
 
 def _interrupted(heard: str) -> Message:
@@ -826,6 +973,7 @@ class CharacterCompanion:
         turn_id: Any = None,
         keep: bool = True,
         instruction: str | None = None,
+        statement_only: bool = False,
     ) -> CharacterRunResult:
         """She speaks up on her own; the host decides when (the user has been
         quiet, a timer, an event).
@@ -842,6 +990,15 @@ class CharacterCompanion:
         remember_remark(). ``instruction`` replaces the engine's own, for a
         host that asks in the language she speaks; what she said the last time
         she spoke up is added to either.
+
+        What she says is checked before any of it is passed on. A sentence
+        that repeats one of her latest lines, quotes her own words back, talks
+        like an assistant offering help, or is nothing but punctuation is left
+        out; so is a question with ``statement_only``, for a host whose user
+        has stayed quiet through her last questions. What is left must say
+        something: a remark that only acknowledges ("OK.", "嗯。") is none.
+        Otherwise she is asked again, up to REMARK_ATTEMPTS times, and then
+        stays quiet.
         """
         return await self._run(
             instruction or SPEAK_UP_INSTRUCTION,
@@ -855,6 +1012,7 @@ class CharacterCompanion:
             remember_as=remember_as,
             turn_id=turn_id,
             remark="keep" if keep else "drop",
+            statement_only=statement_only,
         )
 
     async def _run(
@@ -871,6 +1029,7 @@ class CharacterCompanion:
         remember_as: Callable[[str], str] | None,
         turn_id: Any,
         remark: str | None,
+        statement_only: bool = False,
     ) -> CharacterRunResult:
         """One turn. ``remark`` is None for a reply, "keep" or "drop" for a
         remark she made on her own (see speak_up)."""
@@ -909,7 +1068,9 @@ class CharacterCompanion:
                                 text, frames, skip_memory, proactive, on_text_delta
                             )
                         else:
-                            result = await self._something_new(text, frames, on_text_delta)
+                            result = await self._something_new(
+                                text, frames, on_text_delta, statement_only
+                            )
                     except asyncio.CancelledError:
                         if turn.heard is None:
                             # The host cancelled its own task. It may tell us
@@ -1007,9 +1168,10 @@ class CharacterCompanion:
         self, text, frames, skip_memory, proactive, on_text_delta
     ) -> CharacterRunResult:
         """A reply passed on sentence by sentence, without the sentences that
-        repeat one of her latest lines; what is kept is what was passed on. A
-        reply that was nothing but repetition, and used no tool, is asked
-        again once."""
+        repeat one of her latest lines, talk like an assistant or are nothing
+        but punctuation; what is kept is what was passed on. A reply that was
+        nothing but repetition or assistant talk, and used no tool, is asked
+        again once. One of nothing but punctuation is her silence: it is not."""
         mine = [
             message.content
             for message in self.runtime.history
@@ -1029,16 +1191,16 @@ class CharacterCompanion:
                 )
             )
             await gate.finish()
-            if not gate.dropped:
+            if not gate.left_out:
                 return result
             said = gate.passed.strip()
-            if said or result.tool_results or attempt == 1:
+            if said or result.tool_results or attempt == 1 or not gate.reasons:
                 if not skip_memory:
                     self._bridge.replace_reply(said)
                 return replace(result, response=replace(result.response, text=said))
             if not self._undo_turn(before):
                 return replace(result, response=replace(result.response, text=""))
-            asked = f"{text}\n\n{ALREADY_SAID}"
+            asked = _asked_again(text, gate.reasons)
         raise AssertionError("unreachable")
 
     def _undo_turn(self, before: Message | None) -> bool:
@@ -1060,10 +1222,12 @@ class CharacterCompanion:
         ]
         return True
 
-    async def _something_new(self, text, frames, on_text_delta) -> CharacterRunResult:
+    async def _something_new(
+        self, text, frames, on_text_delta, statement_only=False
+    ) -> CharacterRunResult:
         """A remark she has not made before. Generated whole before any of it is
-        passed on; asked again when it repeats one of her latest lines; nothing
-        at all rather than a repetition."""
+        passed on; asked again when it repeats one of her latest lines or says
+        nothing (see speak_up); nothing at all rather than a repetition."""
         mine = [
             message.content
             for message in self.runtime.history
@@ -1082,23 +1246,23 @@ class CharacterCompanion:
                     on_text_delta=said.append,
                 )
             )
-            # Sentences she already said are left out; what is left must not
-            # repeat her either.
-            done, rest = _sentences(result.text)
-            kept = "".join(
-                sentence for sentence in [*done, rest] if not _repeats_a_line(sentence, mine)
-            ).strip()
+            # Sentences she already said, and the others a reply leaves out,
+            # are left out; what is left must not repeat her either.
+            kept, reasons = _what_a_remark_keeps(result.text, mine, statement_only)
             # A word or two left over ("Hello.") once the rest was left out is
             # not a remark of its own; a short remark as it came is.
-            left_over = kept != result.text.strip()
-            enough = not left_over or len(_plain(kept)) >= _SHORTEST_CHECKED
-            if kept and enough and not _repeats(kept, mine):
+            enough = not reasons or len(_plain(kept)) >= _SHORTEST_CHECKED
+            if kept and enough and _repeats(kept, mine):
+                reasons.add("repeat")
+            elif kept and enough and _only_acknowledges(kept):
+                reasons.add("acknowledgement")
+            elif kept and enough:
                 if on_text_delta is not None:
                     delivered = on_text_delta(kept)
                     if inspect.isawaitable(delivered):
                         await delivered
                 return replace(result, response=replace(result.response, text=kept))
-            asked = f"{text}\n\n{ALREADY_SAID}"
+            asked = _asked_again(text, reasons)
         # Nothing new to say: better quiet than the same line again.
         return replace(result, response=replace(result.response, text=""))
 

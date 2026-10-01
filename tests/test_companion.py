@@ -3014,3 +3014,175 @@ def test_read_every_second_turn_nothing_she_said_is_skipped(tmp_path):
     run(scenario())
     (listed,) = asked
     assert "jasmine tea" in listed and "hills" in listed
+
+
+# --- what she says is checked before it is passed on ---------------------------------
+
+
+def test_a_sentence_of_nothing_but_punctuation_is_not_passed_on(tmp_path):
+    """A host showed "……" between two sentences as an empty subtitle."""
+
+    async def scenario():
+        llm = Scripted("Hello. …… How are you?", "……", "……", "Mind the cooling. ……")
+        current = companion(tmp_path, llm=llm)
+        heard: list[str] = []
+        reply = await current.reply("hi", conversation_id="a", on_text_delta=heard.append)
+        kept = current.runtime.history[-1].content
+        silent: list[str] = []
+        quiet = await current.reply("well?", conversation_id="a", on_text_delta=silent.append)
+        calls = len(llm.calls)
+        remark = await current.speak_up("a")
+        await current.close()
+        return "".join(heard), reply.text, kept, silent, quiet.text, calls, remark.text
+
+    heard, text, kept, silent, quiet, calls, remark = run(scenario())
+    assert heard == "Hello. How are you?"
+    assert text == kept == "Hello. How are you?"
+    # Nothing but "……" is her silence: nothing is passed on, and she is not
+    # asked again for words.
+    assert silent == [] and quiet == "" and calls == 2
+    # A remark of nothing is no remark: she is asked again.
+    assert remark == "Mind the cooling."
+
+
+def test_a_remark_that_only_acknowledges_is_no_remark(tmp_path):
+    """Nobody said anything: there is nothing to say "OK" to."""
+
+    async def scenario():
+        llm = Scripted("嗯。", "Mm-hmm.", "How is Bun taking the rain?", "好吧。", "Yeah.", "嗯，對。")
+        current = companion(tmp_path, llm=llm)
+        spoken = await current.speak_up("a")
+        quiet = await current.speak_up("a")
+        await current.close()
+        return spoken.text, quiet.text
+
+    assert run(scenario()) == ("How is Bun taking the rain?", "")
+
+
+def test_a_short_call_of_her_own_is_not_an_acknowledgement(tmp_path):
+    async def scenario():
+        llm = Scripted("Hey.")
+        current = companion(tmp_path, llm=llm)
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "Hey."
+
+
+def test_an_acknowledgement_or_a_question_is_a_fine_reply(tmp_path):
+    async def scenario():
+        llm = Scripted("好。", "Why?")
+        current = companion(tmp_path, llm=llm)
+        first = await current.reply("can you wait a minute", conversation_id="a")
+        second = await current.reply("I give up", conversation_id="a")
+        await current.close()
+        return first.text, second.text
+
+    assert run(scenario()) == ("好。", "Why?")
+
+
+def test_she_does_not_offer_help_like_an_assistant(tmp_path):
+    """Small models fall into a support closing at the end of a reply; it
+    breaks the character."""
+
+    async def scenario():
+        llm = Scripted(
+            "The rain stopped. Let me know if you need anything else!",
+            "雨停了。如果還有其他問題，隨時告訴我。",
+        )
+        current = companion(tmp_path, llm=llm)
+        heard: list[str] = []
+        english = await current.reply(
+            "is it raining", conversation_id="a", on_text_delta=heard.append
+        )
+        chinese = await current.reply("還在下雨嗎", conversation_id="b")
+        kept = current.runtime.history[-1].content
+        await current.close()
+        return "".join(heard), english.text, chinese.text, kept
+
+    heard, english, chinese, kept = run(scenario())
+    assert heard.strip() == english == "The rain stopped."
+    assert chinese == kept == "雨停了。"
+
+
+def test_a_reply_that_is_all_assistant_talk_is_asked_again(tmp_path):
+    async def scenario():
+        llm = Scripted(
+            "Is there anything else I can help you with?",
+            "Then go and look at the cooling first.",
+        )
+        current = companion(tmp_path, llm=llm)
+        result = await current.reply("ok", conversation_id="a")
+        asked_again = llm.calls[-1][-1].content
+        await current.close()
+        return result.text, asked_again
+
+    text, asked_again = run(scenario())
+    assert text == "Then go and look at the cooling first."
+    assert asked_again.startswith("ok\n\n")
+    # Her words are not quoted back to her.
+    assert "anything else" not in asked_again
+
+
+def test_a_remark_that_is_all_assistant_talk_is_asked_again(tmp_path):
+    async def scenario():
+        llm = Scripted("有什麼我可以幫你的嗎？", "我在想週末去爬山。")
+        current = companion(tmp_path, llm=llm)
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "我在想週末去爬山。"
+
+
+def test_quoting_herself_in_a_remark_is_repeating_herself(tmp_path):
+    """With nobody to answer, a small model quoted its own words back and
+    reacted to them: an interview with itself."""
+
+    async def scenario():
+        llm = Scripted(
+            "我今天想喝茉莉花茶。",
+            "「想喝茉莉花茶」——我剛剛是這麼說的吧？真是的，我在自言自語什麼呢。",
+        )
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "真是的，我在自言自語什麼呢。"
+
+
+def test_quoting_the_user_in_a_remark_is_not_repeating_herself(tmp_path):
+    async def scenario():
+        llm = Scripted("那就待在家吧。", "你說「明天要下雨」，記得帶傘。")
+        current = companion(tmp_path, llm=llm)
+        await current.reply("明天要下雨", conversation_id="a")
+        result = await current.speak_up("a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "你說「明天要下雨」，記得帶傘。"
+
+
+def test_a_host_can_ask_for_a_remark_without_a_question(tmp_path):
+    """The user stays quiet and she asks question after question."""
+
+    async def scenario():
+        llm = Scripted(
+            "What are you reading?",
+            "I finished the drawing. Do you want to see it?",
+            "Are you there?",
+        )
+        current = companion(tmp_path, llm=llm)
+        statement = await current.speak_up("a", statement_only=True)
+        asked_again = llm.calls[-1][-1].content
+        question = await current.speak_up("a")
+        await current.close()
+        return statement.text, asked_again, question.text
+
+    statement, asked_again, question = run(scenario())
+    assert statement == "I finished the drawing."
+    assert "What are you reading" not in asked_again
+    assert question == "Are you there?"

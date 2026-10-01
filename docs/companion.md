@@ -82,7 +82,12 @@ Without `storage_dir` nothing is written to disk.
 1. Background work gives way: calls in progress are abandoned and redone after
    the reply, so the reply has the model to itself.
 2. The reply is generated and streamed. Text is forwarded as it is generated even
-   when tools are registered (`stream_text_with_tools`).
+   when tools are registered (`stream_text_with_tools`), one sentence at a time.
+   A sentence that repeats one of her latest lines, talks like an assistant
+   offering help ("let me know if...", "如果還有其他問題..."), or is nothing but
+   punctuation is left out, and the conversation keeps what was passed on. A
+   reply of which nothing is left for repetition or assistant talk, and which
+   used no tool, is asked again once.
 3. Trust grows a little; an observation of the user's emotion committed since the
    last turn moves mood, trust and favorability
    (`ai_character_engine.state.relationship`).
@@ -111,7 +116,7 @@ prompt extends the one before it and the inference server can reuse its work
 | `companion.tools.register(definition, handler)` | Give the character a tool |
 | `memories(conversation_id)` / `rewrite_memories(conversation_id, lines, edited_from=shown)` | Show what she remembers of a conversation, and take the user's edit back: a shown line that is gone is forgotten, a new line is remembered; what arrived while the page was open stays |
 | `self_memories()` / `rewrite_self_memories(lines, edited_from=shown)` | What she said about herself, in any conversation, oldest first, and the user's edit of it, the same way as `rewrite_memories`. Also for a host that kept such lines itself and hands them over. Beyond `self_memories_kept` the oldest are forgotten |
-| `speak_up(conversation_id, notes=[...])` | She speaks up on her own; the host decides when. What she says comes from her: what is still open, what she wants and thinks, or turning to the user. `notes` suggest material for this remark only; `instruction` replaces the engine's own, for a host that asks in the language she speaks. What she says is generated whole and checked against her latest lines before any of it is passed on; a repetition is asked again, and after three she stays quiet rather than repeat herself. What she said stays in the conversation, the instruction does not; `keep=False` for a host that filters what she says and keeps it itself |
+| `speak_up(conversation_id, notes=[...])` | She speaks up on her own; the host decides when. What she says comes from her: what is still open, what she wants and thinks, or turning to the user. `notes` suggest material for this remark only; `instruction` replaces the engine's own, for a host that asks in the language she speaks. What she says is generated whole and checked before any of it is passed on: the sentences a reply leaves out are left out, and so are sentences that quote her own latest words back. A remark that repeats her, or that only acknowledges ("OK.", "嗯。") when nobody said anything, is asked again, and after three attempts she stays quiet. `statement_only=True` leaves out questions as well, for a host whose user stayed quiet through her last questions. What she said stays in the conversation, the instruction does not; `keep=False` for a host that keeps what she said itself |
 | `remember_remark(conversation_id, text)` | Keep a remark she made on her own when the turn that made it was kept out of memory (a long instruction the host does not want kept): what she said stays in the conversation after a short event, so she neither repeats it nor says it again when the user answers |
 | `aside(make_call)` | A model call of the host's own on the same local model (a memory of its own to tidy, a translation): it waits while she replies, gives way once to a reply that starts, and takes its turn after her workers |
 
