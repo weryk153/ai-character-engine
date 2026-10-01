@@ -351,14 +351,16 @@ def _quoting_herself(text: str, lines: Sequence[str]) -> list[tuple[int, int]]:
     return spans
 
 
-def _asked_again(text: str, reasons: set[str]) -> str:
+def _why_asked_again(reasons: set[str]) -> tuple[str, ...]:
+    """Notes for the next attempt only. Not added to what she is answering:
+    the conversation keeps that, and memory reads it as the user's words."""
     notes = {
         "repeat": ALREADY_SAID,
         "assistant": NOT_AN_ASSISTANT,
         "acknowledgement": NOTHING_TO_ACKNOWLEDGE,
         "question": NO_QUESTION,
     }
-    return "\n\n".join([text, *(notes[reason] for reason in notes if reason in reasons)])
+    return tuple(notes[reason] for reason in notes if reason in reasons)
 
 
 def _sentences(text: str) -> tuple[list[str], str]:
@@ -1178,13 +1180,13 @@ class CharacterCompanion:
             for message in self.runtime.history
             if message.role == "assistant" and message.content
         ][-LINES_CHECKED:]
-        asked = text
+        notes = self._notes
         for attempt in range(2):
             before = self.runtime.history[-1] if self.runtime.history else None
             gate = _SentenceGate(mine, on_text_delta)
             result = await self._tasks.run_foreground_turn(
                 lambda: self._bridge.process(
-                    asked,
+                    text,
                     frames=frames,
                     skip_memory=skip_memory,
                     proactive=proactive,
@@ -1201,7 +1203,7 @@ class CharacterCompanion:
                 return replace(result, response=replace(result.response, text=said))
             if not self._undo_turn(before):
                 return replace(result, response=replace(result.response, text=""))
-            asked = _asked_again(text, gate.reasons)
+            self._notes = (*notes, *_why_asked_again(gate.reasons))
         raise AssertionError("unreachable")
 
     def _undo_turn(self, before: Message | None) -> bool:
@@ -1234,13 +1236,13 @@ class CharacterCompanion:
             for message in self.runtime.history
             if message.role == "assistant" and message.content
         ][-LINES_CHECKED:]
-        asked = text
+        notes = self._notes
         result = None
         for _ in range(REMARK_ATTEMPTS):
             said: list[str] = []
             result = await self._tasks.run_foreground_turn(
                 lambda: self._bridge.process(
-                    asked,
+                    text,
                     frames=frames,
                     skip_memory=True,
                     proactive=True,
@@ -1263,7 +1265,7 @@ class CharacterCompanion:
                     if inspect.isawaitable(delivered):
                         await delivered
                 return replace(result, response=replace(result.response, text=kept))
-            asked = _asked_again(text, reasons)
+            self._notes = (*notes, *_why_asked_again(reasons))
         # Nothing new to say: better quiet than the same line again.
         return replace(result, response=replace(result.response, text=""))
 

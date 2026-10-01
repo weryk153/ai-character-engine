@@ -22,6 +22,7 @@ from ai_character_engine.companion import (
 )
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk, Message
 from ai_character_engine.tools.models import ToolCall, ToolDefinition
+from ai_character_engine.companion.companion import ALREADY_SAID, NOT_AN_ASSISTANT
 from tests.fakes import system_context
 
 WARM = {
@@ -3159,9 +3160,7 @@ def test_a_reply_that_is_all_assistant_talk_is_asked_again(tmp_path):
 
     text, asked_again = run(scenario())
     assert text == "Then go and look at the cooling first."
-    assert asked_again.startswith("ok\n\n")
-    # Her words are not quoted back to her.
-    assert "anything else" not in asked_again
+    assert asked_again == "ok"
 
 
 def test_a_remark_that_is_all_assistant_talk_is_asked_again(tmp_path):
@@ -3266,3 +3265,50 @@ def test_conversations_taken_in_turns_are_each_read_once(tmp_path):
             prefix = "line " if read is theirs else "Reply "
             for number in "12":
                 assert joined.count(f"{prefix}{name}{number}") == 1
+
+
+def test_why_she_is_asked_again_is_not_kept_as_the_users_words(tmp_path):
+    """The reason for asking again went into the user's message, which the
+    conversation kept, and memory extraction read it as something the user
+    said."""
+    read = []
+
+    def their_lines(messages):
+        read.append(messages[1].content.split("User lines to extract from:")[1])
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    async def scenario():
+        llm = Scripted(
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "Is there anything else I can help you with?",
+            "Then go and look at the cooling first.",
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "And keep the window open tonight.",
+            "Mind the load on Amadeus, or your time machine breaks too.",
+            "Have you eaten yet?",
+        )
+        current = companion(tmp_path, {"memory": Worker(their_lines)}, llm=llm, memory_every=1)
+        await current.speak_up("a")
+        await current.reply("ok", conversation_id="a")
+        assistant_retry = llm.calls[-1]
+        await current.reply("fine", conversation_id="a")
+        repeat_retry = llm.calls[-1]
+        await current.speak_up("a")
+        remark_retry = llm.calls[-1]
+        await current.settle()
+        history = [(m.role, m.content) for m in current.runtime.history]
+        await current.close()
+        return assistant_retry, repeat_retry, remark_retry, history, read
+
+    assistant_retry, repeat_retry, remark_retry, history, read = run(scenario())
+    assert ("user", "ok") in history and ("user", "fine") in history
+    assert not any("What you were about to say" in content for _, content in history)
+    assert not any("What you were about to say" in lines for lines in read)
+    # Told for that reply only, in the note of the turn, not as the user's words.
+    for call, note in (
+        (assistant_retry, NOT_AN_ASSISTANT),
+        (repeat_retry, ALREADY_SAID),
+        (remark_retry, ALREADY_SAID),
+    ):
+        assert f"For the next reply only: {note}" in system_context(call)
+        assert note not in call[-1].content
