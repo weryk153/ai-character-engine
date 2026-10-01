@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `CharacterCompanion` remembers what she said about herself, for every conversation: a `self_memory` worker (`BackgroundCognitionKind.SELF_MEMORY_EXTRACTION`, role `CognitiveRole.SELF_MEMORY`, commit target `memory.self_candidate`) reads her own lines and keeps what she stated about herself, each with an exact quote of hers, without near repeats. They stand in the notes as `- you said about yourself: ...`, and are taken out again once forgotten. `self_memories()` and `rewrite_self_memories()` show and edit them; settings `self_memory_every` (2), `self_memories_kept` (40) and `self_memories_shown` (12).
+
 ## 1.0.0
 
 - Stable 374-symbol root Python API, with explicit compatibility and deprecation contracts.

@@ -43,6 +43,16 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         expected_worker_kind="memory_extraction",
         max_age_s=300.0,
     ),
+    # What the character said about herself. Written into the memory scope
+    # that is current when it is committed: a host that keeps these apart
+    # from memory of the user (CharacterCompanion does) sets the scope for the
+    # commit. Like memory of the user it stays true however late it arrives.
+    "memory.self_candidate": CommitTargetPolicy(
+        min_confidence=0.75,
+        stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
+        expected_worker_kind="self_memory_extraction",
+        max_age_s=300.0,
+    ),
     "state.emotion_candidate": CommitTargetPolicy(
         min_confidence=0.70,
         stale_policy=StalePolicy.RERUN,
@@ -362,6 +372,16 @@ class CognitiveCommitCoordinator:
                     current_revision,
                     metadata={"evidence_type": evidence_type},
                 )
+        if proposal.target == "memory.self_candidate":
+            evidence_type = str(proposal.provenance.get("evidence_type", ""))
+            if evidence_type != "character_statement":
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "self_memory_candidate_requires_character_statement",
+                    current_revision,
+                    metadata={"evidence_type": evidence_type},
+                )
         if proposal.target == "state.emotion_candidate":
             evidence_type = str(proposal.provenance.get("evidence_type", ""))
             if evidence_type in {"quoted_reference", "user_instruction", "memory_operation"}:
@@ -534,7 +554,7 @@ class CognitiveCommitCoordinator:
 
     def _apply(self, proposal: TaskProposal) -> str | None:
         runtime = self.tasks.runtime
-        if proposal.target == "memory.append_candidate":
+        if proposal.target in {"memory.append_candidate", "memory.self_candidate"}:
             manager = runtime.memory_manager
             if manager is None:
                 raise RuntimeError("memory manager is not configured")
@@ -549,7 +569,10 @@ class CognitiveCommitCoordinator:
                     importance=float(payload.get("importance", 0.5)),
                     source_event_id=_optional_str(provenance.get("foreground_event_id")),
                     source_event_type=_optional_str(provenance.get("foreground_event_type")),
-                    tags=("background_cognition", "memory_extraction"),
+                    tags=(
+                        "background_cognition",
+                        str(provenance.get("worker_kind") or "memory_extraction"),
+                    ),
                     metadata={
                         "source": "background_cognition",
                         "evidence_type": provenance.get("evidence_type"),
@@ -701,6 +724,7 @@ class CognitiveCommitCoordinator:
         runtime = self.tasks.runtime
         if proposal.target in {
             "memory.append_candidate",
+            "memory.self_candidate",
             "memory.conversation_summary_candidate",
         }:
             manager = runtime.memory_manager
@@ -712,6 +736,20 @@ class CognitiveCommitCoordinator:
                 if record.is_active
             ]
             proposed_summary = _normalize_text(str(proposal.payload.get("summary", "")))
+
+            if proposal.target == "memory.self_candidate":
+                exact = [
+                    record for record in active
+                    if _normalize_text(record.summary) == proposed_summary
+                ]
+                if exact:
+                    return self._finalize(
+                        proposal,
+                        CommitStatus.DUPLICATE,
+                        "authoritative_memory_already_contains_candidate",
+                        current_revision,
+                        metadata={"existing_record_ids": [record.id for record in exact]},
+                    )
 
             if proposal.target == "memory.append_candidate":
                 event_id = _optional_str(proposal.provenance.get("foreground_event_id"))
@@ -881,6 +919,10 @@ class CognitiveCommitCoordinator:
             semantic = hashlib.sha256(
                 f"memory|{event_id}|{summary}".encode("utf-8")
             ).hexdigest()
+            return semantic, None, fingerprint
+        if proposal.target == "memory.self_candidate":
+            summary = _normalize_text(str(proposal.payload.get("summary", "")))
+            semantic = hashlib.sha256(f"self|{event_id}|{summary}".encode("utf-8")).hexdigest()
             return semantic, None, fingerprint
         if proposal.target == "memory.conversation_summary_candidate":
             return None, f"summary:{proposal.base_revision}", fingerprint

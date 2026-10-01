@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
@@ -39,6 +40,7 @@ class BackgroundCognitionKind(str, Enum):
     REFLECTION = "reflection"
     GOAL_MOTIVATION = "goal_motivation"
     VISION_INTERPRETATION = "vision_interpretation"
+    SELF_MEMORY_EXTRACTION = "self_memory_extraction"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -48,7 +50,15 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.REFLECTION: CognitiveRole.REFLECTION,
     BackgroundCognitionKind.GOAL_MOTIVATION: CognitiveRole.GOAL,
     BackgroundCognitionKind.VISION_INTERPRETATION: CognitiveRole.VISION,
+    BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: CognitiveRole.SELF_MEMORY,
 }
+
+SELF_MEMORY_TARGET = "memory.self_candidate"
+# A stage direction between asterisks describes what she does; it is not
+# something she said about herself.
+_STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
+# What may follow the question mark that ends a quoted question.
+_CLOSING_MARKS = "」』）)】\"'”’ "
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +246,11 @@ class StructuredBackgroundWorker:
             user += "\nUser lines to extract from:\n" + "\n".join(
                 f"- {line}" for line in lines
             ) + "\n"
+        if self.spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION:
+            lines = _assistant_lines(context, turns=self.spec.every_n_revisions)
+            user += "\nCharacter lines to extract from:\n" + "\n".join(
+                f"- {line}" for line in lines
+            ) + "\n"
         if vision:
             user += f"\nVision observation:\n{vision}\n"
         if self.spec.kind is BackgroundCognitionKind.GOAL_MOTIVATION and isinstance(goal_sources, dict):
@@ -312,6 +327,50 @@ class StructuredBackgroundWorker:
                         item,
                         confidence=item_conf,
                         provenance=item_provenance,
+                    )
+                )
+            return tuple(normalized), confidence, evidence, proposals
+
+        if kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION:
+            items = data.get("items", [])
+            if not isinstance(items, list):
+                raise ValueError("self memory extraction response.items must be an array")
+            normalized = []
+            said = [
+                _STAGE_DIRECTION.sub(" ", line)
+                for line in _assistant_lines(context, turns=self.spec.every_n_revisions)
+            ]
+            for raw in items[:8]:
+                if not isinstance(raw, dict):
+                    continue
+                summary = str(raw.get("summary", "")).strip()
+                quote = str(raw.get("evidence") or "").strip()
+                # Checked like a memory of the user: a quote she never said
+                # means the fact came from the user or from nowhere. A question
+                # states nothing about her.
+                if not summary or _line_quoted(quote, said) is None:
+                    continue
+                if quote.rstrip(_CLOSING_MARKS).endswith(("?", "？")):
+                    continue
+                item_conf = _confidence(raw.get("confidence"))
+                if item_conf is None:
+                    item_conf = confidence
+                item = {
+                    "summary": summary,
+                    "kind": str(raw.get("kind", "fact")).strip() or "fact",
+                    "importance": _unit_float(raw.get("importance"), default=0.5),
+                }
+                normalized.append(item)
+                proposals.append(
+                    context.proposal(
+                        SELF_MEMORY_TARGET,
+                        item,
+                        confidence=item_conf,
+                        provenance={
+                            **provenance,
+                            "evidence": [quote],
+                            "evidence_type": "character_statement",
+                        },
                     )
                 )
             return tuple(normalized), confidence, evidence, proposals
@@ -493,12 +552,15 @@ class BackgroundCognitionRuntime:
         self.config = config or BackgroundCognitionConfig()
         self._events: deque[BackgroundCognitionEvent] = deque(maxlen=self.config.event_history)
         self._scheduled_keys: dict[tuple[BackgroundCognitionKind, str], None] = {}
-        # The last line of the user that memory extraction has been given.
         # The language the workers write in. Empty: the language the user
         # writes in, which the model has to work out from the transcript.
         self.output_language = ""
-        # None: nothing of the conversation that begins with _first_line.
+        # The last line of the user that memory extraction has been given, and
+        # the opening of the last turn whose replies self-memory extraction has
+        # been given. None: nothing of the conversation that begins with
+        # _first_line.
         self._read_up_to: Message | None = None
+        self._said_up_to: Message | None = None
         self._first_line: Message | None = None
         self._reading_from_known = False
         self._handles: dict[str, TaskHandle] = {}
@@ -538,6 +600,7 @@ class BackgroundCognitionRuntime:
         if not self._reading_from_known and openers:
             # Before the first turn seen here nothing is this runtime's to read.
             self._read_up_to = openers[-2] if len(openers) > 1 else None
+            self._said_up_to = self._read_up_to
             self._first_line = openers[0]
             self._reading_from_known = True
         handles: list[TaskHandle] = []
@@ -560,9 +623,25 @@ class BackgroundCognitionRuntime:
                 continue
             job = payload
             if spec.kind is BackgroundCognitionKind.MEMORY_EXTRACTION:
-                unread = self._unread(openers)
-                if unread is not None:
-                    job = {**payload, "user_lines_to_extract": unread}
+                start = self._unread(openers, self._read_up_to)
+                if start is not None:
+                    job = {
+                        **payload,
+                        "user_lines_to_extract": [
+                            message.content
+                            for message in openers[start:]
+                            if message.role == "user"
+                        ],
+                    }
+            if spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION:
+                start = self._unread(openers, self._said_up_to)
+                if start is not None:
+                    job = {
+                        **payload,
+                        "assistant_lines_to_extract": _replies_from(
+                            self.tasks.runtime.history, openers[start:]
+                        ),
+                    }
             try:
                 handle = await self.tasks.submit_background(
                     spec.kind.value,
@@ -585,6 +664,9 @@ class BackgroundCognitionRuntime:
             if spec.kind is BackgroundCognitionKind.MEMORY_EXTRACTION and openers:
                 self._read_up_to = openers[-1]
                 self._reading_from_known = True
+            if spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION and openers:
+                self._said_up_to = openers[-1]
+                self._reading_from_known = True
             self._scheduled_keys[key] = None
             self._handles[handle.task_id] = handle
             self._task_kind[handle.task_id] = spec.kind
@@ -597,9 +679,12 @@ class BackgroundCognitionRuntime:
             self._emit(spec.kind, "scheduled", revision, event.id, task_id=handle.task_id)
         return tuple(handles)
 
-    def _unread(self, openers: Sequence[Message]) -> list[str] | None:
-        """What the user said since memory extraction last ran, or None when
-        that cannot be told: the conversation was replaced or trimmed past it.
+    def _unread(
+        self, openers: Sequence[Message], read_up_to: Message | None
+    ) -> int | None:
+        """Where the turns begin that were not read yet, after ``read_up_to``,
+        as an index into ``openers``; None when that cannot be told: the
+        conversation was replaced or trimmed past it.
 
         Counting turns does not find these lines. An interrupted turn leaves a
         line in the conversation without being a turn, and a turn the host
@@ -608,7 +693,7 @@ class BackgroundCognitionRuntime:
         if not openers or not self._reading_from_known:
             return None
         start = 0
-        if self._read_up_to is None:
+        if read_up_to is None:
             if openers[0] is not self._first_line:
                 return None  # another conversation, or this one was trimmed
         else:
@@ -616,14 +701,14 @@ class BackgroundCognitionRuntime:
                 (
                     index
                     for index in range(len(openers) - 1, -1, -1)
-                    if openers[index] is self._read_up_to
+                    if openers[index] is read_up_to
                 ),
                 None,
             )
             if last is None:
                 return None
             start = last + 1
-        return [message.content for message in openers[start:] if message.role == "user"]
+        return start
 
     async def collect(self, handle: TaskHandle) -> Any:
         try:
@@ -817,6 +902,24 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "\"conflict_key\":null|str,\"motivation_signals\":[{\"kind\":str,\"strength\":0..1,\"source_type\":\"event|memory|belief|state\","
             "\"source_id\":str,\"rationale\":str}],\"confidence\":0..1}],\"confidence\":0..1,\"evidence\":[str]}."
         ),
+        BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: (
+            "Extract durable facts the character stated about themselves in the character lines to "
+            "extract from: their tastes, habits, history, relationships, opinions they hold, and "
+            "what they are working on or plan to do. One item per fact. Take facts only from the "
+            "listed character lines, never from the user's lines; the transcript is context only. "
+            "Skip reactions, greetings, questions, stage directions written between asterisks, and "
+            "statements only about this moment, such as the time of day or being tired right now; "
+            "return an empty items array when the listed lines state no such fact. "
+            "Each item's evidence must be one exact quote copied from the listed character lines. "
+            "Each summary is one short sentence in the same language as its evidence quote, and it "
+            "must make sense on its own later, without the conversation: its subject is the "
+            "character, by the name on the Character line, and words such as \"that\", \"it\" or "
+            "\"those things\" are replaced by what they refer to in the transcript. "
+            "\"<name>: is not interested in that kind of thing at all.\" is useless; write "
+            "\"<name> is not interested in horror films at all.\" "
+            "Return JSON: {\"items\":[{\"summary\":str,\"kind\":str,\"importance\":0..1,"
+            "\"confidence\":0..1,\"evidence\":str}],\"confidence\":0..1,\"evidence\":[str]}."
+        ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
             "Interpret only the supplied textual vision observation and recent context. Do not claim unseen pixels. "
             "Return JSON: {\"interpretation\":str,\"tags\":[str],\"confidence\":0..1,\"evidence\":[str]}."
@@ -957,6 +1060,37 @@ def _user_lines(context: TaskContext, *, turns: int) -> list[str]:
         return [latest]
     window = openers[-max(1, turns):]
     return [message.content for message in window if message.role == "user"]
+
+
+def _replies_from(history: Sequence[Message], openers: Sequence[Message]) -> list[str]:
+    """What the character said in the turns that begin with ``openers``: her
+    replies, and remarks she made on her own after an event."""
+    if not openers:
+        return []
+    first = next((i for i, message in enumerate(history) if message is openers[0]), None)
+    if first is None:
+        return []
+    return [
+        message.content
+        for message in history[first:]
+        if message.role == "assistant" and message.content.strip()
+    ]
+
+
+def _assistant_lines(context: TaskContext, *, turns: int) -> list[str]:
+    """What the character said in the turns this run is responsible for; see
+    _user_lines."""
+    payload = context.request.payload
+    unread = payload.get("assistant_lines_to_extract")
+    if isinstance(unread, (list, tuple)):
+        return [str(line) for line in unread]
+    history = context.snapshot.history
+    openers = [message for message in history if message.role in {"user", "event"}]
+    if not openers:
+        # The host keeps no history: only this turn is known.
+        reply = str(payload.get("assistant_response", ""))
+        return [reply] if reply.strip() else []
+    return _replies_from(history, openers[-max(1, turns):])
 
 
 def _line_quoted(quote: str, lines: list[str]) -> str | None:

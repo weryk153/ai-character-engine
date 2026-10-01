@@ -37,9 +37,10 @@ from ai_character_engine.cognition import (
     CognitiveRole,
     CognitiveRolePolicy,
 )
+from ai_character_engine.cognition.background import SELF_MEMORY_TARGET
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
-from ai_character_engine.context.builder import ContextBuilder, one_line
+from ai_character_engine.context.builder import SELF_MEMORY_LINE, ContextBuilder, one_line
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals import GoalManager
 from ai_character_engine.goals.models import GoalRecord
@@ -76,6 +77,13 @@ logger = logging.getLogger(__name__)
 MEMORY_TARGET = "memory.append_candidate"
 # These two write into memory, and memory belongs to a conversation.
 CONVERSATION_SCOPED_TARGETS = (MEMORY_TARGET, "memory.conversation_summary_candidate")
+# Each job of these reads lines no other job reads, and what was said stays
+# said: a newer job does not replace it, and its result is used however late.
+_READ_ONCE = (
+    BackgroundCognitionKind.MEMORY_EXTRACTION,
+    BackgroundCognitionKind.SELF_MEMORY_EXTRACTION,
+)
+_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET)
 # Memory jobs can queue up while the user talks faster than the model works.
 # Each holds a slot of the task runtime while it waits; without room to spare
 # the emotion job of the newest turn would wait behind them for a slot.
@@ -126,6 +134,16 @@ _WORKERS = (
         CognitiveRole.MEMORY,
         TaskPriority.HIGH,
         MEMORY_TARGET,
+    ),
+    # What she said about herself. Before goals and thoughts: left for later,
+    # she contradicts it within the next few turns. After memory of the user,
+    # which the user is more likely to ask about.
+    _Worker(
+        "self_memory",
+        BackgroundCognitionKind.SELF_MEMORY_EXTRACTION,
+        CognitiveRole.SELF_MEMORY,
+        TaskPriority.NORMAL,
+        SELF_MEMORY_TARGET,
     ),
     _Worker(
         "goal",
@@ -202,6 +220,15 @@ _HOST_RANK = 1_000
 
 def _plain(text: str) -> str:
     return "".join(ch for ch in text.casefold() if ch.isalnum())
+
+
+def _nearly_the_same(one: str, other: str) -> bool:
+    """Two summaries of one fact: the same words but for a few. A different
+    number makes a different fact ("17" and "18")."""
+    one, other = _plain(one), _plain(other)
+    if [ch for ch in one if ch.isdigit()] != [ch for ch in other if ch.isdigit()]:
+        return False
+    return SequenceMatcher(None, one, other, autojunk=False).ratio() >= 0.85
 
 
 def _repeats(text: str, lines: Sequence[str]) -> bool:
@@ -442,8 +469,8 @@ class CharacterCompanion:
         bridge_config: HostBridgeConfig | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
-        for every worker, or a mapping from worker name (emotion, memory, goal,
-        reflection, summary) to a client; a worker without a client does not
+        for every worker, or a mapping from worker name (emotion, memory,
+        self_memory, goal, reflection, summary) to a client; a worker without a client does not
         run. It defaults to ``llm``. Background workers must return JSON, so a
         client with a low temperature serves them better than the one tuned for
         conversation.
@@ -495,6 +522,7 @@ class CharacterCompanion:
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
             *self._thoughts_for_context(),
+            *self._self_memories_for_context(),
             # Notes stay in the conversation; an instruction for one reply
             # must not read as a standing one. What the host knows is no
             # instruction.
@@ -651,6 +679,11 @@ class CharacterCompanion:
         thoughts = self.snapshot().thoughts
         return ["\n".join(f"- thought: {thought}" for thought in thoughts)] * bool(thoughts)
 
+    def _self_memories_for_context(self) -> list[str]:
+        shown = self.settings.self_memories_shown
+        said = self.self_memories()[-shown:] if shown else []
+        return ["\n".join(f"{SELF_MEMORY_LINE}{line}" for line in said)] * bool(said)
+
     @property
     def character(self) -> CharacterProfile:
         return self._character
@@ -674,6 +707,11 @@ class CharacterCompanion:
         if not conversation_id:
             return self.character.id
         return f"{self.character.id}:{conversation_id}"
+
+    def _self_scope(self) -> str:
+        """What she said about herself belongs to her, not to a conversation,
+        and is kept apart from what she remembers of the user."""
+        return f"{self.character.id}#self"
 
     def has_conversation(self, conversation_id: str | None) -> bool:
         """Whether the companion holds this conversation, seen or loaded."""
@@ -860,6 +898,7 @@ class CharacterCompanion:
                 serial = next(self._serial)
                 self._last_turn[conversation_id] = serial
                 self._take_back_what_the_host_no_longer_knows(conversation_id, notes)
+                self._take_back_what_she_no_longer_holds()
                 self._notes = tuple(note for note in notes if note.strip())
                 self._access.foreground_started()
                 try:
@@ -924,6 +963,16 @@ class CharacterCompanion:
         if taken_back:
             self.runtime.withdraw_from_notes(taken_back.__contains__)
         self._told[conversation_id] = known
+
+    def _take_back_what_she_no_longer_holds(self) -> None:
+        """What she said about herself and has since forgotten: edited away by
+        the host's user, or pushed out by newer ones. It was written into this
+        conversation while she held it."""
+        held = set(self.self_memories())
+        self.runtime.withdraw_from_notes(
+            lambda line: line.startswith(SELF_MEMORY_LINE)
+            and line.removeprefix(SELF_MEMORY_LINE) not in held
+        )
 
     def replace_reply(self, text: str) -> None:
         """Keep the newest reply the way the host displayed it."""
@@ -1209,7 +1258,7 @@ class CharacterCompanion:
         When the user speaks faster than the background can think, the older
         result would only give way to the newer one (see _superseded) after
         using the model. Memory is the exception: every turn has facts of its
-        own.
+        own, of the user and of her.
 
         The mood is read before anything else uses the model.
         """
@@ -1229,7 +1278,7 @@ class CharacterCompanion:
                 self._access.hold(handle.task_id, self.settings.call_timeout_seconds)
             live = self._live_by_kind.setdefault(kind, [])
             live[:] = [item for item in live if _under_way(item)]
-            if kind is not BackgroundCognitionKind.MEMORY_EXTRACTION:
+            if kind not in _READ_ONCE:
                 for older in live:
                     older.cancel()
                 live.clear()
@@ -1242,7 +1291,7 @@ class CharacterCompanion:
         revision. An older result moved onto the current revision takes that
         place, and the result that belongs there is refused as a conflict.
         """
-        if proposal.target == MEMORY_TARGET:
+        if proposal.target in _KEPT_HOWEVER_LATE:
             return False
         # Not every turn schedules work: a remark of her own does not.
         return self._scheduled_at.get(proposal.target, -1) > proposal.base_revision
@@ -1265,9 +1314,12 @@ class CharacterCompanion:
                 outcomes = [
                     await self._commit(proposal, conversation_id)
                     for proposal in result.output.proposals
+                    if not self._already_said_about_herself(proposal)
                 ]
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
                     await self._react_to_observation()
+                if any(o.committed and o.target == SELF_MEMORY_TARGET for o in outcomes):
+                    self._keep_the_newest_self_memories()
                 if any(o.committed for o in outcomes):
                     self._save_state()
         except asyncio.CancelledError:
@@ -1276,6 +1328,36 @@ class CharacterCompanion:
             logger.warning("background result dropped (%s: %s)", type(exc).__name__, exc)
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
+
+    def _already_said_about_herself(self, proposal) -> bool:
+        """Whether a self memory says what one she holds says, perhaps in other
+        words. She says the same about herself often; once is enough."""
+        if proposal.target != SELF_MEMORY_TARGET:
+            return False
+        summary = str(proposal.payload.get("summary", ""))
+        return any(_nearly_the_same(summary, held) for held in self.self_memories())
+
+    def _keep_the_newest_self_memories(self) -> None:
+        """The oldest beyond ``self_memories_kept`` are forgotten."""
+        scope = self._self_scope()
+        records = self._memory_store.list_for_character(scope)
+        active = sorted(
+            (record for record in records if record.is_active),
+            key=lambda record: record.created_at,
+        )
+        over = {record.id for record in active[: -self.settings.self_memories_kept]}
+        if not over:
+            return
+        now = datetime.now(UTC)
+        self._memory_store.replace_for_character(
+            scope,
+            [
+                replace(record, status="forgotten", forgotten_at=now)
+                if record.id in over
+                else record
+                for record in records
+            ],
+        )
 
     async def _react_to_observation(self) -> None:
         rules = getattr(self.runtime.state_policy, "rules", None)
@@ -1299,6 +1381,8 @@ class CharacterCompanion:
         current_scope = self.runtime.memory_scope_id
         if proposal.target in CONVERSATION_SCOPED_TARGETS:
             self.runtime.memory_scope_id = self._scope(conversation_id)
+        elif proposal.target == SELF_MEMORY_TARGET:
+            self.runtime.memory_scope_id = self._self_scope()
         try:
             outcome = await self._commits.commit(proposal)
             turns_late = self._tasks.revision - proposal.base_revision
@@ -1307,7 +1391,7 @@ class CharacterCompanion:
                 and outcome.reason == "foreground_revision_changed"
                 and turns_late > 0
                 and (
-                    proposal.target == MEMORY_TARGET
+                    proposal.target in _KEPT_HOWEVER_LATE
                     or turns_late <= self.settings.max_turns_late
                 )
                 and not self._superseded(proposal)
@@ -1464,7 +1548,46 @@ class CharacterCompanion:
         and is gone is forgotten. A memory that arrived while the page was
         open was never removed by anyone.
         """
-        scope = self._scope(conversation_id)
+        self._rewrite(self._scope(conversation_id), summaries, edited_from, "asserted_fact")
+
+    def memories(self, conversation_id: str | None = None) -> list[str]:
+        records = self._memory_store.list_for_character(self._scope(conversation_id))
+        return [one_line(record.summary) for record in records if record.is_active]
+
+    def rewrite_self_memories(
+        self,
+        summaries: Sequence[str],
+        *,
+        edited_from: Sequence[str] | None = None,
+    ) -> None:
+        """What she said about herself, as the host's user edited it, or as a
+        host that kept such lines itself hands them over.
+
+        The same as rewrite_memories(): lines that are still there stay, a line
+        that was shown and is gone is forgotten, a new line is remembered as
+        something she said. Beyond ``self_memories_kept`` the oldest are
+        forgotten.
+        """
+        self._rewrite(self._self_scope(), summaries, edited_from, "character_statement")
+        self._keep_the_newest_self_memories()
+
+    def self_memories(self) -> list[str]:
+        """What she said about herself that she holds, oldest first. It is
+        hers in every conversation."""
+        records = self._memory_store.list_for_character(self._self_scope())
+        active = sorted(
+            (record for record in records if record.is_active),
+            key=lambda record: record.created_at,
+        )
+        return [one_line(record.summary) for record in active]
+
+    def _rewrite(
+        self,
+        scope: str,
+        summaries: Sequence[str],
+        edited_from: Sequence[str] | None,
+        evidence_type: str,
+    ) -> None:
         store = self._memory_store
         wanted = list(dict.fromkeys(one_line(line) for line in summaries if line.strip()))
         removable = None if edited_from is None else {one_line(line) for line in edited_from}
@@ -1481,13 +1604,9 @@ class CharacterCompanion:
                 summary=summary,
                 kind="fact",
                 importance=0.7,
-                metadata={"evidence_type": "asserted_fact", "source": "host"},
+                metadata={"evidence_type": evidence_type, "source": "host"},
             )
             for summary in wanted
             if summary not in remembered
         ]
         store.replace_for_character(scope, records)
-
-    def memories(self, conversation_id: str | None = None) -> list[str]:
-        records = self._memory_store.list_for_character(self._scope(conversation_id))
-        return [one_line(record.summary) for record in records if record.is_active]

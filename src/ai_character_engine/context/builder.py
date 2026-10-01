@@ -43,7 +43,8 @@ _NOTES_GUIDE = (
     "What you want and think is what you carry with you, not what a reply is for: answer what "
     "was said, no longer than your character speaks, and let a goal or a thought show only "
     "where the conversation comes to it. Do not add a question or a suggestion to a reply on "
-    "their account."
+    "their account. What \"you said about yourself\" is what you told the user about yourself "
+    "before, in this or an earlier conversation: stay consistent with it."
 )
 # The commit coordinator writes what it observed of the user here.
 _OBSERVED_USER_EMOTION = "observed_user_emotion"
@@ -86,6 +87,8 @@ def is_turn_context(message: Message) -> bool:
 MEMORY_LINE = "- memory ["
 BELIEF_LINE = "- belief: "
 USER_SEEMS_LINE = "- the user seems: "
+# What the character said about herself before; see CharacterCompanion.
+SELF_MEMORY_LINE = "- you said about yourself: "
 
 
 def one_line(text: str) -> str:

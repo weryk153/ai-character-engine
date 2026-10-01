@@ -24,6 +24,9 @@ class CognitiveRole(str, Enum):
     PLANNER = "planner"
     TOOL = "tool"
     VERIFIER = "verifier"
+    # What the character said about herself; a role of its own so that a host
+    # can give it a model apart from memory of the user.
+    SELF_MEMORY = "self_memory"
 
 
 class CognitiveOptimization(str, Enum):

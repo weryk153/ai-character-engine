@@ -20,6 +20,11 @@ class CompanionSettings:
     goal_every: int = 4
     reflection_every: int = 6
     summary_every: int = 0
+    # What she said about herself: her tastes, habits, plans. Read from her
+    # own lines, kept for every conversation; see self_memories_kept. One more
+    # call like memory's, so every second turn like memory: each run reads
+    # every line of hers since the one before, nothing is skipped.
+    self_memory_every: int = 2
     # One model call. The engine's own worker defaults (12 s for emotion, 20 s
     # for a summary) time out on the hardware above.
     call_timeout_seconds: float = 60.0
@@ -53,6 +58,11 @@ class CompanionSettings:
     # the language the user writes in, which a small model does not always work
     # out.
     language: str = ""
+    # How many things she said about herself she keeps, and how many of the
+    # newest are in her mind on a turn. Over the first, the oldest are
+    # forgotten.
+    self_memories_kept: int = 40
+    self_memories_shown: int = 12
 
     def __post_init__(self) -> None:
         for name in (
@@ -61,15 +71,19 @@ class CompanionSettings:
             "goal_every",
             "reflection_every",
             "summary_every",
+            "self_memory_every",
             "max_turns_late",
             "goal_max_age_days",
             "goals_shown",
             "thoughts_shown",
             "max_history_messages",
             "memories_recalled",
+            "self_memories_shown",
         ):
             if int(getattr(self, name)) < 0:
                 raise ValueError(f"{name} must be >= 0")
+        if self.self_memories_kept < 1:
+            raise ValueError("self_memories_kept must be >= 1")
         if self.records_kept < 1:
             raise ValueError("records_kept must be >= 1")
         if self.conversations_kept < 1:

@@ -146,6 +146,42 @@ async def test_memory_candidate_requires_direct_asserted_fact_provenance():
 
 
 @pytest.mark.asyncio
+async def test_what_the_character_said_about_herself_needs_her_own_statement():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    payload = {"summary": "Mei drinks jasmine tea", "kind": "preference"}
+    said = proposal(
+        "memory.self_candidate",
+        payload,
+        worker_kind="self_memory_extraction",
+        evidence_type="character_statement",
+    )
+    from_the_user = proposal(
+        "memory.self_candidate",
+        {**payload, "summary": "Mei has a cat"},
+        worker_kind="self_memory_extraction",
+        evidence_type="asserted_fact",
+    )
+    again = proposal(
+        "memory.self_candidate",
+        payload,
+        worker_kind="self_memory_extraction",
+        evidence_type="character_statement",
+        event_id="evt-2",
+    )
+    results = [await commits.commit(item) for item in (said, from_the_user, again)]
+    assert [result.status for result in results] == [
+        CommitStatus.COMMITTED,
+        CommitStatus.REJECTED,
+        CommitStatus.DUPLICATE,
+    ]
+    assert results[1].reason == "self_memory_candidate_requires_character_statement"
+    records = engine.memory_manager.store.list_for_character(engine.memory_scope_id)
+    assert [record.summary for record in records] == ["Mei drinks jasmine tea"]
+    assert records[0].tags == ("background_cognition", "self_memory_extraction")
+
+
+@pytest.mark.asyncio
 async def test_low_confidence_proposal_is_rejected_before_mutation():
     engine = runtime()
     commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))

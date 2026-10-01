@@ -70,7 +70,8 @@ asyncio.run(main())
 ```
 
 `background_llm` may be one client for every worker or a mapping from worker
-name (`emotion`, `memory`, `goal`, `reflection`, `summary`) to a client. A worker
+name (`emotion`, `memory`, `self_memory`, `goal`, `reflection`, `summary`) to a
+client. A worker
 without a client does not run; `background_llm={}` turns background cognition
 off. Background workers must return JSON, so give them a low temperature.
 
@@ -109,6 +110,7 @@ prompt extends the one before it and the inference server can reuse its work
 | `companion.character = profile` | Rewrite the persona between turns; the id cannot change |
 | `companion.tools.register(definition, handler)` | Give the character a tool |
 | `memories(conversation_id)` / `rewrite_memories(conversation_id, lines, edited_from=shown)` | Show what she remembers of a conversation, and take the user's edit back: a shown line that is gone is forgotten, a new line is remembered; what arrived while the page was open stays |
+| `self_memories()` / `rewrite_self_memories(lines, edited_from=shown)` | What she said about herself, in any conversation, oldest first, and the user's edit of it, the same way as `rewrite_memories`. Also for a host that kept such lines itself and hands them over. Beyond `self_memories_kept` the oldest are forgotten |
 | `speak_up(conversation_id, notes=[...])` | She speaks up on her own; the host decides when. What she says comes from her: what is still open, what she wants and thinks, or turning to the user. `notes` suggest material for this remark only; `instruction` replaces the engine's own, for a host that asks in the language she speaks. What she says is generated whole and checked against her latest lines before any of it is passed on; a repetition is asked again, and after three she stays quiet rather than repeat herself. What she said stays in the conversation, the instruction does not; `keep=False` for a host that filters what she says and keeps it itself |
 | `remember_remark(conversation_id, text)` | Keep a remark she made on her own when the turn that made it was kept out of memory (a long instruction the host does not want kept): what she said stays in the conversation after a short event, so she neither repeats it nor says it again when the user answers |
 | `aside(make_call)` | A model call of the host's own on the same local model (a memory of its own to tidy, a translation): it waits while she replies, gives way once to a reply that starts, and takes its turn after her workers |
@@ -117,6 +119,15 @@ prompt extends the one before it and the inference server can reuse its work
 
 `conversation_id` selects the history and the memory scope. State, goals and
 reflections belong to the character and are shared by all conversations.
+
+So does what she said about herself. The `self_memory` worker reads her own
+lines, never the user's, and keeps what she stated about herself: her tastes,
+habits, history, what she is working on. Each item needs an exact quote of
+hers; a near repeat of one she holds is not kept again. The newest
+`self_memories_shown` stand in every conversation as `- you said about
+yourself: ...` lines of the note, and the system prompt asks her to stay
+consistent with them. One she no longer holds, edited away or pushed out by
+newer ones, is taken out of the notes again.
 
 A host that keeps its own transcripts hands them over with
 `load_conversation(conversation_id, messages)` before the first reply. A
@@ -173,7 +184,7 @@ model can run every worker on every turn.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `emotion_every`, `memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 4, 6, 0 | Run the worker every N turns; 0 turns it off |
+| `emotion_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 4, 6, 0 | Run the worker every N turns; 0 turns it off |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
@@ -185,6 +196,7 @@ model can run every worker on every turn.
 | `records_kept` | 256 | How many finished background tasks, commit decisions and events are kept to be asked about; a host runs for days |
 | `memories_recalled` | 40 | How many memories of the conversation she is given at most; what the newest message is about comes first |
 | `language` | empty | The language memories, goals and thoughts are written in; empty means the language the user writes in |
+| `self_memories_kept`, `self_memories_shown` | 40, 12 | How many things she said about herself she keeps (the oldest beyond are forgotten), and how many of the newest stand in the conversation |
 
 ## Lifecycle
 

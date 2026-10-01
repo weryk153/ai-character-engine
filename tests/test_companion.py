@@ -115,6 +115,7 @@ def companion(tmp_path, workers=None, *, llm=None, **settings):
         "goal_every": 0,
         "reflection_every": 0,
         "summary_every": 0,
+        "self_memory_every": 0,
     }
     defaults.update(settings)
     return CharacterCompanion(
@@ -2720,3 +2721,296 @@ def test_an_old_sentence_retold_with_small_changes_is_still_a_repetition(tmp_pat
         return result.text
 
     assert run(scenario()) == "How is Bun taking the rain?"
+
+
+# --- what she said about herself ---------------------------------------------------
+
+SELF_LINE = "- you said about yourself: "
+
+
+def _listed_for_her(messages):
+    return messages[1].content.split("Character lines to extract from:")[1].split("\n\n")[0]
+
+
+def about_herself(*facts):
+    """A self-memory worker that reports each (summary, quote) whose quote is
+    among the lines it was given to read."""
+
+    def answer(messages):
+        listed = _listed_for_her(messages)
+        items = [
+            {
+                "summary": summary,
+                "kind": "preference",
+                "importance": 0.6,
+                "confidence": 0.9,
+                "evidence": quote,
+            }
+            for summary, quote in facts
+            if quote in listed
+        ]
+        return {"items": items, "confidence": 0.9, "evidence": []}
+
+    return answer
+
+
+TEA = ("Mei drinks jasmine tea when she works late", "I drink jasmine tea when I work late")
+PIANO = ("Mei has played the piano since she was six", "I have played the piano since I was six")
+HILLS = ("Mei walks in the hills every Sunday", "I walk in the hills every Sunday")
+
+
+def _self_lines(messages):
+    return [
+        line
+        for message in messages
+        for line in message.content.splitlines()
+        if line.startswith(SELF_LINE)
+    ]
+
+
+def test_she_remembers_what_she_said_about_herself(tmp_path):
+    """She said one thing about herself in one conversation and the opposite
+    in the next: nothing kept what she said, only what the user said."""
+
+    async def scenario():
+        llm = Scripted("Oh, I drink jasmine tea when I work late.", "Hello again.")
+        worker = Worker(about_herself(TEA))
+        current = companion(tmp_path, {"self_memory": worker}, llm=llm, self_memory_every=1)
+        await current.reply("what do you drink at night", conversation_id="a")
+        await current.settle()
+        await current.reply("hi", conversation_id="b")
+        await current.close()
+        return current.self_memories(), _self_lines(llm.calls[-1]), current.memories("a")
+
+    remembered, in_b, about_the_user = run(scenario())
+    assert remembered == ["Mei drinks jasmine tea when she works late"]
+    # Hers, not the conversation's: another conversation has it too.
+    assert in_b == [f"{SELF_LINE}Mei drinks jasmine tea when she works late"]
+    assert about_the_user == []
+
+
+def test_only_her_lines_are_given_to_be_read_each_once(tmp_path):
+    asked = []
+
+    def nothing(messages):
+        asked.append(_listed_for_her(messages))
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    async def scenario():
+        llm = Scripted("I drink jasmine tea when I work late.", "Mind the cooling.", "Fine.")
+        current = companion(
+            tmp_path, {"self_memory": Worker(nothing)}, llm=llm, self_memory_every=1
+        )
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await current.settle()
+        # A remark of her own schedules no work; the next turn reads it.
+        await current.speak_up("a")
+        await current.reply("ok", conversation_id="a")
+        await current.settle()
+        await current.close()
+
+    run(scenario())
+    first, second = asked
+    assert "I drink jasmine tea when I work late." in first
+    assert "I have a cat called Bun" not in first
+    assert "I drink jasmine tea" not in second
+    assert "Mind the cooling." in second and "Fine." in second
+
+
+def test_what_she_said_about_herself_needs_a_quote_of_her_own(tmp_path):
+    invented = {
+        "items": [
+            {
+                "summary": "Mei has a cat called Bun",
+                "kind": "fact",
+                "importance": 0.8,
+                "confidence": 0.9,
+                "evidence": "I have a cat called Bun",
+            },
+            {
+                "summary": "Mei loves coffee",
+                "kind": "preference",
+                "importance": 0.8,
+                "confidence": 0.9,
+                "evidence": "I love coffee",
+            },
+            {
+                "summary": "Mei likes the rain",
+                "kind": "preference",
+                "importance": 0.8,
+                "confidence": 0.9,
+                "evidence": "Do you like the rain?",
+            },
+            {
+                "summary": "Mei drinks jasmine tea when she works late",
+                "kind": "preference",
+                "importance": 0.6,
+                "confidence": 0.9,
+                "evidence": "I drink jasmine tea when I work late",
+            },
+        ],
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+    async def scenario():
+        llm = Scripted("I drink jasmine tea when I work late. Do you like the rain?")
+        current = companion(
+            tmp_path, {"self_memory": Worker(invented)}, llm=llm, self_memory_every=1
+        )
+        await current.reply("I have a cat called Bun", conversation_id="a")
+        await current.settle()
+        await current.close()
+        return current.self_memories()
+
+    assert run(scenario()) == ["Mei drinks jasmine tea when she works late"]
+
+
+def test_she_does_not_remember_the_same_thing_about_herself_twice(tmp_path):
+    reworded = ("Mei drinks jasmine tea when working late", "jasmine tea again tonight")
+
+    async def scenario():
+        llm = Scripted(
+            "I drink jasmine tea when I work late.", "Yes, jasmine tea again tonight."
+        )
+        worker = Worker(about_herself(TEA, reworded))
+        current = companion(tmp_path, {"self_memory": worker}, llm=llm, self_memory_every=1)
+        await current.reply("what do you drink", conversation_id="a")
+        await current.settle()
+        await current.reply("again?", conversation_id="b")
+        await current.settle()
+        await current.close()
+        return current.self_memories()
+
+    assert run(scenario()) == ["Mei drinks jasmine tea when she works late"]
+
+
+def test_she_keeps_the_newest_of_what_she_said_about_herself(tmp_path):
+    async def scenario():
+        llm = Scripted(
+            "I drink jasmine tea when I work late.",
+            "I have played the piano since I was six.",
+            "I walk in the hills every Sunday.",
+            "Hello.",
+        )
+        worker = Worker(about_herself(TEA, PIANO, HILLS))
+        current = companion(
+            tmp_path,
+            {"self_memory": worker},
+            llm=llm,
+            self_memory_every=1,
+            self_memories_kept=2,
+        )
+        for text in ("one", "two", "three"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.reply("four", conversation_id="a")
+        await current.close()
+        store = current.runtime.memory_manager.store
+        statuses = {
+            record.summary: record.status for record in store.list_for_character("mei#self")
+        }
+        return current.self_memories(), statuses, _self_lines(llm.calls[-1])
+
+    kept, statuses, lines = run(scenario())
+    assert kept == [PIANO[0], HILLS[0]]
+    assert statuses[TEA[0]] == "forgotten"
+    # Pushed out, it no longer stands in the conversation either.
+    assert f"{SELF_LINE}{TEA[0]}" not in lines
+
+
+def test_without_a_self_memory_worker_nothing_is_read(tmp_path):
+    async def scenario():
+        worker = Worker(about_herself(TEA))
+        current = companion(tmp_path, {"self_memory": worker}, self_memory_every=0)
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await current.close()
+        return worker.calls
+
+    assert run(scenario()) == 0
+    assert CompanionSettings().self_memory_every == 2
+    assert CompanionSettings().self_memories_kept == 40
+    assert CompanionSettings().self_memories_shown == 12
+
+
+def test_the_host_can_show_and_edit_what_she_said_about_herself(tmp_path):
+    """A memory page, and a host that kept such lines itself before."""
+
+    async def scenario():
+        current = companion(tmp_path)
+        current.rewrite_self_memories(["A"])
+        shown = current.self_memories()
+        current.rewrite_self_memories(["A", "B"])  # arrived after the page was shown
+        current.rewrite_self_memories(["A", "C"], edited_from=shown)
+        edited = current.self_memories()
+        current.rewrite_self_memories(["C", "D"])
+        await current.close()
+        return edited, current.self_memories(), current.memories(None)
+
+    edited, rewritten, about_the_user = run(scenario())
+    assert edited == ["A", "B", "C"]
+    assert rewritten == ["C", "D"]
+    assert about_the_user == []
+
+
+def test_what_she_said_about_herself_survives_a_restart(tmp_path):
+    async def scenario():
+        first = companion(tmp_path)
+        first.rewrite_self_memories(["Mei walks in the hills every Sunday"])
+        await first.close()
+        return companion(tmp_path).self_memories()
+
+    assert run(scenario()) == ["Mei walks in the hills every Sunday"]
+
+
+def test_what_she_said_about_herself_stands_in_the_conversation_until_forgotten(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        current.rewrite_self_memories([TEA[0], PIANO[0]])
+        await current.reply("hello", conversation_id="a")
+        first = llm.calls[-1]
+        current.rewrite_self_memories([PIANO[0]])
+        await current.reply("and now", conversation_id="a")
+        await current.close()
+        return system_context(first), _self_lines(first), _self_lines(llm.calls[-1])
+
+    context, first, after = run(scenario())
+    assert first == [f"{SELF_LINE}{TEA[0]}", f"{SELF_LINE}{PIANO[0]}"]
+    assert after == [f"{SELF_LINE}{PIANO[0]}"]
+    assert "stay consistent with" in context
+
+
+def test_only_the_newest_of_what_she_said_about_herself_is_in_mind(tmp_path):
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, self_memories_shown=2)
+        current.rewrite_self_memories([TEA[0], PIANO[0], HILLS[0]])
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        return _self_lines(llm.calls[-1])
+
+    assert run(scenario()) == [f"{SELF_LINE}{PIANO[0]}", f"{SELF_LINE}{HILLS[0]}"]
+
+
+def test_read_every_second_turn_nothing_she_said_is_skipped(tmp_path):
+    asked = []
+
+    def nothing(messages):
+        asked.append(_listed_for_her(messages))
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    async def scenario():
+        llm = Scripted("I drink jasmine tea when I work late.", "I walk in the hills on Sundays.")
+        current = companion(
+            tmp_path, {"self_memory": Worker(nothing)}, llm=llm, self_memory_every=2
+        )
+        await current.reply("one", conversation_id="a")
+        await current.reply("two", conversation_id="a")
+        await current.settle()
+        await current.close()
+
+    run(scenario())
+    (listed,) = asked
+    assert "jasmine tea" in listed and "hills" in listed

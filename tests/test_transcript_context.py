@@ -419,7 +419,7 @@ def test_the_budget_counts_the_note():
     from ai_character_engine.context.budget import ContextBudget
 
     builder = ContextBuilder(
-        budget=ContextBudget(context_window_tokens=400, reserved_output_tokens=20)
+        budget=ContextBudget(context_window_tokens=440, reserved_output_tokens=20)
     )
     result = builder.build_for_event_with_trace(
         character=PROFILE,
@@ -430,7 +430,7 @@ def test_the_budget_counts_the_note():
     )
 
     (note,) = notes(result.messages)
-    assert result.trace.estimated_total_tokens <= 400
+    assert result.trace.estimated_total_tokens <= 440
     assert result.trace.estimated_message_tokens >= builder.token_estimator.estimate_text(note)
 
 
