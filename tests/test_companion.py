@@ -3312,3 +3312,29 @@ def test_why_she_is_asked_again_is_not_kept_as_the_users_words(tmp_path):
     ):
         assert f"For the next reply only: {note}" in system_context(call)
         assert note not in call[-1].content
+
+
+def test_what_the_user_never_heard_her_say_is_not_kept(tmp_path):
+    """The job reads her reply when the turn ends. Interrupted while it was
+    played, or not used by the host, the rest of it was never heard."""
+
+    async def scenario(cut):
+        gate = asyncio.Event()
+        worker = Worker(about_herself(TEA, PIANO), gate=gate)
+        llm = Scripted(
+            "I drink jasmine tea when I work late. I have played the piano since I was six."
+        )
+        current = companion(tmp_path / cut, {"self_memory": worker}, llm=llm, self_memory_every=1)
+        await current.reply("tell me about you", conversation_id="a")
+        await until(lambda: worker.calls)
+        if cut == "interrupted":
+            current.interrupt("I drink jasmine tea when I work late.")
+        else:
+            current.take_back("a")
+        gate.set()
+        await current.settle()
+        await current.close()
+        return current.self_memories()
+
+    assert run(scenario("interrupted")) == [TEA[0]]
+    assert run(scenario("taken back")) == []

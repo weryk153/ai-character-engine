@@ -130,7 +130,9 @@ lines, never the user's, and keeps what she stated about herself: her tastes,
 habits, history, what she is working on. Each item needs an exact quote of
 hers. Said again, in the same words whatever the punctuation, it replaces the
 one she held; anything said differently is a fact of its own, since nearly the
-same words can say the opposite ("likes" and "dislikes"). The newest
+same words can say the opposite ("likes" and "dislikes"). What the user never
+heard, the rest of a reply cut short by `interrupt()` or a reply taken back
+before the worker's result came in, is not kept. The newest
 `self_memories_shown` stand in every conversation as `- you said about
 yourself: ...` lines of the note, and the system prompt asks her to stay
 consistent with them. One she no longer holds, edited away or pushed out by

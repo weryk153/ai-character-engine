@@ -1481,6 +1481,7 @@ class CharacterCompanion:
                 outcomes = [
                     await self._commit_what_she_said(proposal, conversation_id)
                     for proposal in result.output.proposals
+                    if self._still_said(proposal, conversation_id)
                 ]
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
                     await self._react_to_observation()
@@ -1494,6 +1495,26 @@ class CharacterCompanion:
             logger.warning("background result dropped (%s: %s)", type(exc).__name__, exc)
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
+
+    def _still_said(self, proposal, conversation_id: str | None) -> bool:
+        """Whether what she said about herself is still in the conversation
+        as it was heard. The job read her reply when the turn ended; cut short
+        while it was played, or taken back by the host, the rest of it never
+        reached the user. A conversation no longer held cannot tell."""
+        if proposal.target != SELF_MEMORY_TARGET:
+            return True
+        if self._started and conversation_id == self._active:
+            history = self.runtime.history
+        elif conversation_id in self._kept:
+            history = self._kept[conversation_id][0]
+        else:
+            return True
+        quote = "".join("".join(proposal.provenance.get("evidence") or ()).split())
+        return any(
+            quote in "".join(message.content.split())
+            for message in history
+            if message.role == "assistant"
+        )
 
     async def _commit_what_she_said(self, proposal, conversation_id: str | None):
         """Call with the turn lock held. What she says again about herself
