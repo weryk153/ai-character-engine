@@ -3506,3 +3506,62 @@ def test_a_stage_direction_stays_whole_when_the_sentence_before_it_is_left_out(
         return result.text
 
     assert run(scenario()) == kept
+
+
+def _tea_from(quote):
+    return {
+        "items": [
+            {
+                "summary": TEA[0],
+                "kind": "preference",
+                "importance": 0.6,
+                "confidence": 0.9,
+                "evidence": quote,
+            }
+        ],
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+
+def test_what_she_said_around_a_stage_direction_is_still_hers(tmp_path):
+    """The worker reads her lines without their stage directions; the check
+    that the line was heard read them with, and found no such quote."""
+
+    async def scenario():
+        worker = Worker(_tea_from("I drink jasmine tea when I work late"))
+        llm = Scripted("I *smiles* drink jasmine tea when I work late.")
+        current = companion(tmp_path, {"self_memory": worker}, llm=llm, self_memory_every=1)
+        await current.reply("tea or coffee", conversation_id="a")
+        await current.settle()
+        await current.close()
+        return current.self_memories()
+
+    assert run(scenario()) == [TEA[0]]
+
+
+def test_what_she_said_before_the_conversation_was_trimmed_is_still_kept(tmp_path):
+    """The conversation kept only its latest turns by the time the result
+    came in: her line could not be found, but nothing says she was not heard."""
+
+    async def scenario():
+        gate = asyncio.Event()
+        worker = Worker(about_herself(TEA), gate=gate)
+        llm = Scripted("I drink jasmine tea when I work late.", "Fine.", "Sure.")
+        current = companion(
+            tmp_path,
+            {"self_memory": worker},
+            llm=llm,
+            self_memory_every=1,
+            max_history_messages=2,
+        )
+        await current.reply("tea or coffee", conversation_id="a")
+        await until(lambda: worker.calls)
+        await current.reply("ok", conversation_id="a")
+        await current.reply("ok then", conversation_id="a")
+        gate.set()
+        await current.settle()
+        await current.close()
+        return current.self_memories()
+
+    assert run(scenario()) == [TEA[0]]

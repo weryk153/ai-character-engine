@@ -39,7 +39,7 @@ from ai_character_engine.cognition import (
     CognitiveRole,
     CognitiveRolePolicy,
 )
-from ai_character_engine.cognition.background import SELF_MEMORY_TARGET
+from ai_character_engine.cognition.background import SELF_MEMORY_TARGET, said_in
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
 from ai_character_engine.context.builder import SELF_MEMORY_LINE, ContextBuilder, one_line
@@ -736,6 +736,11 @@ class CharacterCompanion:
         self._scheduled_at: dict[str, int] = {}
         self._live_by_kind: dict[BackgroundCognitionKind, list] = {}
         self._conversation_by_task: dict[str, str | None] = {}
+        # Per task: the first message its conversation held when the job was
+        # scheduled. Gone by the time of its result, the conversation was
+        # trimmed since, unless the host took it back.
+        self._first_by_task: dict[str, Message | None] = {}
+        self._taken_back: deque[Message] = deque(maxlen=self.settings.records_kept)
 
         builder = context_builder or ContextBuilder()
         builder.goals_shown = self.settings.goals_shown
@@ -1185,6 +1190,9 @@ class CharacterCompanion:
             self._turns.remove(turn)
         for handle in handles:
             self._conversation_by_task[handle.task_id] = conversation_id
+            self._first_by_task[handle.task_id] = (
+                self.runtime.history[0] if self.runtime.history else None
+            )
             task = asyncio.create_task(self._collect(handle))
             self._pending.add(task)
             task.add_done_callback(self._pending.discard)
@@ -1414,6 +1422,7 @@ class CharacterCompanion:
             gone.append(history.pop())
         if history:
             gone.append(history.pop())
+        self._taken_back.extend(gone)
         left = [(anchor, note) for anchor, note in notes if not any(anchor is m for m in gone)]
         if conversation_id == self._active:
             self.runtime.context_notes = left
@@ -1556,6 +1565,7 @@ class CharacterCompanion:
             finally:
                 self._access.release(handle.task_id)
             conversation_id = self._conversation_by_task.pop(handle.task_id, None)
+            first = self._first_by_task.pop(handle.task_id, None)
             if result.output is None:
                 logger.debug("%s %s: %s", result.task_type, result.status.value, result.error)
                 return
@@ -1567,7 +1577,7 @@ class CharacterCompanion:
                 outcomes = [
                     await self._commit_what_she_said(proposal, conversation_id)
                     for proposal in result.output.proposals
-                    if self._still_said(proposal, conversation_id)
+                    if self._still_said(proposal, conversation_id, first)
                 ]
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
                     await self._react_to_observation()
@@ -1581,12 +1591,17 @@ class CharacterCompanion:
             logger.warning("background result dropped (%s: %s)", type(exc).__name__, exc)
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
+            self._first_by_task.pop(handle.task_id, None)
 
-    def _still_said(self, proposal, conversation_id: str | None) -> bool:
+    def _still_said(
+        self, proposal, conversation_id: str | None, first: Message | None
+    ) -> bool:
         """Whether what she said about herself is still in the conversation
         as it was heard. The job read her reply when the turn ended; cut short
         while it was played, or taken back by the host, the rest of it never
-        reached the user. A conversation no longer held cannot tell."""
+        reached the user. A conversation no longer held, or trimmed since the
+        job was scheduled, cannot tell: only a quote missing from a turn still
+        there is refused."""
         if proposal.target != SELF_MEMORY_TARGET:
             return True
         if self._started and conversation_id == self._active:
@@ -1595,12 +1610,14 @@ class CharacterCompanion:
             history = self._kept[conversation_id][0]
         else:
             return True
-        quote = "".join("".join(proposal.provenance.get("evidence") or ()).split())
-        return any(
-            quote in "".join(message.content.split())
-            for message in history
-            if message.role == "assistant"
-        )
+        if (
+            first is not None
+            and not any(message is first for message in history)
+            and not any(message is first for message in self._taken_back)
+        ):
+            return True
+        quote = "".join(proposal.provenance.get("evidence") or ())
+        return said_in(quote, [m.content for m in history if m.role == "assistant"])
 
     async def _commit_what_she_said(self, proposal, conversation_id: str | None):
         """Call with the turn lock held. What she says again about herself

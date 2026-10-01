@@ -350,10 +350,7 @@ class StructuredBackgroundWorker:
             if not isinstance(items, list):
                 raise ValueError("self memory extraction response.items must be an array")
             normalized = []
-            said = [
-                _STAGE_DIRECTION.sub(" ", line)
-                for line in _assistant_lines(context, turns=self.spec.every_n_revisions)
-            ]
+            said = _assistant_lines(context, turns=self.spec.every_n_revisions)
             for raw in items[:8]:
                 if not isinstance(raw, dict):
                     continue
@@ -362,7 +359,7 @@ class StructuredBackgroundWorker:
                 # Checked like a memory of the user: a quote she never said
                 # means the fact came from the user or from nowhere. A question
                 # states nothing about her.
-                if not summary or _line_quoted(quote, said) is None:
+                if not summary or not said_in(quote, said):
                     continue
                 if quote.rstrip(_CLOSING_MARKS).endswith(("?", "？")):
                     continue
@@ -1112,6 +1109,13 @@ def _assistant_lines(context: TaskContext, *, turns: int) -> list[str]:
         reply = str(payload.get("assistant_response", ""))
         return [reply] if reply.strip() else []
     return _replies_from(history, openers[-max(1, turns):])
+
+
+def said_in(quote: str, lines: Sequence[str]) -> bool:
+    """Whether the character said ``quote`` in one of ``lines``: spacing does
+    not count, and stage directions between asterisks are not what she said.
+    The self-memory worker and whoever checks its quotes later read alike."""
+    return _line_quoted(quote, [_STAGE_DIRECTION.sub(" ", line) for line in lines]) is not None
 
 
 def _line_quoted(quote: str, lines: list[str]) -> str | None:
