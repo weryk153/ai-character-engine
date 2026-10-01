@@ -213,6 +213,16 @@ model can run every worker on every turn.
 | `language` | empty | The language memories, goals and thoughts are written in; empty means the language the user writes in |
 | `self_memories_kept`, `self_memories_shown` | 40, 12 | How many things she said about herself she keeps (the oldest beyond are forgotten), and how many of the newest stand in the conversation |
 
+## Telling what the engine offers
+
+A host that runs on more than one version of the engine asks before it relies
+on a newer part: `hasattr(CharacterCompanion, "self_memories")` for what she
+said about herself, `"statement_only" in
+inspect.signature(CharacterCompanion.speak_up).parameters` for remarks without
+a question. `ai_character_engine.companion` exports `SELF_MEMORY_LINE`, the
+start of her self memories in the note, and `ASSISTANT_SPEAK` and
+`ACKNOWLEDGEMENTS`, what the checks on what she says look for.
+
 ## Lifecycle
 
 `settle()` waits for background work under way. `flush()` saves state and keeps

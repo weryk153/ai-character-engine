@@ -3438,3 +3438,42 @@ def test_her_silence_is_kept_as_silence_not_as_an_empty_line(tmp_path):
     text, history = run(scenario())
     assert text == ""
     assert history[-1] == ("assistant", "……")
+
+
+def test_a_reply_with_nothing_left_to_pass_on_is_kept_as_silence(tmp_path):
+    async def scenario():
+        llm = Scripted(*(["Mind the load on Amadeus, or your time machine breaks too."] * 3))
+        current = companion(tmp_path, llm=llm)
+        await current.speak_up("a")
+        result = await current.reply("ok", conversation_id="a")
+        newest = current.runtime.history[-1]
+        await current.close()
+        return result.text, (newest.role, newest.content)
+
+    assert run(scenario()) == ("", ("assistant", "……"))
+
+
+def test_a_host_can_tell_what_this_engine_offers():
+    """A host that runs on several versions of the engine asks before it
+    relies on these."""
+    import inspect
+
+    from ai_character_engine import BackgroundCognitionKind, CognitiveRole
+    from ai_character_engine.companion import (
+        ACKNOWLEDGEMENTS,
+        ASSISTANT_SPEAK,
+        SELF_MEMORY_LINE,
+    )
+
+    assert hasattr(CharacterCompanion, "self_memories")
+    assert hasattr(CharacterCompanion, "rewrite_self_memories")
+    rewrite = inspect.signature(CharacterCompanion.rewrite_self_memories).parameters
+    assert "from_before" in rewrite and "edited_from" in rewrite
+    assert "statement_only" in inspect.signature(CharacterCompanion.speak_up).parameters
+    settings = CompanionSettings()
+    for name in ("self_memory_every", "self_memories_kept", "self_memories_shown"):
+        assert hasattr(settings, name)
+    assert BackgroundCognitionKind.SELF_MEMORY_EXTRACTION.value == "self_memory_extraction"
+    assert CognitiveRole.SELF_MEMORY.value == "self_memory"
+    assert SELF_MEMORY_LINE == "- you said about yourself: "
+    assert ASSISTANT_SPEAK and ACKNOWLEDGEMENTS
