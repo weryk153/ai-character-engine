@@ -88,7 +88,10 @@ Without `storage_dir` nothing is written to disk.
    offering help ("let me know if you need anything", "如果還有其他問題..."):
    one of the last two sentences, in her own voice, not in quotes. Such a
    sentence waits until two more have come or the reply has ended. The
-   conversation keeps what was passed on. A
+   conversation keeps what was passed on. A closing mark such as `」` or `*`
+   stays with its sentence, and an emoji or other symbol is not punctuation. A
+   reply of nothing but punctuation ("……") is her silence: nothing is passed
+   on and the conversation keeps it as it was; an empty line is never kept. A
    reply of which nothing is left for repetition or assistant talk, and which
    used no tool, is asked again once.
 3. Trust grows a little; an observation of the user's emotion committed since the

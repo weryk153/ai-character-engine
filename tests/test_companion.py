@@ -3407,3 +3407,34 @@ def test_naming_again_what_she_mentioned_in_a_reply_is_not_quoting_herself(tmp_p
         return result.text
 
     assert run(scenario()) == "我昨天看了「進擊的巨人」最終季，結局比想像中安靜。"
+
+
+@pytest.mark.parametrize("said", ["*輕輕點頭。*", "好啊！😊", "Fine. *waves*", "See you! 👋"])
+def test_a_stage_direction_or_an_emoji_at_the_end_is_kept_whole(tmp_path, said):
+    """The closing asterisk of "*輕輕點頭。*" and the emoji after "好啊！" were
+    taken for sentences of nothing but punctuation and dropped."""
+
+    async def scenario():
+        llm = Scripted(said)
+        current = companion(tmp_path, llm=llm)
+        heard: list[str] = []
+        result = await current.reply("hi", conversation_id="a", on_text_delta=heard.append)
+        kept = current.runtime.history[-1].content
+        await current.close()
+        return "".join(heard), result.text, kept
+
+    assert run(scenario()) == (said, said, said)
+
+
+def test_her_silence_is_kept_as_silence_not_as_an_empty_line(tmp_path):
+    async def scenario():
+        llm = Scripted("……")
+        current = companion(tmp_path, llm=llm)
+        result = await current.reply("say something", conversation_id="a")
+        history = [(message.role, message.content) for message in current.runtime.history]
+        await current.close()
+        return result.text, history
+
+    text, history = run(scenario())
+    assert text == ""
+    assert history[-1] == ("assistant", "……")

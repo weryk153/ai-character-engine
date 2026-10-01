@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -220,6 +221,8 @@ NOTHING_TO_ACKNOWLEDGE = (
     "anything to acknowledge. Say something of your own."
 )
 NO_QUESTION = "Do not ask a question this time; say something without one."
+# What the conversation keeps of a reply of which nothing was passed on.
+SILENCE = "……"
 # How often she is asked again before she stays quiet instead.
 REMARK_ATTEMPTS = 3
 # How many of her latest lines a remark is checked against.
@@ -262,7 +265,9 @@ def _repeats(text: str, lines: Sequence[str]) -> bool:
 
 
 _SENTENCE_ENDS = "。！？!?…\n"
-_CLOSERS = "」』）)】\"'”’"
+# Closing marks belong to the sentence before them: "*輕輕點頭。*" is one
+# sentence, not "*輕輕點頭。" and a stray "*".
+_CLOSERS = "」』）)】》〉\"'”’*＊"
 # Sentences shorter than this ("Hmm.", "嗯。") are not checked: saying them
 # again is not repeating oneself.
 _SHORTEST_CHECKED = 8
@@ -433,7 +438,9 @@ def _repeats_a_line(sentence: str, lines: Sequence[str]) -> bool:
 
 
 def _only_punctuation(sentence: str) -> bool:
-    return not _plain(sentence)
+    """Punctuation, spaces and line breaks only. An emoji or another symbol
+    says something: "好啊！😊" ends in one."""
+    return all(unicodedata.category(char)[0] in "PZC" for char in sentence)
 
 
 def _left_out(sentence: str, lines: Sequence[str]) -> str | None:
@@ -1254,8 +1261,13 @@ class CharacterCompanion:
                 return result
             said = gate.passed.strip()
             if said or result.tool_results or attempt == 1 or not gate.reasons:
-                if not skip_memory:
+                if not skip_memory and said:
                     self._bridge.replace_reply(said)
+                elif not skip_memory and gate.reasons:
+                    # Never an empty line in the conversation: nothing of it
+                    # was said.
+                    self._bridge.replace_reply(SILENCE)
+                # Nothing but punctuation stays as she gave it: her silence.
                 return replace(result, response=replace(result.response, text=said))
             if not self._undo_turn(before):
                 return replace(result, response=replace(result.response, text=""))
