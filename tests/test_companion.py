@@ -3338,3 +3338,22 @@ def test_what_the_user_never_heard_her_say_is_not_kept(tmp_path):
 
     assert run(scenario("interrupted")) == [TEA[0]]
     assert run(scenario("taken back")) == []
+
+
+def test_what_she_said_before_the_engine_kept_it_is_older_than_what_it_kept(tmp_path):
+    """A host hands over what it kept itself. Dated now, the old lines took
+    the places of the newest in her mind and pushed real recent ones out."""
+
+    async def scenario():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm, self_memories_kept=3, self_memories_shown=2)
+        current.rewrite_self_memories(["Recent one", "Recent two"])
+        current.rewrite_self_memories(["Old one", "Old two"], edited_from=[], from_before=True)
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        return current.self_memories(), _self_lines(llm.calls[-1])
+
+    held, lines = run(scenario())
+    # In the order given, before the rest; the oldest goes first.
+    assert held == ["Old two", "Recent one", "Recent two"]
+    assert lines == [f"{SELF_LINE}Recent one", f"{SELF_LINE}Recent two"]

@@ -1764,6 +1764,7 @@ class CharacterCompanion:
         summaries: Sequence[str],
         *,
         edited_from: Sequence[str] | None = None,
+        from_before: bool = False,
     ) -> None:
         """What she said about herself, as the host's user edited it, or as a
         host that kept such lines itself hands them over.
@@ -1772,8 +1773,21 @@ class CharacterCompanion:
         that was shown and is gone is forgotten, a new line is remembered as
         something she said. Beyond ``self_memories_kept`` the oldest are
         forgotten.
+
+        ``from_before`` is for memories brought in from before the engine kept
+        them: new lines are dated before every one she holds, in the order
+        given, so they are in mind last and forgotten first. Dated now, they
+        took the places of what she said most recently. ``edited_from=[]``
+        only adds.
         """
-        self._rewrite(self._self_scope(), summaries, edited_from, "character_statement")
+        scope = self._self_scope()
+        dated_before = None
+        if from_before:
+            dated_before = min(
+                (record.created_at for record in self._memory_store.list_for_character(scope)),
+                default=datetime.now(UTC),
+            )
+        self._rewrite(scope, summaries, edited_from, "character_statement", dated_before)
         self._keep_the_newest_self_memories()
 
     def self_memories(self) -> list[str]:
@@ -1792,6 +1806,7 @@ class CharacterCompanion:
         summaries: Sequence[str],
         edited_from: Sequence[str] | None,
         evidence_type: str,
+        dated_before: datetime | None = None,
     ) -> None:
         store = self._memory_store
         wanted = list(dict.fromkeys(one_line(line) for line in summaries if line.strip()))
@@ -1803,15 +1818,17 @@ class CharacterCompanion:
                 record = replace(record, status="forgotten", forgotten_at=datetime.now(UTC))
             records.append(record)
         remembered = {one_line(record.summary) for record in records if record.is_active}
-        records += [
-            MemoryRecord(
+        new = [summary for summary in wanted if summary not in remembered]
+        for number, summary in enumerate(new):
+            record = MemoryRecord(
                 character_id=scope,
                 summary=summary,
                 kind="fact",
                 importance=0.7,
                 metadata={"evidence_type": evidence_type, "source": "host"},
             )
-            for summary in wanted
-            if summary not in remembered
-        ]
+            if dated_before is not None:
+                earlier = timedelta(seconds=len(new) - number)
+                record = replace(record, created_at=dated_before - earlier)
+            records.append(record)
         store.replace_for_character(scope, records)
