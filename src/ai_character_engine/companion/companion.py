@@ -285,15 +285,20 @@ _SHORTEST_CHECKED = 8
 
 # Support closings that break character. Small models fall into them at the end
 # of a reply, whatever the persona says; compared casefolded, outside quotes,
-# in the last _CLOSING_SENTENCES sentences only. Whole phrases: shorter ones
-# ("請隨時", "is there anything else") are everyday speech in character.
+# in the last _CLOSING_SENTENCES sentences only. Whole phrases, as a closing
+# says them: shorter ones ("請隨時", "is there anything else", "let me know
+# if you have any") end sentences she says in character too.
 ASSISTANT_SPEAK = (
-    "let me know if there's anything",
-    "let me know if there is anything",
-    "let me know if you need anything",
-    "let me know if you have any",
-    "feel free to ask",
-    "feel free to reach out",
+    "let me know if there's anything else",
+    "let me know if there is anything else",
+    "let me know if you need anything else",
+    "let me know if you need any help",
+    "let me know if you have any questions",
+    "let me know if you have any other questions",
+    "feel free to ask me anything",
+    "feel free to ask any questions",
+    "feel free to ask if you have",
+    "feel free to reach out if",
     "how can i help you",
     "how can i assist",
     "is there anything else i can help",
@@ -305,8 +310,9 @@ ASSISTANT_SPEAK = (
     "有什麼可以幫您",
     "有什麼我可以幫",
     "如果還有其他問題",
-    "如果需要進一步",
-    "如果你需要任何",
+    "如果需要進一步的幫助",
+    "如果需要進一步的資訊",
+    "如果你需要任何幫助",
     "我很樂意聆聽並提供幫助",
     "提供幫助或討論其他話題",
     "希望我們的交流能",
@@ -317,8 +323,9 @@ ASSISTANT_SPEAK = (
     "有什么可以帮您",
     "有什么我可以帮",
     "如果还有其他问题",
-    "如果需要进一步",
-    "如果你需要任何",
+    "如果需要进一步的帮助",
+    "如果需要进一步的信息",
+    "如果你需要任何帮助",
     "我很乐意聆听并提供帮助",
     "提供帮助或讨论其他话题",
     "希望我们的交流能",

@@ -3367,6 +3367,10 @@ def test_what_she_said_before_the_engine_kept_it_is_older_than_what_it_kept(tmp_
         "Is there anything else you remember about that night?",
         "店員說：「有什麼可以幫您的嗎？」",
         "如果還有其他問題，隨時告訴我。我先去煮水。那壺茶還熱著。",
+        "如果你需要任何幫忙搬家的話，週六我有空。",
+        "Let me know if you have any good horror films.",
+        "Feel free to ask Alex, he was there too.",
+        "Let me know if you need anything from the shop.",
     ],
 )
 def test_words_like_an_assistants_are_fine_in_character(tmp_path, said):
@@ -3386,9 +3390,19 @@ def test_words_like_an_assistants_are_fine_in_character(tmp_path, said):
     assert run(scenario()) == (said, said, said)
 
 
-def test_an_assistants_closing_at_the_end_is_still_left_out(tmp_path):
+@pytest.mark.parametrize(
+    "said",
+    [
+        "祝你程式編寫一切順利！",
+        "如果你需要任何幫助，請告訴我。",
+        "Let me know if you have any questions.",
+        "Feel free to ask me anything.",
+        "Let me know if you need anything else!",
+    ],
+)
+def test_an_assistants_closing_at_the_end_is_still_left_out(tmp_path, said):
     async def scenario():
-        llm = Scripted("這段程式應該沒問題了。祝你程式編寫一切順利！")
+        llm = Scripted(f"這段程式應該沒問題了。{said}")
         current = companion(tmp_path, llm=llm)
         result = await current.reply("好了嗎", conversation_id="a")
         await current.close()

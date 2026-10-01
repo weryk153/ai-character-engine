@@ -85,7 +85,7 @@ Without `storage_dir` nothing is written to disk.
    when tools are registered (`stream_text_with_tools`), one sentence at a time.
    A sentence that repeats one of her latest lines or is nothing but
    punctuation is left out, and so is a closing that talks like an assistant
-   offering help ("let me know if you need anything", "如果還有其他問題..."):
+   offering help ("let me know if you need anything else", "如果還有其他問題..."):
    one of the last two sentences, in her own voice, not in quotes. Such a
    sentence waits until two more have come or the reply has ended. The
    conversation keeps what was passed on. A closing mark such as `」` stays
