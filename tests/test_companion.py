@@ -3477,3 +3477,32 @@ def test_a_host_can_tell_what_this_engine_offers():
     assert CognitiveRole.SELF_MEMORY.value == "self_memory"
     assert SELF_MEMORY_LINE == "- you said about yourself: "
     assert ASSISTANT_SPEAK and ACKNOWLEDGEMENTS
+
+
+def test_an_asterisk_that_opens_a_stage_direction_starts_the_next_sentence():
+    """Taken for a closing mark, the "*" that opens "*笑著點頭*" stayed with
+    the sentence before it. Left out with that sentence, it left a lone "*",
+    and a host that pairs asterisks then muted everything after it."""
+    from ai_character_engine.companion.companion import _sentences
+
+    assert _sentences("好啊！*笑著點頭*") == (["好啊！"], "*笑著點頭*")
+    assert _sentences("*輕輕點頭。*") == (["*輕輕點頭。*"], "")
+
+
+@pytest.mark.parametrize(
+    "said, statement_only, kept",
+    [
+        ("今天好累喔。有什麼可以幫你的嗎？*歪頭看著你*", False, "今天好累喔。*歪頭看著你*"),
+        ("你週末有空嗎？*歪頭看著你*我想去看電影。", True, "*歪頭看著你*我想去看電影。"),
+    ],
+)
+def test_a_stage_direction_stays_whole_when_the_sentence_before_it_is_left_out(
+    tmp_path, said, statement_only, kept
+):
+    async def scenario():
+        current = companion(tmp_path, llm=Scripted(said))
+        result = await current.speak_up("a", statement_only=statement_only)
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == kept

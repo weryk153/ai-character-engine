@@ -266,8 +266,18 @@ def _repeats(text: str, lines: Sequence[str]) -> bool:
 
 _SENTENCE_ENDS = "。！？!?…\n"
 # Closing marks belong to the sentence before them: "*輕輕點頭。*" is one
-# sentence, not "*輕輕點頭。" and a stray "*".
+# sentence, not "*輕輕點頭。" and a stray "*". An asterisk closes only an
+# action left open; otherwise it opens the next one ("好啊！*笑著點頭*").
 _CLOSERS = "」』）)】》〉\"'”’*＊"
+_ASTERISKS = "*＊"
+
+
+def _closes(text: str, start: int, index: int) -> bool:
+    """Whether the mark at ``index`` closes the sentence that began at ``start``."""
+    char = text[index]
+    if char in _ASTERISKS:
+        return sum(text[start:index].count(mark) for mark in _ASTERISKS) % 2 == 1
+    return char in _CLOSERS or char in _SENTENCE_ENDS
 # Sentences shorter than this ("Hmm.", "嗯。") are not checked: saying them
 # again is not repeating oneself.
 _SHORTEST_CHECKED = 8
@@ -396,7 +406,7 @@ def _sentences(text: str) -> tuple[list[str], str]:
         )
         if end and (char != "." or index + 1 < len(text)):
             index += 1
-            while index < len(text) and (text[index] in _CLOSERS or text[index] in _SENTENCE_ENDS):
+            while index < len(text) and _closes(text, start, index):
                 index += 1
             while index < len(text) and text[index] == " ":
                 index += 1
