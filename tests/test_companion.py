@@ -2866,23 +2866,60 @@ def test_what_she_said_about_herself_needs_a_quote_of_her_own(tmp_path):
     assert run(scenario()) == ["Mei drinks jasmine tea when she works late"]
 
 
-def test_she_does_not_remember_the_same_thing_about_herself_twice(tmp_path):
-    reworded = ("Mei drinks jasmine tea when working late", "jasmine tea again tonight")
+def test_said_again_about_herself_it_replaces_what_she_held(tmp_path):
+    again = ("Mei drinks jasmine tea, when she works late!", "jasmine tea again tonight")
 
     async def scenario():
         llm = Scripted(
             "I drink jasmine tea when I work late.", "Yes, jasmine tea again tonight."
         )
-        worker = Worker(about_herself(TEA, reworded))
+        worker = Worker(about_herself(TEA, again))
         current = companion(tmp_path, {"self_memory": worker}, llm=llm, self_memory_every=1)
         await current.reply("what do you drink", conversation_id="a")
         await current.settle()
         await current.reply("again?", conversation_id="b")
         await current.settle()
         await current.close()
+        store = current.runtime.memory_manager.store
+        statuses = [
+            (record.summary, record.status) for record in store.list_for_character("mei#self")
+        ]
+        return current.self_memories(), statuses
+
+    held, statuses = run(scenario())
+    # Once, as she said it last.
+    assert held == ["Mei drinks jasmine tea, when she works late!"]
+    assert statuses == [
+        ("Mei drinks jasmine tea when she works late", "forgotten"),
+        ("Mei drinks jasmine tea, when she works late!", "active"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "first, then",
+    [
+        (("Mei likes cats.", "I like cats"), ("Mei does not like cats.", "I don't like cats")),
+        (("紅莉栖喜歡貓。", "我喜歡貓"), ("紅莉栖不喜歡貓。", "我不喜歡貓")),
+        (("Mei's favourite colour is blue.", "blue"), ("Mei's favourite colour is red.", "red")),
+        (("Mei likes horror films.", "I like horror"), ("Mei dislikes horror films.", "dislike")),
+    ],
+)
+def test_what_she_says_differently_about_herself_is_not_a_repeat(tmp_path, first, then):
+    """Nearly the same words can say the opposite. The newer statement was
+    taken for a repeat and never kept, and she was asked to stay consistent
+    with the older one."""
+
+    async def scenario():
+        llm = Scripted(f"So, {first[1]}.", f"Well, {then[1]}.")
+        worker = Worker(about_herself(first, then))
+        current = companion(tmp_path, {"self_memory": worker}, llm=llm, self_memory_every=1)
+        for text in ("one", "two"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
         return current.self_memories()
 
-    assert run(scenario()) == ["Mei drinks jasmine tea when she works late"]
+    assert run(scenario()) == [first[0], then[0]]
 
 
 def test_she_keeps_the_newest_of_what_she_said_about_herself(tmp_path):

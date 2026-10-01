@@ -128,7 +128,9 @@ reflections belong to the character and are shared by all conversations.
 So does what she said about herself. The `self_memory` worker reads her own
 lines, never the user's, and keeps what she stated about herself: her tastes,
 habits, history, what she is working on. Each item needs an exact quote of
-hers; a near repeat of one she holds is not kept again. The newest
+hers. Said again, in the same words whatever the punctuation, it replaces the
+one she held; anything said differently is a fact of its own, since nearly the
+same words can say the opposite ("likes" and "dislikes"). The newest
 `self_memories_shown` stand in every conversation as `- you said about
 yourself: ...` lines of the note, and the system prompt asks her to stay
 consistent with them. One she no longer holds, edited away or pushed out by

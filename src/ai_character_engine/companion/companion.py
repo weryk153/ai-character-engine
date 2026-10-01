@@ -234,13 +234,12 @@ def _plain(text: str) -> str:
     return "".join(ch for ch in text.casefold() if ch.isalnum())
 
 
-def _nearly_the_same(one: str, other: str) -> bool:
-    """Two summaries of one fact: the same words but for a few. A different
-    number makes a different fact ("17" and "18")."""
-    one, other = _plain(one), _plain(other)
-    if [ch for ch in one if ch.isdigit()] != [ch for ch in other if ch.isdigit()]:
-        return False
-    return SequenceMatcher(None, one, other, autojunk=False).ratio() >= 0.85
+def _the_same_fact(one: str, other: str) -> bool:
+    """Two summaries of one fact: the same letters and digits, whatever the
+    spacing and punctuation. Any other difference may be the whole point:
+    "likes cats" and "does not like cats", "blue" and "red". Nearly the same
+    words were taken for the same fact once, and what she said last was lost."""
+    return _plain(one) == _plain(other)
 
 
 def _repeats(text: str, lines: Sequence[str]) -> bool:
@@ -1476,9 +1475,8 @@ class CharacterCompanion:
                 if self._closed:
                     return
                 outcomes = [
-                    await self._commit(proposal, conversation_id)
+                    await self._commit_what_she_said(proposal, conversation_id)
                     for proposal in result.output.proposals
-                    if not self._already_said_about_herself(proposal)
                 ]
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
                     await self._react_to_observation()
@@ -1493,13 +1491,31 @@ class CharacterCompanion:
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
 
-    def _already_said_about_herself(self, proposal) -> bool:
-        """Whether a self memory says what one she holds says, perhaps in other
-        words. She says the same about herself often; once is enough."""
+    async def _commit_what_she_said(self, proposal, conversation_id: str | None):
+        """Call with the turn lock held. What she says again about herself
+        replaces what she held: she says the same about herself often, once is
+        enough, and the newest is the one in mind."""
         if proposal.target != SELF_MEMORY_TARGET:
-            return False
+            return await self._commit(proposal, conversation_id)
+        scope = self._self_scope()
+        before = self._memory_store.list_for_character(scope)
         summary = str(proposal.payload.get("summary", ""))
-        return any(_nearly_the_same(summary, held) for held in self.self_memories())
+        now = datetime.now(UTC)
+        same = [r.id for r in before if r.is_active and _the_same_fact(r.summary, summary)]
+        if same:
+            self._memory_store.replace_for_character(
+                scope,
+                [
+                    replace(record, status="forgotten", forgotten_at=now)
+                    if record.id in same
+                    else record
+                    for record in before
+                ],
+            )
+        outcome = await self._commit(proposal, conversation_id)
+        if same and not outcome.committed:
+            self._memory_store.replace_for_character(scope, before)
+        return outcome
 
     def _keep_the_newest_self_memories(self) -> None:
         """The oldest beyond ``self_memories_kept`` are forgotten."""
