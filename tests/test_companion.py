@@ -886,13 +886,15 @@ def test_opening_an_old_conversation_does_not_send_all_of_it_to_be_remembered_ag
             old += [Message("user", f"old line {number}"), Message("assistant", "fine")]
         current.load_conversation("old", old)
         await current.reply("back again", conversation_id="old")
+        # Every second turn of each conversation: this one is due.
+        await current.reply("and again", conversation_id="old")
         await current.settle()
         await current.close()
 
     run(scenario())
     (lines,) = seen
-    assert "back again" in lines
-    assert "old line 3" not in lines
+    assert "back again" in lines and "and again" in lines
+    assert "old line 9" not in lines
 
 
 def test_what_she_thinks_is_written_in_the_language_the_host_names(tmp_path):
@@ -3223,3 +3225,44 @@ def test_a_host_can_ask_for_a_remark_without_a_question(tmp_path):
     assert statement == "I finished the drawing."
     assert "What are you reading" not in asked_again
     assert question == "Are you there?"
+
+
+def test_conversations_taken_in_turns_are_each_read_once(tmp_path):
+    """Two windows open, the user writing in each in turn. Reading counted the
+    turns of all conversations together and kept one place to read on from:
+    every second turn, conversation a was never read at all."""
+    hers, theirs = [], []
+
+    def her_lines(messages):
+        hers.append(_listed_for_her(messages))
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    def their_lines(messages):
+        theirs.append(messages[1].content.split("User lines to extract from:")[1])
+        return {"items": [], "confidence": 0.5, "evidence": []}
+
+    async def scenario():
+        llm = Scripted(
+            *(f"Reply {conversation}{number}." for number in "123" for conversation in "AB")
+        )
+        current = companion(
+            tmp_path,
+            {"self_memory": Worker(her_lines), "memory": Worker(their_lines)},
+            llm=llm,
+            self_memory_every=2,
+            memory_every=2,
+        )
+        for number in "123":
+            for conversation in "ab":
+                await current.reply(f"line {conversation}{number}", conversation_id=conversation)
+                await current.settle()
+        await current.close()
+
+    run(scenario())
+    for read in (hers, theirs):
+        joined = "\n".join(read)
+        for conversation in "ab":
+            name = conversation if read is theirs else conversation.upper()
+            prefix = "line " if read is theirs else "Reply "
+            for number in "12":
+                assert joined.count(f"{prefix}{name}{number}") == 1

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any, Hashable, Mapping, Sequence
 
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
@@ -147,6 +147,20 @@ class BackgroundCognitionEvent:
     task_id: str | None = None
     foreground_event_id: str | None = None
     detail: str | None = None
+
+
+@dataclass(slots=True)
+class _Reading:
+    """How far the workers have read one conversation."""
+
+    # The opening of the last turn whose user lines memory extraction has been
+    # given, and of the last whose replies self-memory extraction has been
+    # given. None: nothing of the conversation that begins with first_line.
+    read_up_to: Message | None = None
+    said_up_to: Message | None = None
+    first_line: Message | None = None
+    known: bool = False
+    turns: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -555,14 +569,14 @@ class BackgroundCognitionRuntime:
         # The language the workers write in. Empty: the language the user
         # writes in, which the model has to work out from the transcript.
         self.output_language = ""
-        # The last line of the user that memory extraction has been given, and
-        # the opening of the last turn whose replies self-memory extraction has
-        # been given. None: nothing of the conversation that begins with
-        # _first_line.
-        self._read_up_to: Message | None = None
-        self._said_up_to: Message | None = None
-        self._first_line: Message | None = None
-        self._reading_from_known = False
+        # The conversation the next turn belongs to, for a host that switches
+        # the runtime's history between conversations. Each conversation is
+        # then read on its own, and cadence counts its own turns: counted
+        # together, two conversations taken in turns with every_n_revisions=2
+        # left one of them unread. None: one conversation, cadence counts the
+        # revisions of the runtime.
+        self.conversation: Hashable | None = None
+        self._readings: dict[Hashable | None, _Reading] = {}
         self._handles: dict[str, TaskHandle] = {}
         self._task_kind: dict[str, BackgroundCognitionKind] = {}
         self._install_workers()
@@ -597,12 +611,18 @@ class BackgroundCognitionRuntime:
             for message in self.tasks.runtime.history
             if message.role in {"user", "event"}
         ]
-        if not self._reading_from_known and openers:
+        reading = self._readings.pop(self.conversation, None) or _Reading()
+        self._readings[self.conversation] = reading
+        while len(self._readings) > self.config.event_history:
+            del self._readings[next(iter(self._readings))]
+        reading.turns += 1
+        turn = revision if self.conversation is None else reading.turns
+        if not reading.known and openers:
             # Before the first turn seen here nothing is this runtime's to read.
-            self._read_up_to = openers[-2] if len(openers) > 1 else None
-            self._said_up_to = self._read_up_to
-            self._first_line = openers[0]
-            self._reading_from_known = True
+            reading.read_up_to = openers[-2] if len(openers) > 1 else None
+            reading.said_up_to = reading.read_up_to
+            reading.first_line = openers[0]
+            reading.known = True
         handles: list[TaskHandle] = []
         for spec in self.config.worker_specs:
             if not spec.enabled:
@@ -614,7 +634,7 @@ class BackgroundCognitionRuntime:
             if spec.kind is BackgroundCognitionKind.VISION_INTERPRETATION and not _is_vision_event(event):
                 self._emit(spec.kind, "not_applicable", revision, event.id)
                 continue
-            if revision % spec.every_n_revisions != 0:
+            if turn % spec.every_n_revisions != 0:
                 self._emit(spec.kind, "cadence_skipped", revision, event.id)
                 continue
             key = (spec.kind, event.id)
@@ -623,7 +643,7 @@ class BackgroundCognitionRuntime:
                 continue
             job = payload
             if spec.kind is BackgroundCognitionKind.MEMORY_EXTRACTION:
-                start = self._unread(openers, self._read_up_to)
+                start = _unread(reading, openers, reading.read_up_to)
                 if start is not None:
                     job = {
                         **payload,
@@ -634,7 +654,7 @@ class BackgroundCognitionRuntime:
                         ],
                     }
             if spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION:
-                start = self._unread(openers, self._said_up_to)
+                start = _unread(reading, openers, reading.said_up_to)
                 if start is not None:
                     job = {
                         **payload,
@@ -662,11 +682,11 @@ class BackgroundCognitionRuntime:
                 )
                 continue
             if spec.kind is BackgroundCognitionKind.MEMORY_EXTRACTION and openers:
-                self._read_up_to = openers[-1]
-                self._reading_from_known = True
+                reading.read_up_to = openers[-1]
+                reading.known = True
             if spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION and openers:
-                self._said_up_to = openers[-1]
-                self._reading_from_known = True
+                reading.said_up_to = openers[-1]
+                reading.known = True
             self._scheduled_keys[key] = None
             self._handles[handle.task_id] = handle
             self._task_kind[handle.task_id] = spec.kind
@@ -678,37 +698,6 @@ class BackgroundCognitionRuntime:
             handles.append(handle)
             self._emit(spec.kind, "scheduled", revision, event.id, task_id=handle.task_id)
         return tuple(handles)
-
-    def _unread(
-        self, openers: Sequence[Message], read_up_to: Message | None
-    ) -> int | None:
-        """Where the turns begin that were not read yet, after ``read_up_to``,
-        as an index into ``openers``; None when that cannot be told: the
-        conversation was replaced or trimmed past it.
-
-        Counting turns does not find these lines. An interrupted turn leaves a
-        line in the conversation without being a turn, and a turn the host
-        keeps out of the conversation is a turn without a line.
-        """
-        if not openers or not self._reading_from_known:
-            return None
-        start = 0
-        if read_up_to is None:
-            if openers[0] is not self._first_line:
-                return None  # another conversation, or this one was trimmed
-        else:
-            last = next(
-                (
-                    index
-                    for index in range(len(openers) - 1, -1, -1)
-                    if openers[index] is read_up_to
-                ),
-                None,
-            )
-            if last is None:
-                return None
-            start = last + 1
-        return start
 
     async def collect(self, handle: TaskHandle) -> Any:
         try:
@@ -1060,6 +1049,38 @@ def _user_lines(context: TaskContext, *, turns: int) -> list[str]:
         return [latest]
     window = openers[-max(1, turns):]
     return [message.content for message in window if message.role == "user"]
+
+
+def _unread(
+    reading: _Reading, openers: Sequence[Message], read_up_to: Message | None
+) -> int | None:
+    """Where the turns begin that were not read yet, after ``read_up_to``, as
+    an index into ``openers``; None when that cannot be told: the conversation
+    was replaced or trimmed past it.
+
+    Counting turns does not find these lines. An interrupted turn leaves a
+    line in the conversation without being a turn, and a turn the host keeps
+    out of the conversation is a turn without a line.
+    """
+    if not openers or not reading.known:
+        return None
+    start = 0
+    if read_up_to is None:
+        if openers[0] is not reading.first_line:
+            return None  # another conversation, or this one was trimmed
+    else:
+        last = next(
+            (
+                index
+                for index in range(len(openers) - 1, -1, -1)
+                if openers[index] is read_up_to
+            ),
+            None,
+        )
+        if last is None:
+            return None
+        start = last + 1
+    return start
 
 
 def _replies_from(history: Sequence[Message], openers: Sequence[Message]) -> list[str]:

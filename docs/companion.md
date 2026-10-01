@@ -191,7 +191,7 @@ model can run every worker on every turn.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `emotion_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 4, 6, 0 | Run the worker every N turns; 0 turns it off |
+| `emotion_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |

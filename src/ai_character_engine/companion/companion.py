@@ -1095,6 +1095,8 @@ class CharacterCompanion:
                         self._keep_remark(conversation_id, said, turn_id)
                     handles: tuple = ()
                     if self._background is not None and not skip_memory and not self._closed:
+                        # Never None: None would mean one conversation only.
+                        self._background.conversation = ("conversation", conversation_id)
                         handles = await self._background.schedule_after_foreground(result)
                     self._take_on(handles)
                 finally:
