@@ -59,7 +59,11 @@ from ai_character_engine.long_term_cognition.store import (
 )
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
 from ai_character_engine.memory.models import MemoryRecord, RetrievedMemory
-from ai_character_engine.memory.self_kinds import CONVERSATION_KEY, stays_in_conversation
+from ai_character_engine.memory.self_kinds import (
+    CONVERSATION_KEY,
+    self_memory_kind,
+    stays_in_conversation,
+)
 from ai_character_engine.memory.retriever import MemoryRetriever
 from ai_character_engine.memory.trace import RetrievalResult
 from ai_character_engine.memory.store import JsonlMemoryStore
@@ -630,6 +634,18 @@ class _RecentEvents:
 
     def list_for_character(self, character_id: str) -> list:
         return [entry for entry in self._entries if entry.character_id == character_id]
+
+
+def _edited_lines(shown: Sequence[str], wanted: Sequence[str]) -> dict[str, str]:
+    """Each line of ``wanted`` that took the place of a line of ``shown``,
+    with the line it replaced: where the edited text has other lines than
+    the shown one, they are paired in order."""
+    before = [one_line(line) for line in shown if line.strip()]
+    pairs: dict[str, str] = {}
+    for op, i1, i2, j1, j2 in SequenceMatcher(a=before, b=list(wanted), autojunk=False).get_opcodes():
+        if op == "replace":
+            pairs.update(zip(wanted[j1:j2], before[i1:i2]))
+    return pairs
 
 
 def _came_from(metadata: Mapping[str, Any], conversation_id: str | None) -> bool:
@@ -2103,7 +2119,9 @@ class CharacterCompanion:
                 (record.created_at for record in self._memory_store.list_for_character(scope)),
                 default=datetime.now(UTC),
             )
-        self._rewrite(scope, summaries, edited_from, "character_statement", dated_before)
+        self._rewrite(
+            scope, summaries, edited_from, "character_statement", dated_before, carry_over=True
+        )
         self._keep_the_newest_self_memories()
 
     def self_memories(self, *, in_conversation: Any = _ANY) -> list[str]:
@@ -2126,6 +2144,12 @@ class CharacterCompanion:
         )
         return [one_line(record.summary) for record in active]
 
+    def _shown(self, scope: str) -> list[str]:
+        """The lines a memory page shows of ``scope``, oldest first."""
+        records = self._memory_store.list_for_character(scope)
+        active = sorted((r for r in records if r.is_active), key=lambda r: r.created_at)
+        return [one_line(record.summary) for record in active]
+
     def _rewrite(
         self,
         scope: str,
@@ -2133,25 +2157,46 @@ class CharacterCompanion:
         edited_from: Sequence[str] | None,
         evidence_type: str,
         dated_before: datetime | None = None,
+        *,
+        carry_over: bool = False,
     ) -> None:
+        """``carry_over``: a new line that took the place of a line that is
+        gone keeps that line's kind and conversation."""
         store = self._memory_store
         wanted = list(dict.fromkeys(one_line(line) for line in summaries if line.strip()))
         removable = None if edited_from is None else {one_line(line) for line in edited_from}
         records = []
+        forgotten: dict[str, MemoryRecord] = {}
         for record in store.list_for_character(scope):
             shown = one_line(record.summary)
             if record.is_active and shown not in wanted and (removable is None or shown in removable):
+                forgotten.setdefault(shown, record)
                 record = replace(record, status="forgotten", forgotten_at=datetime.now(UTC))
             records.append(record)
         remembered = {one_line(record.summary) for record in records if record.is_active}
         new = [summary for summary in wanted if summary not in remembered]
+        edited = (
+            _edited_lines(self._shown(scope) if edited_from is None else edited_from, wanted)
+            if carry_over
+            else {}
+        )
         for number, summary in enumerate(new):
+            kind = "fact"
+            metadata: dict[str, Any] = {"evidence_type": evidence_type, "source": "host"}
+            was = forgotten.get(edited.get(summary, ""))
+            if was is not None:
+                # An edited line is still the kind of thing it was and holds
+                # where it did: an edited plan for one conversation written
+                # back as a fact was in every conversation.
+                kind = self_memory_kind(was.kind)
+                if CONVERSATION_KEY in was.metadata:
+                    metadata[CONVERSATION_KEY] = was.metadata[CONVERSATION_KEY]
             record = MemoryRecord(
                 character_id=scope,
                 summary=summary,
-                kind="fact",
+                kind=kind,
                 importance=0.7,
-                metadata={"evidence_type": evidence_type, "source": "host"},
+                metadata=metadata,
             )
             if dated_before is not None:
                 earlier = timedelta(seconds=len(new) - number)

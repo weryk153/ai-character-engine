@@ -410,6 +410,74 @@ def test_self_memories_kept_are_counted_apart(tmp_path):
     ]
 
 
+def edited_on_the_memory_page(tmp_path, records, edit):
+    """What she holds after the user's memory page changed line ``edit[0]``
+    into ``edit[1]``: (summary, kind, conversation) of each active line."""
+
+    async def scenario():
+        current = make(tmp_path)
+        store = current.runtime.memory_manager.store
+        for record in records:
+            store.add(record)
+        shown = current.self_memories()
+        current.rewrite_self_memories(
+            [edit[1] if line == edit[0] else line for line in shown], edited_from=shown
+        )
+        held = [
+            (record.summary, record.kind, record.metadata.get("conversation_id", "none"))
+            for record in store.list_for_character("mei#self")
+            if record.is_active
+        ]
+        in_b = current.self_memories(in_conversation="b")
+        await current.close()
+        return held, in_b
+
+    return asyncio.run(scenario())
+
+
+def test_an_edited_plan_stays_in_its_conversation(tmp_path):
+    """The memory page wrote an edited line back as a fact of no conversation:
+    her plan for one conversation was then in every one."""
+    held, in_b = edited_on_the_memory_page(
+        tmp_path,
+        [said("Mei loves jasmine tea", "taste", minutes_ago=2), said("Mei plans a quiz", "plans", minutes_ago=1)],
+        ("Mei plans a quiz", "Mei plans a quiz on verbs"),
+    )
+    assert ("Mei plans a quiz on verbs", "plan", "a") in held
+    assert in_b == ["Mei loves jasmine tea"]
+
+
+def test_an_edited_taste_is_still_hers_everywhere(tmp_path):
+    held, in_b = edited_on_the_memory_page(
+        tmp_path,
+        [said("Mei loves jasmine tea", "taste", minutes_ago=2), said("Mei plans a quiz", "plan", minutes_ago=1)],
+        ("Mei loves jasmine tea", "Mei loves green tea"),
+    )
+    assert ("Mei loves green tea", "taste", "a") in held
+    assert in_b == ["Mei loves green tea"]
+
+
+def test_a_line_added_on_the_memory_page_is_a_fact_of_no_conversation(tmp_path):
+    async def scenario():
+        current = make(tmp_path)
+        store = current.runtime.memory_manager.store
+        store.add(said("Mei plans a quiz", "plan"))
+        shown = current.self_memories()
+        current.rewrite_self_memories([*shown, "Mei is left-handed"], edited_from=shown)
+        held = [
+            (record.summary, record.kind, record.metadata.get("conversation_id", "none"))
+            for record in store.list_for_character("mei#self")
+            if record.is_active
+        ]
+        await current.close()
+        return held
+
+    assert asyncio.run(scenario()) == [
+        ("Mei plans a quiz", "plan", "a"),
+        ("Mei is left-handed", "fact", "none"),
+    ]
+
+
 # --- as before ---------------------------------------------------------------------
 
 
