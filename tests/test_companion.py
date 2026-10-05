@@ -3782,11 +3782,11 @@ def test_a_reading_that_keeps_her_mood_tells_the_host_nothing(tmp_path):
 def test_a_reading_weighs_against_her_mood_as_faded_by_her_settings(tmp_path):
     now = [1000.0]
 
-    async def scenario(**settings):
+    async def scenario(name, **settings):
         worker = readings(SAD_MOOD, {**SAD_MOOD, "mood": "worried", "intensity": 0.5})
         llm = Scripted("The kettle is on.", "Rain again.")
         current = companion(
-            tmp_path / str(settings), {"mood": worker}, llm=llm, mood_every=1,
+            tmp_path / name, {"mood": worker}, llm=llm, mood_every=1,
             clock=lambda: now[0], **settings,
         )
         now[0] = 1000.0
@@ -3799,16 +3799,16 @@ def test_a_reading_weighs_against_her_mood_as_faded_by_her_settings(tmp_path):
         await current.close()
         return mood
 
-    assert run(scenario()) == "sad"  # 0.8 a minute ago is still 0.7
-    assert run(scenario(mood_half_life_seconds=60.0)) == "worried"  # 0.4 left
+    assert run(scenario("default")) == "sad"  # 0.8 a minute ago is still 0.7
+    assert run(scenario("short_half_life", mood_half_life_seconds=60.0)) == "worried"  # 0.4 left
 
 
 def test_the_rules_weigh_against_her_mood_as_faded_by_her_settings(tmp_path):
     now = [1060.0]
 
-    async def scenario(**settings):
+    async def scenario(name, **settings):
         current = companion(
-            tmp_path / str(settings), {"emotion": Worker({**WARM, "intensity": 0.6})}, emotion_every=1,
+            tmp_path / name, {"emotion": Worker({**WARM, "intensity": 0.6})}, emotion_every=1,
             clock=lambda: now[0], **settings,
         )
         current.runtime.state.apply(
@@ -3820,8 +3820,8 @@ def test_the_rules_weigh_against_her_mood_as_faded_by_her_settings(tmp_path):
         await current.close()
         return mood
 
-    assert run(scenario()) == "sad"
-    assert run(scenario(mood_half_life_seconds=10.0)) == "happy"
+    assert run(scenario("default")) == "sad"
+    assert run(scenario("short_half_life", mood_half_life_seconds=10.0)) == "happy"
 
 
 # --- on a turn her mood is read, the rules leave her mood to that reading ---
