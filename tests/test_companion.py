@@ -1795,7 +1795,9 @@ def test_a_kept_conversation_can_have_its_newest_exchange_taken_back(tmp_path):
 # --- what she keeps in mind ----------------------------------------------------
 
 
-def _goal(character_id, objective, urgency, *, updated_at=None):
+def _goal(character_id, objective, urgency, *, updated_at=None, conversation="a"):
+    """A short-term goal of the conversation ``conversation``: from 1.2.0 one
+    is in mind only in the conversation it came from."""
     from ai_character_engine.goals.models import (
         GoalEvidenceRef,
         GoalHorizon,
@@ -1818,6 +1820,7 @@ def _goal(character_id, objective, urgency, *, updated_at=None):
                 rationale="The user asked",
             ),
         ),
+        metadata={"conversation_id": conversation},
     )
     if updated_at is not None:
         from dataclasses import replace
@@ -1897,7 +1900,9 @@ def test_how_many_thoughts_she_keeps_in_mind_is_a_setting(tmp_path):
         store = current.runtime.long_term_cognition.store
         for number in range(3):
             store.add_reflection(
-                ReflectionRecord("mei", f"Thought number {number}", 0.9)
+                ReflectionRecord(
+                    "mei", f"Thought number {number}", 0.9, metadata={"conversation_id": "a"}
+                )
             )
         await current.reply("hello", conversation_id="a")
         await current.close()

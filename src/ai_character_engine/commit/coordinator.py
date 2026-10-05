@@ -10,6 +10,7 @@ from typing import Callable, Iterable
 from uuid import uuid4
 
 from ai_character_engine.memory.models import MemoryRecord
+from ai_character_engine.memory.self_kinds import CONVERSATION_KEY
 from ai_character_engine.long_term_cognition import (
     BeliefClaim,
     CognitionEvidenceRef,
@@ -613,6 +614,7 @@ class CognitiveCommitCoordinator:
                         "base_revision": proposal.base_revision,
                         "confidence": proposal.confidence,
                         "background_provenance": provenance,
+                        **_conversation_of(provenance),
                     },
                 )
             except Exception:
@@ -759,6 +761,7 @@ class CognitiveCommitCoordinator:
                     "foreground_event_type": provenance.get("foreground_event_type"),
                     "foreground_event_source": provenance.get("foreground_event_source"),
                     "evidence_type": provenance.get("evidence_type"),
+                    **_conversation_of(provenance),
                 },
             )
             committed = manager.commit_reflection(record)
@@ -784,6 +787,7 @@ class CognitiveCommitCoordinator:
                     "source": "background_cognition",
                     "worker_kind": proposal.provenance.get("worker_kind"),
                     "foreground_event_id": proposal.provenance.get("foreground_event_id"),
+                    **_conversation_of(proposal.provenance),
                 },
             )
             committed = manager.commit_candidate(record)
@@ -1092,6 +1096,14 @@ def _jsonable(value):
 
 def _normalize_text(value: str) -> str:
     return " ".join(value.casefold().split())
+
+
+def _conversation_of(provenance) -> dict:
+    """The conversation a proposal came from, as record metadata: given only
+    by a host that tells conversations apart (CharacterCompanion)."""
+    if CONVERSATION_KEY not in provenance:
+        return {}
+    return {CONVERSATION_KEY: provenance[CONVERSATION_KEY]}
 
 
 def _optional_str(value) -> str | None:

@@ -17,6 +17,7 @@ from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, Motivation
 from ai_character_engine.llm.models import Message
 from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.evidence import classify_user_text
+from ai_character_engine.memory.self_kinds import self_memory_kind
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.state.mood import (
     CHARACTER_MOODS,
@@ -384,7 +385,10 @@ class StructuredBackgroundWorker:
                     item_conf = confidence
                 item = {
                     "summary": summary,
-                    "kind": str(raw.get("kind", "fact")).strip() or "fact",
+                    # One of SELF_MEMORY_KINDS when the model meant one of
+                    # them; what she is doing in this conversation is told
+                    # apart by it.
+                    "kind": self_memory_kind(raw.get("kind")),
                     "importance": _unit_float(raw.get("importance"), default=0.5),
                 }
                 normalized.append(item)
