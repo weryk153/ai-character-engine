@@ -336,6 +336,29 @@ def test_the_snapshot_gives_the_floor_below_which_her_mood_is_gone(tmp_path):
     assert asyncio.run(scenario()).mood_floor == 0.3
 
 
+def test_a_mood_saved_with_a_time_still_to_come_is_as_of_loading(tmp_path):
+    """Another machine's clock, or milliseconds read as seconds: left as it
+    was, her mood would not fade until that time came."""
+
+    async def scenario():
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        saved = {**OLD_STATE, "emotion": "sad", "mood_intensity": 0.8,
+                 "mood_updated_at": 1000.0 * 1000}
+        (engine / "state.json").write_text(json.dumps(saved), encoding="utf-8")
+        now = [1000.0]
+        current = make(tmp_path, clock=lambda: now[0])
+        loaded = current.snapshot()
+        now[0] = 1900.0
+        later = current.snapshot()
+        await current.close()
+        return loaded, later
+
+    loaded, later = asyncio.run(scenario())
+    assert (loaded.emotion, loaded.mood_updated_at) == ("sad", 1000.0)
+    assert later.emotion == "neutral"
+
+
 def test_a_state_file_from_before_moods_reads_as_neutral(tmp_path):
     async def scenario():
         engine = tmp_path / "engine"

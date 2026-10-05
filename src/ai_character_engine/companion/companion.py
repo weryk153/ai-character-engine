@@ -904,10 +904,15 @@ class CharacterCompanion:
             except Exception as exc:
                 # A damaged file must not keep the character from starting.
                 logger.warning("state file unreadable, starting fresh: %s", exc)
+        now = self._clock()
         if state.mood_updated_at is None:
             # A state saved before 1.1.0 does not say when her mood was set:
             # it is as of now.
-            state.mood_updated_at = self._clock()
+            state.mood_updated_at = now
+        elif state.mood_updated_at > now:
+            # Set by another machine's clock, or milliseconds read as
+            # seconds: as of now, or her mood would not fade until then.
+            state.mood_updated_at = now
         return state
 
     def _save_state(self) -> None:
