@@ -959,9 +959,11 @@ MOOD_PAYLOAD = {"mood": "sad", "intensity": 0.7, "confidence": 0.9, "evidence": 
 NOTE = "Character context for this turn. Private runtime data, not said by the user.\n\n- emotion: calm"
 
 
-async def mood_reading(payload, *, history=None, max_history_messages=20):
+async def mood_reading(payload, *, history=None, max_history_messages=20, profile=None):
     client = CapturingClient(payload, name="mood")
     runtime = character()
+    if profile is not None:
+        runtime.character = profile
     runtime.max_history_messages = max_history_messages
     runtime.history = list(
         history
@@ -1027,6 +1029,59 @@ async def test_the_mood_worker_is_told_her_mood_is_how_she_feels_at_her_latest_l
     assert "background only" in system
     assert "quote words from the latest exchange" in system
     assert "If the latest exchange shows no particular feeling, answer neutral" in system
+
+
+PERSONA_LABEL = "Who the character is (background, not part of the conversation):"
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_is_told_who_she_is_from_her_profile():
+    profile = CharacterProfile(
+        id="c",
+        name="C",
+        description="A shy maid who\nstammers when praised.",
+        personality=["introverted", "sore loser"],
+    )
+    _, user, _ = await mood_reading(MOOD_PAYLOAD, profile=profile)
+    earlier, _ = mood_sections(user)
+    assert PERSONA_LABEL in earlier
+    persona = earlier.split(PERSONA_LABEL, 1)[1].split("\n\n", 1)[0]
+    assert "A shy maid who stammers when praised." in persona
+    assert "introverted, sore loser" in persona
+
+
+@pytest.mark.asyncio
+async def test_her_persona_is_cut_short_for_the_mood_worker():
+    profile = CharacterProfile(id="c", name="C", description="x" * 1000 + "TAIL")
+    _, user, _ = await mood_reading(MOOD_PAYLOAD, profile=profile)
+    persona = user.split(PERSONA_LABEL, 1)[1].split("\n\n", 1)[0].strip()
+    assert "TAIL" not in persona
+    assert 380 <= len(persona) <= 410
+
+
+@pytest.mark.asyncio
+async def test_without_a_persona_the_mood_worker_has_no_such_section():
+    profile = CharacterProfile(id="c", name="C", description="  ")
+    _, user, _ = await mood_reading(MOOD_PAYLOAD, profile=profile)
+    assert "Who the character is" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_is_given_intensity_anchors():
+    system, _, _ = await mood_reading(MOOD_PAYLOAD)
+    assert "about 0.2 is a slight feeling" in system
+    assert "about 0.5 a clear feeling" in system
+    assert "0.8 or more only for a major event" in system
+    assert "Small talk with no particular feeling is neutral" in system
+    assert "confidence is how clearly the latest exchange shows the feeling" in system
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_reads_her_relative_to_her_personality():
+    system, _, _ = await mood_reading(MOOD_PAYLOAD)
+    assert "relative to the character's personality" in system
+    assert "Blushing, being flustered or shy stammering mean embarrassed" in system
+    assert "usual teasing or tsundere barbs are the character's normal manner, not anger" in system
 
 
 @pytest.mark.asyncio

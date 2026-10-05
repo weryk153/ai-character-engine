@@ -707,6 +707,10 @@ class BackgroundCognitionRuntime:
                             self.tasks.runtime.history, openers[start:]
                         ),
                     }
+            if spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
+                persona = _persona_summary(getattr(self.tasks.runtime, "character", None))
+                if persona:
+                    job = {**payload, "character_persona": persona}
             try:
                 handle = await self.tasks.submit_background(
                     spec.kind.value,
@@ -970,11 +974,21 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "the mood now. What the character said counts as much as what the user said: "
             "talking about something sad can make the character sad, being praised can make "
             "them embarrassed, being insulted can make them angry or sad. "
+            "Judge the feeling relative to the character's personality, given as background "
+            "when known. Blushing, being flustered or shy stammering mean embarrassed, not "
+            "happy or worried. The character's usual teasing or tsundere barbs are the "
+            "character's normal manner, not anger, unless the exchange shows the character is "
+            "really upset. "
             "Choose exactly one mood from this list and write it exactly as listed, in English, "
             "whatever language the conversation is in: " + ", ".join(CHARACTER_MOODS) + ". "
             "If the latest exchange shows no particular feeling, answer neutral. "
             "intensity is how strongly the character feels it now, from 0 to 1; neutral has "
-            "intensity 0. Each evidence item must quote words from the latest exchange. "
+            "intensity 0. As anchors: about 0.2 is a slight feeling, about 0.5 a clear feeling, "
+            "and 0.8 or more only for a major event such as a loss, a real fight or a big "
+            "surprise. Small talk with no particular feeling is neutral, or a low intensity "
+            "when a faint feeling is there. confidence is how clearly the latest exchange shows "
+            "the feeling; do not default to a high value. "
+            "Each evidence item must quote words from the latest exchange. "
             "Return JSON: {\"mood\":str,\"intensity\":0..1,\"confidence\":0..1,\"evidence\":[str]}."
         ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
@@ -1182,6 +1196,26 @@ def _assistant_lines(context: TaskContext, *, turns: int) -> list[str]:
     return _replies_from(history, openers[-max(1, turns):])
 
 
+_PERSONA_SUMMARY_CHARS = 400
+
+
+def _persona_summary(profile: Any) -> str:
+    """Who she is, short, for the mood worker: without it a 9B model read her
+    surface tone, a shy character's stammer as worry and a tsundere's habitual
+    barbs as anger. The whole persona is not needed, and the conversation must
+    stay the larger part of what the worker reads."""
+    if profile is None:
+        return ""
+    parts = [str(getattr(profile, "description", "") or "")]
+    personality = [str(item).strip() for item in getattr(profile, "personality", None) or ()]
+    if any(personality):
+        parts.append("Personality: " + ", ".join(item for item in personality if item))
+    summary = " ".join(" ".join(parts).split())
+    if len(summary) > _PERSONA_SUMMARY_CHARS:
+        summary = summary[: _PERSONA_SUMMARY_CHARS - 1].rstrip() + "…"
+    return summary
+
+
 def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]:
     """Both sides of the conversation, her lines under her name, with the
     latest exchange apart from what came before.
@@ -1228,9 +1262,15 @@ def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]
         speaker = {"assistant": name, "user": "User"}.get(message.role, "Event")
         return f"{speaker}: {message.content.strip()}"
 
+    persona = str(payload.get("character_persona") or "").strip()
     user = (
         f"Character: {name}\n"
-        "Earlier conversation, oldest first (background only):\n"
+        + (
+            f"Who the character is (background, not part of the conversation):\n{persona}\n\n"
+            if persona
+            else ""
+        )
+        + "Earlier conversation, oldest first (background only):\n"
         + ("\n".join(line(message) for message in earlier) or "(empty)")
         + "\n\nLatest exchange (judge the mood as of the last line here):\n"
         + ("\n".join(line(message) for message in latest) or "(empty)")

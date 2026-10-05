@@ -165,7 +165,12 @@ Two things set it. The `mood` worker reads both sides of the recent
 conversation, her lines under her name, and judges how she feels at her latest
 line, also from what she said herself: talking about something sad, being
 praised. The latest exchange is set apart from the earlier conversation, which
-is background only. It runs every `mood_every` turns; a near word the model
+is background only. It is also given who she is, the profile's description and
+personality cut to about 400 characters, so it reads her relative to her
+personality: a shy character's stammer as embarrassed, a tsundere's habitual
+barbs as her manner rather than anger. Its intensity is anchored (about 0.2
+slight, 0.5 clear, 0.8 or more only for a major event), and small talk with no
+particular feeling reads as neutral. It runs every `mood_every` turns; a near word the model
 answers with (relieved, annoyed, shy and the like) counts as the mood it means,
 any other word off the list is no reading. On the turns it does not read, and
 without it, the observation of the
