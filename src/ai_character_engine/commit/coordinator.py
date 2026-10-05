@@ -1140,6 +1140,13 @@ def _reflection_evidence(proposal: TaskProposal) -> tuple[CognitionEvidenceRef, 
     if source_id is None:
         return ()
     evidence_type = str(provenance.get("evidence_type", "unknown")).strip() or "unknown"
+    # From 1.2.0 the reflection worker judges each quote by the line it came
+    # from; a proposal without that is judged by the latest line, as before.
+    each = provenance.get("evidence_types")
+    if isinstance(each, (list, tuple)) and len(each) == len(excerpts):
+        types = [str(item).strip() or "unknown" for item in each]
+    else:
+        types = [evidence_type] * len(excerpts)
     metadata = {
         "foreground_event_type": provenance.get("foreground_event_type"),
         "foreground_event_source": provenance.get("foreground_event_source"),
@@ -1149,12 +1156,12 @@ def _reflection_evidence(proposal: TaskProposal) -> tuple[CognitionEvidenceRef, 
         CognitionEvidenceRef(
             source_type=source_type,
             source_id=source_id,
-            evidence_type=evidence_type,
+            evidence_type=kind,
             excerpt=excerpt,
             confidence=proposal.confidence,
             metadata=metadata,
         )
-        for excerpt in excerpts
+        for excerpt, kind in zip(excerpts, types)
     )
 
 

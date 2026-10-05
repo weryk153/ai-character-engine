@@ -95,6 +95,7 @@ def all_clients(*, gate: asyncio.Event | None = None):
                         "kind": "preference",
                         "importance": 0.8,
                         "confidence": 0.9,
+                        "evidence": "I prefer tea",
                     }
                 ],
                 "confidence": 0.85,
@@ -292,11 +293,11 @@ async def test_emotion_summary_reflection_and_vision_use_typed_targets():
         await bg.run_foreground(event)
         results = await bg.collect_all()
     targets = {p.target for result in results if result.output for p in result.output.proposals}
+    # Memory and reflection need the user's own words to quote (1.2.0); a
+    # picture has none. Their targets are checked where the user speaks.
     assert targets == {
-        "memory.append_candidate",
         "state.emotion_candidate",
         "memory.conversation_summary_candidate",
-        "cognition.reflection_candidate",
         "context.vision_interpretation_candidate",
     }
 
@@ -763,11 +764,13 @@ async def test_a_worker_that_runs_every_other_turn_covers_both_turns():
 
 
 @pytest.mark.asyncio
-async def test_memory_items_without_a_quote_field_are_kept_for_older_prompts():
+async def test_memory_items_without_a_quote_are_not_proposed():
+    """The prompt asks every item for a quote; one without names nothing the
+    user said. Until 1.2.0 such an item was kept whole."""
     proposals = await proposed_memories(
         [{"summary": "User prefers tea", "kind": "preference", "importance": 0.8, "confidence": 0.9}]
     )
-    assert [p.payload["summary"] for p in proposals] == ["User prefers tea"]
+    assert proposals == ()
 
 
 async def emotion_proposal_payload(payload):
@@ -1274,3 +1277,157 @@ async def test_the_emotion_worker_still_reads_only_the_user_when_her_mood_is_rea
     )
     assert isinstance(observation.provenance["turn_ended_at"], float)
 
+
+# --- 1.2.0: the user's facts are the user's words ------------------------------------
+
+
+async def memories_after(items, *, earlier, turn):
+    client = RoleJSONClient({"items": items, "confidence": 0.9, "evidence": []}, name="memory")
+    runtime = character()
+    runtime.history = list(earlier)
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.MEMORY: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.MEMORY_EXTRACTION),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn(turn)
+        result = (await bg.collect_all())[-1]
+    return [p.payload["summary"] for p in result.output.proposals]
+
+
+# Her line has other punctuation than the user's: only letters count.
+TEACHING = [Message("user", "teach me English"), Message("assistant", 'Say after me: "I am a cat lover"!')]
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_she_said_first_is_not_a_fact_about_the_user():
+    """Practising a sentence she was teaching, the user said it after her:
+    "私はカラフルが好きです。" became "the user likes colourful things"."""
+    found = await memories_after(
+        [memory_item("User is a cat lover", "I am a cat lover.")],
+        earlier=TEACHING,
+        turn="I am a cat lover.",
+    )
+    assert found == []
+
+
+@pytest.mark.asyncio
+async def test_what_the_user_says_on_their_own_is_still_theirs():
+    found = await memories_after(
+        [memory_item("User is exhausted", "I am exhausted today")],
+        earlier=TEACHING,
+        turn="I am exhausted today",
+    )
+    assert found == ["User is exhausted"]
+
+
+@pytest.mark.asyncio
+async def test_a_few_words_she_also_said_are_still_the_users():
+    found = await memories_after(
+        [memory_item("User is tired", "ok!")],
+        earlier=[Message("user", "hi"), Message("assistant", "ok!")],
+        turn="ok! I am tired",
+    )
+    assert found == ["User is tired"]
+
+
+async def proposed_reflection(evidence):
+    client = RoleJSONClient(
+        {
+            "insight": "I think they are worn out",
+            "belief_candidate": None,
+            "confidence": 0.9,
+            "evidence": evidence,
+        },
+        name="reflection",
+    )
+    runtime = character()
+    runtime.history = [
+        Message("user", "why do you never listen?"),
+        Message("assistant", "You drive me mad!"),
+    ]
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.REFLECTION: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.REFLECTION),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("I am exhausted today")
+        result = (await bg.collect_all())[-1]
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    return result.output.proposals
+
+
+@pytest.mark.asyncio
+async def test_a_thought_keeps_only_the_users_own_words_as_evidence():
+    """Her line "You drive me mad!" went in as evidence about the user, typed
+    as the latest line of the user was."""
+    proposals = await proposed_reflection(
+        [
+            "You drive me mad!",
+            "The user said twice that they do not understand",
+            "I am exhausted today",
+            "why do you never listen?",
+        ]
+    )
+    (proposal,) = proposals
+    assert proposal.provenance["evidence"] == ["I am exhausted today", "why do you never listen?"]
+    assert proposal.provenance["evidence_types"] == ["asserted_fact", "user_question"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence", [[], ["You drive me mad!"]])
+async def test_a_thought_on_none_of_the_users_words_is_not_proposed(evidence):
+    assert await proposed_reflection(evidence) == ()
+
+
+# --- 1.2.0: the user's emotion now -------------------------------------------------
+
+
+async def emotion_prompt(*, history=None, max_history_messages=20):
+    client = CapturingClient(EMOTION_PAYLOAD, name="emotion")
+    runtime = character()
+    runtime.max_history_messages = max_history_messages
+    runtime.history = list(
+        history
+        if history is not None
+        else [Message("user", "this is useless, I hate it"), Message("assistant", "Sorry!")]
+    )
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.EMOTION: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.EMOTION_ANALYSIS),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("what manga are you reading?")
+        await bg.collect_all()
+    return client.messages[1].content
+
+
+@pytest.mark.asyncio
+async def test_the_users_latest_line_stands_apart_from_the_earlier_ones():
+    """After an angry turn, a 9B model read the plain question that followed as
+    frustrated, twice in two runs: the question sat among the angry lines."""
+    user = await emotion_prompt()
+    earlier, _, latest = user.partition("Latest event/user content:\n")
+    assert "Earlier user lines (background only):\nuser: this is useless, I hate it" in earlier
+    assert "what manga" not in earlier
+    assert latest.startswith("what manga are you reading?\n")
+    assert "Sorry!" not in user
+
+
+@pytest.mark.asyncio
+async def test_without_kept_history_the_emotion_worker_reads_the_latest_line_alone():
+    user = await emotion_prompt(history=[], max_history_messages=0)
+    assert "Earlier user lines (background only):\n(empty)" in user
+    assert "Latest event/user content:\nwhat manga are you reading?\n" in user

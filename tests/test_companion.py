@@ -1117,7 +1117,7 @@ def test_goals_and_thoughts_are_kept_and_reach_the_next_reply(tmp_path):
                     "insight": "They are looking forward to the drawing",
                     "belief_candidate": None,
                     "confidence": 0.9,
-                    "evidence": [],
+                    "evidence": ["show me when it is done"],
                 }
             ),
         }

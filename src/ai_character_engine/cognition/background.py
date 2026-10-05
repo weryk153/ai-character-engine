@@ -250,13 +250,17 @@ class StructuredBackgroundWorker:
         payload = context.request.payload
         latest = str(payload.get("latest_user_or_event", "")).strip()
         assistant = str(payload.get("assistant_response", "")).strip()
+        transcript_title = "Recent transcript"
         if self.spec.kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
             # Nothing the character said is evidence of how the user feels or
             # treats her, and a small model cannot keep the two apart: with a
             # character that insults the user it rated his plain questions as
-            # hostile. It is given his side of the conversation only.
-            history = [message for message in history if message.role != "assistant"]
+            # hostile. It is given his side of the conversation only. The
+            # latest line stands apart from the earlier ones: given together,
+            # a 9B model read a plain question after an angry turn as angry.
+            history = _earlier_user_lines(history)
             assistant = ""
+            transcript_title = _EARLIER_USER_LINES
         transcript = "\n".join(
             f"{message.role}: {message.content}" for message in history if message.content.strip()
         )
@@ -266,7 +270,7 @@ class StructuredBackgroundWorker:
         user = (
             f"Character: {context.snapshot.character_name}\n"
             f"Authoritative snapshot revision: {context.snapshot.revision}\n"
-            f"Recent transcript:\n{transcript or '(empty)'}\n\n"
+            f"{transcript_title}:\n{transcript or '(empty)'}\n\n"
             f"Latest event/user content:\n{latest or '(none)'}\n"
         )
         if self.spec.kind is not BackgroundCognitionKind.EMOTION_ANALYSIS:
@@ -321,28 +325,33 @@ class StructuredBackgroundWorker:
                 raise ValueError("memory extraction response.items must be an array")
             normalized: list[dict[str, Any]] = []
             user_lines = _user_lines(context, turns=self.spec.every_n_revisions)
+            her_lines = _her_lines(context, self.history_messages)
             for raw in items[:8]:
                 if not isinstance(raw, dict):
                     continue
                 summary = str(raw.get("summary", "")).strip()
                 if not summary:
                     continue
-                item_provenance = provenance
-                if "evidence" in raw:
-                    # A quote the user never said means the fact came from the
-                    # assistant or from nowhere; it must not become a memory.
-                    quote = str(raw.get("evidence") or "")
-                    source = _line_quoted(quote, user_lines)
-                    # Judge the line the fact came from, not the latest turn: a
-                    # question after "my name is Dawn" must not veto the name, and
-                    # a fact after a quotation must not launder the quotation.
-                    if source is None or classify_user_text(source) != "asserted_fact":
-                        continue
-                    item_provenance = {
-                        **provenance,
-                        "evidence": [quote],
-                        "evidence_type": "asserted_fact",
-                    }
+                # A quote the user never said means the fact came from the
+                # assistant or from nowhere; it must not become a memory. No
+                # quote at all says the same: the prompt asks for one.
+                quote = str(raw.get("evidence") or "")
+                source = _line_quoted(quote, user_lines)
+                # Judge the line the fact came from, not the latest turn: a
+                # question after "my name is Dawn" must not veto the name, and
+                # a fact after a quotation must not launder the quotation.
+                if source is None or classify_user_text(source) != "asserted_fact":
+                    continue
+                if _echoes(quote, her_lines):
+                    # Words she said first, said after her: a sentence she is
+                    # teaching, practised. "私はカラフルが好きです。" said back
+                    # to her is not the user liking colourful things.
+                    continue
+                item_provenance = {
+                    **provenance,
+                    "evidence": [quote],
+                    "evidence_type": "asserted_fact",
+                }
                 item_conf = _confidence(raw.get("confidence"))
                 if item_conf is None:
                     item_conf = confidence
@@ -495,12 +504,31 @@ class StructuredBackgroundWorker:
             else:
                 raise ValueError("reflection belief_candidate must be an object or null")
             value = {"insight": insight, "belief_candidate": claim}
+            # Evidence about the user is what the user said, word for word.
+            # Her own lines ("you drive me mad!") and retellings ("the user
+            # said twice that they do not understand") are not; a thought
+            # with none left is not proposed.
+            said_by_user = _lines_the_user_said(context, self.history_messages)
+            quoted = [
+                (quote, line)
+                for quote in evidence
+                if (line := _line_quoted(quote, said_by_user)) is not None
+            ]
+            evidence = tuple(quote for quote, _ in quoted)
+            if not quoted:
+                return value, confidence, evidence, []
             proposals.append(
                 context.proposal(
                     "cognition.reflection_candidate",
                     value,
                     confidence=confidence,
-                    provenance=provenance,
+                    provenance={
+                        **provenance,
+                        "evidence": list(evidence),
+                        # Each quote judged by the line it came from, not by
+                        # the latest line of the user.
+                        "evidence_types": [classify_user_text(line) for _, line in quoted],
+                    },
                 )
             )
             return value, confidence, evidence, proposals
@@ -1334,6 +1362,66 @@ def _line_quoted(quote: str, lines: list[str]) -> str | None:
     if not wanted:
         return None
     return next((line for line in lines if wanted in _squeeze(line)), None)
+
+
+# The title of what the emotion worker reads before the latest line.
+_EARLIER_USER_LINES = "Earlier user lines (background only)"
+# Quoted words with fewer letters than this ("はい", "ok") are not taken for
+# hers when she said them too.
+_SHORTEST_ECHO = 4
+
+
+def _letters(text: str) -> str:
+    return "".join(char for char in text.casefold() if char.isalnum())
+
+
+def _echoes(quote: str, her_lines: Sequence[str]) -> bool:
+    """Whether the user's quote repeats words she said in the transcript.
+    Letters and digits only: the user types "私はペコラ。" after her
+    「私はペコラ」！"""
+    said = _letters(quote)
+    return len(said) >= _SHORTEST_ECHO and any(said in _letters(line) for line in her_lines)
+
+
+def _her_lines(context: TaskContext, history_messages: int) -> list[str]:
+    """What she said in the transcript the worker was shown, and her reply."""
+    lines = [
+        message.content
+        for message in context.snapshot.history[-history_messages:]
+        if message.role == "assistant" and message.content.strip()
+    ]
+    reply = str(context.request.payload.get("assistant_response", ""))
+    return [*lines, reply] if reply.strip() else lines
+
+
+def _lines_the_user_said(context: TaskContext, history_messages: int) -> list[str]:
+    """What the user said in the transcript the worker was shown, and the
+    latest line when the turn was the user's."""
+    lines = [
+        message.content
+        for message in context.snapshot.history[-history_messages:]
+        if message.role == "user" and not is_turn_context(message)
+    ]
+    payload = context.request.payload
+    latest = str(payload.get("latest_user_or_event", ""))
+    if payload.get("foreground_event_type") == "user_message" and latest.strip():
+        lines.append(latest)
+    return lines
+
+
+def _earlier_user_lines(history: Sequence[Message]) -> list[Message]:
+    """The user's lines before the turn being read: its own line, the last
+    user line or event, is the latest content and is given apart."""
+    opener = next(
+        (
+            index
+            for index in range(len(history) - 1, -1, -1)
+            if history[index].role in {"user", "event"}
+        ),
+        None,
+    )
+    earlier = history if opener is None else history[:opener]
+    return [message for message in earlier if message.role == "user"]
 
 
 def _is_vision_event(event: CharacterEvent) -> bool:
