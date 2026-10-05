@@ -20,6 +20,21 @@ CHARACTER_MOODS: tuple[str, ...] = (
     "worried",
 )
 NEUTRAL = "neutral"
+# Near words a model answers with instead of one of the eight, lower case.
+# Matched whole, never fuzzily: anything else is no reading of her mood.
+MOOD_SYNONYMS: dict[str, str] = {
+    **dict.fromkeys(
+        ("joyful", "glad", "pleased", "excited", "cheerful", "amused", "delighted"), "happy"
+    ),
+    **dict.fromkeys(("relieved", "relaxed", "content", "peaceful", "serene", "at ease"), "calm"),
+    **dict.fromkeys(("upset", "hurt", "lonely", "disappointed", "sorrowful", "down"), "sad"),
+    **dict.fromkeys(("annoyed", "irritated", "frustrated", "mad", "furious"), "angry"),
+    **dict.fromkeys(
+        ("anxious", "concerned", "nervous", "uneasy", "afraid", "scared"), "worried"
+    ),
+    **dict.fromkeys(("shy", "flustered", "bashful", "awkward"), "embarrassed"),
+    **dict.fromkeys(("shocked", "startled", "astonished", "amazed"), "surprised"),
+}
 # The strength of a mood set without one, as by a host's own state policy.
 DEFAULT_MOOD_INTENSITY = 0.5
 # Custom state: when the turn ended whose reading set her mood, in seconds
@@ -71,3 +86,26 @@ def effective_mood(
     if faded < floor:
         return NEUTRAL, 0.0
     return mood, faded
+
+
+def blend_mood(
+    mood: str, intensity: float, new_mood: str, new_intensity: object
+) -> tuple[str, float] | None:
+    """What a new reading of her mood makes of it: the mood and intensity to
+    store as of now, or None to leave her mood exactly as stored.
+
+    ``mood``/``intensity`` are her mood as it stands now (effective_mood).
+    A mood holds until something at least as strong comes along, so one
+    reading does not wipe out the last: a neutral reading lets her mood fade
+    by itself, the same mood again is as strong as the stronger of the two,
+    and another mood takes over only when it is at least as strong.
+    """
+    strength = mood_intensity(new_mood, new_intensity)
+    if strength <= 0:
+        return None
+    current = mood_intensity(mood, intensity)
+    if new_mood == mood:
+        return mood, max(strength, current)
+    if strength >= current:
+        return new_mood, strength
+    return None

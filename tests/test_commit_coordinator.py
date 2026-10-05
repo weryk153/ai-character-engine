@@ -27,6 +27,7 @@ from ai_character_engine.llm.models import LLMResponse
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
 from ai_character_engine.runtime import CharacterRuntime
 from ai_character_engine.state.mood import MOOD_TURN_KEY
+from ai_character_engine.state.models import StatePatch
 from ai_character_engine.tasks import MultiTaskRuntime, TaskProposal
 
 
@@ -635,3 +636,79 @@ async def test_the_users_emotion_keeps_the_time_of_its_turn():
     p = replace(p, provenance={**p.provenance, "turn_ended_at": 100.0})
     assert (await commits.commit(p)).status is CommitStatus.COMMITTED
     assert engine.state.custom["observed_user_emotion"]["turn_ended_at"] == 100.0
+
+
+async def mood_after(*readings, clock=5000.0, start=("sad", 0.8, 5000.0)):
+    """Her mood as stored after ``readings`` (mood, intensity, turn) were
+    committed one after another, starting from ``start``."""
+    engine = runtime()
+    engine.state.apply(
+        StatePatch(emotion=start[0], mood_intensity=start[1], mood_updated_at=start[2])
+    )
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    commits.clock = lambda: clock
+    results = [
+        await commits.commit(mood_proposal(mood, intensity, turn_ended_at=turn))
+        for mood, intensity, turn in readings
+    ]
+    state = engine.state
+    return results, (state.emotion, state.mood_intensity, state.mood_updated_at), state.custom
+
+
+@pytest.mark.asyncio
+async def test_a_neutral_reading_leaves_a_strong_mood_to_fade_by_itself():
+    results, mood, custom = await mood_after(("neutral", 0.0, 100.0), start=("sad", 0.8, 4000.0))
+    assert results[0].status is CommitStatus.COMMITTED
+    assert mood == ("sad", 0.8, 4000.0)
+    # Read for this turn all the same: the turn's rules do not override it.
+    assert custom[MOOD_TURN_KEY] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_a_weaker_reading_of_another_mood_leaves_her_mood():
+    results, mood, custom = await mood_after(("worried", 0.5, 100.0))
+    assert results[0].status is CommitStatus.COMMITTED
+    assert mood == ("sad", 0.8, 5000.0)
+    assert custom[MOOD_TURN_KEY] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_a_stronger_reading_of_another_mood_replaces_hers():
+    _, mood, _ = await mood_after(("happy", 0.9, 100.0), clock=6000.0)
+    assert mood == ("happy", 0.9, 6000.0)
+
+
+@pytest.mark.asyncio
+async def test_the_same_mood_again_is_the_stronger_of_the_two_as_of_now():
+    _, mood, _ = await mood_after(("sad", 0.3, 100.0), clock=5300.0)
+    # 0.8 five minutes ago is 0.4 now; the reading said 0.3.
+    assert mood[0] == "sad" and mood[2] == 5300.0
+    assert mood[1] == pytest.approx(0.4)
+    _, mood, _ = await mood_after(("sad", 0.9, 100.0), clock=5300.0)
+    assert mood == ("sad", 0.9, 5300.0)
+
+
+@pytest.mark.asyncio
+async def test_a_reading_blends_with_her_mood_as_faded_by_the_coordinators_settings():
+    async def mood_set(half_life):
+        engine = runtime()
+        engine.state.apply(StatePatch(emotion="sad", mood_intensity=0.8, mood_updated_at=1000.0))
+        commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+        commits.clock = lambda: 1060.0
+        if half_life is not None:
+            commits.mood_half_life_seconds = half_life
+        await commits.commit(mood_proposal("worried", 0.5))
+        return engine.state.emotion
+
+    assert await mood_set(None) == "sad"  # five-minute half-life: still 0.70
+    assert await mood_set(60.0) == "worried"  # 0.4 left
+
+
+@pytest.mark.asyncio
+async def test_a_late_reading_of_an_earlier_turn_is_still_stale_when_the_newer_one_kept_her_mood():
+    results, mood, _ = await mood_after(("neutral", 0.0, 200.0), ("happy", 1.0, 100.0))
+    assert (results[1].status, results[1].reason) == (
+        CommitStatus.STALE,
+        "newer_mood_already_committed",
+    )
+    assert mood == ("sad", 0.8, 5000.0)

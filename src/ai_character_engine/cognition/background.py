@@ -17,7 +17,13 @@ from ai_character_engine.llm.models import Message
 from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.runtime.models import CharacterRunResult
-from ai_character_engine.state.mood import CHARACTER_MOODS, effective_mood, mood_intensity, seconds
+from ai_character_engine.state.mood import (
+    CHARACTER_MOODS,
+    MOOD_SYNONYMS,
+    effective_mood,
+    mood_intensity,
+    seconds,
+)
 from ai_character_engine.tasks.errors import (
     TaskQueueFullError,
     TaskRuntimeClosedError,
@@ -395,11 +401,13 @@ class StructuredBackgroundWorker:
             return tuple(normalized), confidence, evidence, proposals
 
         if kind is BackgroundCognitionKind.CHARACTER_MOOD:
-            mood = str(data.get("mood") or "").strip().casefold()
+            mood = str(data.get("mood") or "").strip().lower()
+            # A near word ("relieved", "annoyed") stands for the mood it means.
+            mood = MOOD_SYNONYMS.get(mood, mood)
             raw = data.get("intensity")
             if mood not in CHARACTER_MOODS or seconds(raw) is None or confidence is None:
-                # A word off the list ("開心", "excited") or a missing field is
-                # no reading of her mood; her mood stays what it was.
+                # Any other word ("開心", "nostalgic") or a missing field is no
+                # reading of her mood; her mood stays what it was.
                 return None, confidence, evidence, []
             value = {"mood": mood, "intensity": mood_intensity(mood, raw)}
             proposals.append(

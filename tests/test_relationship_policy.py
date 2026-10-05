@@ -261,3 +261,80 @@ def test_an_unremarkable_observation_leaves_her_mood_as_it_was(stance, valence):
         500.0,
     )
     assert before.custom[MOOD_TURN_KEY] == 100.0
+
+
+def feeling(mood, strength, updated_at, **observation):
+    """A state in which she feels ``mood`` and a new observation came in."""
+    return CharacterState(
+        emotion=mood,
+        mood_intensity=strength,
+        mood_updated_at=updated_at,
+        custom={"observed_user_emotion": observed(turn_ended_at=101.0, **observation)},
+    ).snapshot()
+
+
+def test_the_rules_leave_a_stronger_mood_of_another_kind():
+    patch = relationship_patch(
+        feeling("sad", 0.9, 1000.0, stance=1.0, valence=0.9, intensity=0.6),
+        count_turn=False,
+        now=1000.0,
+    )
+    assert (patch.emotion, patch.mood_intensity, patch.mood_updated_at) == (None, None, None)
+    # Not her mood's turn either: a reading of this turn may still set it.
+    assert patch.custom_updates == {APPLIED_OBSERVATION_KEY: "p1"}
+    assert patch.favorability_delta > 0
+
+
+def test_the_rules_replace_a_mood_that_is_no_stronger():
+    patch = relationship_patch(
+        feeling("sad", 0.5, 1000.0, stance=1.0, valence=0.9, intensity=0.6),
+        count_turn=False,
+        now=2000.0,
+    )
+    assert (patch.emotion, patch.mood_intensity, patch.mood_updated_at) == ("happy", 0.6, 2000.0)
+    assert patch.custom_updates[MOOD_TURN_KEY] == 101.0
+
+
+def test_the_rules_compare_with_her_mood_as_it_has_faded():
+    patch = relationship_patch(
+        feeling("sad", 0.9, 1000.0, stance=1.0, valence=0.9, intensity=0.6),
+        count_turn=False,
+        now=1300.0,  # 0.45 left
+    )
+    assert (patch.emotion, patch.mood_intensity) == ("happy", 0.6)
+
+
+def test_the_rules_fade_her_mood_by_the_half_life_they_are_given():
+    patch = relationship_patch(
+        feeling("sad", 0.9, 1000.0, stance=1.0, valence=0.9, intensity=0.6),
+        count_turn=False,
+        now=1060.0,
+        half_life_seconds=60.0,
+    )
+    assert patch.emotion == "happy"
+
+
+def test_the_same_mood_from_the_rules_is_the_stronger_of_the_two():
+    patch = relationship_patch(
+        feeling("happy", 0.9, 1000.0, stance=1.0, valence=0.9, intensity=0.6),
+        count_turn=False,
+        now=1000.0,
+    )
+    assert (patch.emotion, patch.mood_intensity, patch.mood_updated_at) == ("happy", 0.9, 1000.0)
+
+
+def test_the_policy_fades_her_mood_by_its_settings():
+    from ai_character_engine.events.models import CharacterEvent
+
+    def mood_set(half_life):
+        policy = RelationshipStatePolicy()
+        policy.clock = lambda: 1060.0
+        if half_life is not None:
+            policy.mood_half_life_seconds = half_life
+        return policy.on_event(
+            CharacterEvent.user_message("hi"),
+            feeling("sad", 0.9, 1000.0, stance=1.0, valence=0.9, intensity=0.6),
+        ).emotion
+
+    assert mood_set(None) is None  # five-minute half-life: still 0.78 sad
+    assert mood_set(60.0) == "happy"  # 0.45 sad left

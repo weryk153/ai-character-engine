@@ -19,8 +19,9 @@ should earn trust, not cost favorability.
 Her mood is one of ai_character_engine.state.mood.CHARACTER_MOODS: sad when
 the user turns on her, worried when the user feels bad, happy when the user is
 warm, as strong as the user's emotion was; an unremarkable turn leaves it as it
-was. A reading of her mood from both sides of the same turn (the companion's
-mood worker) stands.
+was, and so does one that would set a weaker mood than she still feels
+(ai_character_engine.state.mood.blend_mood). A reading of her mood from both
+sides of the same turn (the companion's mood worker) stands.
 
 The default numbers are a starting point measured against eight-turn
 conversations on a local 9B model, not a calibrated model of affection.
@@ -34,7 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ai_character_engine.events.models import CharacterEvent
-from ai_character_engine.state.mood import MOOD_TURN_KEY, seconds
+from ai_character_engine.state.mood import MOOD_TURN_KEY, blend_mood, effective_mood, seconds
 from ai_character_engine.state.models import CharacterStateSnapshot, StatePatch
 from ai_character_engine.tools.models import ToolResult
 
@@ -121,6 +122,8 @@ def relationship_patch(
     count_turn: bool,
     rules: RelationshipRules | None = None,
     now: float | None = None,
+    half_life_seconds: float = 300.0,
+    floor: float = 0.15,
 ) -> StatePatch | None:
     """The change to apply now, or None when there is nothing to change.
 
@@ -130,9 +133,11 @@ def relationship_patch(
     is not another turn, so it earns no per-turn trust.
 
     ``now`` dates a new mood, in seconds since the epoch; the system clock
-    when not given.
+    when not given. Her mood is weighed as it stands at ``now``, faded by
+    ``half_life_seconds`` and ``floor`` (see effective_mood).
     """
     rules = rules or RelationshipRules()
+    now = time.time() if now is None else now
     trust_delta = rules.trust_per_turn if count_turn else 0.0
     favorability_delta = 0.0
     emotion = None
@@ -173,8 +178,27 @@ def relationship_patch(
                         # a later one. The observation reads the user alone:
                         # what he did still moves trust, not her mood.
                         emotion = None
+                if emotion is not None:
+                    blended = blend_mood(
+                        *effective_mood(
+                            state.emotion,
+                            state.mood_intensity,
+                            state.mood_updated_at,
+                            now=now,
+                            half_life_seconds=half_life_seconds,
+                            floor=floor,
+                        ),
+                        emotion,
+                        intensity,
+                    )
+                    if blended is None:
+                        # Her mood holds against a weaker one, and the turn
+                        # stays open to a reading of her mood from both sides.
+                        emotion = None
                     else:
-                        custom_updates[MOOD_TURN_KEY] = turn
+                        emotion, intensity = blended
+                if emotion is not None and turn is not None:
+                    custom_updates[MOOD_TURN_KEY] = turn
 
     bond = (
         _percent(state.trust + trust_delta) + _percent(state.favorability + favorability_delta)
@@ -187,7 +211,7 @@ def relationship_patch(
         custom_updates=custom_updates,
         reason="relationship rules",
         mood_intensity=intensity if emotion is not None else None,
-        mood_updated_at=(time.time() if now is None else now) if emotion is not None else None,
+        mood_updated_at=now if emotion is not None else None,
     )
     return None if patch.is_noop else patch
 
@@ -199,13 +223,24 @@ class RelationshipStatePolicy:
         self.rules = rules or RelationshipRules()
         # Where the time of a new mood comes from; CharacterCompanion sets its own.
         self.clock: Callable[[], float] = time.time
+        # How her mood fades before the rules weigh a new one against it;
+        # CharacterCompanion sets its settings.
+        self.mood_half_life_seconds = 300.0
+        self.mood_floor = 0.15
 
     def on_event(
         self, event: CharacterEvent, state: CharacterStateSnapshot
     ) -> StatePatch | None:
         if event.type not in {"user_message", "multimodal_user_message"}:
             return None
-        return relationship_patch(state, count_turn=True, rules=self.rules, now=self.clock())
+        return relationship_patch(
+            state,
+            count_turn=True,
+            rules=self.rules,
+            now=self.clock(),
+            half_life_seconds=self.mood_half_life_seconds,
+            floor=self.mood_floor,
+        )
 
     def on_tool_result(
         self, result: ToolResult, state: CharacterStateSnapshot

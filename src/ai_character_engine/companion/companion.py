@@ -851,6 +851,8 @@ class CharacterCompanion:
             self._tasks, event_history=self.settings.records_kept
         )
         self._commits.clock = self._clock
+        self._commits.mood_half_life_seconds = self.settings.mood_half_life_seconds
+        self._commits.mood_floor = self.settings.mood_floor
         for target, policy in tuple(self._commits.policies.items()):
             # The defaults ask for a rerun whenever a turn happened in between.
             # A local model needs 30 s or more for the background work of one
@@ -868,6 +870,8 @@ class CharacterCompanion:
         policy = state_policy or RelationshipStatePolicy()
         if isinstance(policy, RelationshipStatePolicy):
             policy.clock = self._clock
+            policy.mood_half_life_seconds = self.settings.mood_half_life_seconds
+            policy.mood_floor = self.settings.mood_floor
         return policy
 
     def _state_file(self) -> Path | None:
@@ -1740,7 +1744,12 @@ class CharacterCompanion:
             return
         async with self._tasks.authority_guard():
             patch = relationship_patch(
-                self.runtime.state.snapshot(), count_turn=False, rules=rules, now=self._clock()
+                self.runtime.state.snapshot(),
+                count_turn=False,
+                rules=rules,
+                now=self._clock(),
+                half_life_seconds=self.settings.mood_half_life_seconds,
+                floor=self.settings.mood_floor,
             )
             if patch is not None:
                 self.runtime.state.apply(patch)

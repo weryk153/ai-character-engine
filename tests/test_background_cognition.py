@@ -1061,7 +1061,7 @@ async def test_the_mood_worker_proposes_her_mood_dated_by_its_turn():
     "answer",
     [
         {**MOOD_PAYLOAD, "mood": "開心"},
-        {**MOOD_PAYLOAD, "mood": "excited"},
+        {**MOOD_PAYLOAD, "mood": "nostalgic"},
         {key: value for key, value in MOOD_PAYLOAD.items() if key != "mood"},
         {key: value for key, value in MOOD_PAYLOAD.items() if key != "intensity"},
         {**MOOD_PAYLOAD, "intensity": "high"},
@@ -1072,6 +1072,14 @@ async def test_the_mood_worker_proposes_her_mood_dated_by_its_turn():
 async def test_an_answer_off_the_list_proposes_nothing(answer):
     _, _, output = await mood_reading(answer)
     assert output.proposals == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("answer", "mood"), [("relieved", "calm"), ("Annoyed ", "angry"), (" EXCITED", "happy")])
+async def test_a_near_word_stands_for_the_mood_it_means(answer, mood):
+    _, _, output = await mood_reading({**MOOD_PAYLOAD, "mood": answer})
+    (proposal,) = output.proposals
+    assert dict(proposal.payload) == {"mood": mood, "intensity": 0.7}
 
 
 @pytest.mark.asyncio

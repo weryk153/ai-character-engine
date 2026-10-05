@@ -23,6 +23,7 @@ from ai_character_engine.companion import (
     TurnInterrupted,
 )
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk, Message
+from ai_character_engine.state.models import StatePatch
 from ai_character_engine.tools.models import ToolCall, ToolDefinition
 from ai_character_engine.companion.companion import ALREADY_SAID, NOT_AN_ASSISTANT
 from tests.fakes import system_context
@@ -3739,3 +3740,85 @@ def test_a_host_can_tell_her_mood_is_there():
     assert BackgroundCognitionKind.CHARACTER_MOOD.value == "character_mood"
     assert CognitiveRole.MOOD.value == "mood"
     assert "mood_half_life_seconds" in CompanionSnapshot.__dataclass_fields__
+
+
+def readings(*answers):
+    """A mood worker that answers each reading with the next of ``answers``."""
+    left = list(answers)
+    return Worker(lambda messages: left.pop(0) if len(left) > 1 else left[0])
+
+
+def test_a_reading_that_keeps_her_mood_tells_the_host_nothing(tmp_path):
+    """A neutral reading, or a weaker one of another mood, leaves her mood
+    as it was: no change to tell."""
+    heard = []
+
+    async def scenario():
+        worker = readings(
+            SAD_MOOD,
+            {**SAD_MOOD, "mood": "neutral", "intensity": 0.0},
+            {**SAD_MOOD, "mood": "worried", "intensity": 0.5},
+        )
+        llm = Scripted("The kettle is on.", "Rain again.", "The cat is asleep.")
+        current = companion(tmp_path, {"mood": worker}, llm=llm, mood_every=1, clock=lambda: 1000.0)
+        current.on_mood_change = heard.append
+        for text in ("hello", "how are you", "and the cat"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return worker.calls, snapshot
+
+    calls, snapshot = run(scenario())
+    assert calls == 3
+    assert (snapshot.emotion, snapshot.mood_intensity, snapshot.mood_updated_at) == (
+        "sad",
+        pytest.approx(0.8),
+        1000.0,
+    )
+    assert [(s.emotion, s.mood_updated_at) for s in heard] == [("sad", 1000.0)]
+
+
+def test_a_reading_weighs_against_her_mood_as_faded_by_her_settings(tmp_path):
+    now = [1000.0]
+
+    async def scenario(**settings):
+        worker = readings(SAD_MOOD, {**SAD_MOOD, "mood": "worried", "intensity": 0.5})
+        llm = Scripted("The kettle is on.", "Rain again.")
+        current = companion(
+            tmp_path / str(settings), {"mood": worker}, llm=llm, mood_every=1,
+            clock=lambda: now[0], **settings,
+        )
+        now[0] = 1000.0
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        now[0] = 1060.0
+        await current.reply("how are you", conversation_id="a")
+        await current.settle()
+        mood = current.snapshot().emotion
+        await current.close()
+        return mood
+
+    assert run(scenario()) == "sad"  # 0.8 a minute ago is still 0.7
+    assert run(scenario(mood_half_life_seconds=60.0)) == "worried"  # 0.4 left
+
+
+def test_the_rules_weigh_against_her_mood_as_faded_by_her_settings(tmp_path):
+    now = [1060.0]
+
+    async def scenario(**settings):
+        current = companion(
+            tmp_path / str(settings), {"emotion": Worker({**WARM, "intensity": 0.6})}, emotion_every=1,
+            clock=lambda: now[0], **settings,
+        )
+        current.runtime.state.apply(
+            StatePatch(emotion="sad", mood_intensity=1.0, mood_updated_at=1000.0)
+        )
+        await current.reply("thank you for last night", conversation_id="a")
+        await current.settle()
+        mood = current.snapshot().emotion
+        await current.close()
+        return mood
+
+    assert run(scenario()) == "sad"
+    assert run(scenario(mood_half_life_seconds=10.0)) == "happy"

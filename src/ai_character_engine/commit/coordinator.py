@@ -23,7 +23,13 @@ from ai_character_engine.goals import (
     MotivationSignal,
 )
 from ai_character_engine.state.models import StatePatch
-from ai_character_engine.state.mood import CHARACTER_MOODS, MOOD_TURN_KEY, mood_intensity, seconds
+from ai_character_engine.state.mood import (
+    CHARACTER_MOODS,
+    MOOD_TURN_KEY,
+    blend_mood,
+    effective_mood,
+    seconds,
+)
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES
 from ai_character_engine.tasks.models import TaskProposal, TaskResult, TaskStatus
 from ai_character_engine.tasks.runtime import MultiTaskRuntime
@@ -131,6 +137,10 @@ class CognitiveCommitCoordinator:
         # Dates her mood when it is written. A host with its own clock
         # (CharacterCompanion) sets it, so that her mood fades by that clock.
         self.clock: Callable[[], float] = time.time
+        # How her mood fades before a new reading is weighed against it
+        # (CompanionSettings.mood_half_life_seconds/mood_floor).
+        self.mood_half_life_seconds = 300.0
+        self.mood_floor = 0.15
 
     @property
     def commit_sequence(self) -> int:
@@ -673,10 +683,25 @@ class CognitiveCommitCoordinator:
             return None
 
         if proposal.target == "state.mood_candidate":
-            # The character's own mood: it replaces CharacterState.emotion, with
-            # how strongly she feels it, as of now by this coordinator's clock.
+            # The character's own mood, weighed against her mood as it stands
+            # now (blend_mood): it may leave her mood as it was. Either way
+            # her mood was read for this turn, and the turn's rules do not
+            # override that reading.
             before = runtime.state.snapshot()
-            mood = str(proposal.payload.get("mood", ""))
+            now = self.clock()
+            current = effective_mood(
+                before.emotion,
+                before.mood_intensity,
+                before.mood_updated_at,
+                now=now,
+                half_life_seconds=self.mood_half_life_seconds,
+                floor=self.mood_floor,
+            )
+            blended = blend_mood(
+                *current,
+                str(proposal.payload.get("mood", "")),
+                proposal.payload.get("intensity"),
+            )
             custom_updates = {}
             turn = seconds(proposal.provenance.get("turn_ended_at"))
             if turn is not None:
@@ -684,11 +709,11 @@ class CognitiveCommitCoordinator:
             try:
                 runtime.state.apply(
                     StatePatch(
-                        emotion=mood,
+                        emotion=None if blended is None else blended[0],
                         custom_updates=custom_updates,
                         reason="background character mood accepted by commit coordinator",
-                        mood_intensity=mood_intensity(mood, proposal.payload.get("intensity")),
-                        mood_updated_at=self.clock(),
+                        mood_intensity=None if blended is None else blended[1],
+                        mood_updated_at=None if blended is None else now,
                     )
                 )
             except Exception:

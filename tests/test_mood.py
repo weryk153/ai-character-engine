@@ -24,7 +24,7 @@ from ai_character_engine.context.builder import ContextBuilder, is_turn_context
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk
 from ai_character_engine.session.serialization import state_from_dict, state_to_dict
-from ai_character_engine.state.mood import effective_mood
+from ai_character_engine.state.mood import MOOD_SYNONYMS, blend_mood, effective_mood
 from ai_character_engine.state.models import CharacterState, StatePatch
 from ai_character_engine.voice import AudioChunk, AudioFormat
 from tests.fakes import system_context
@@ -370,3 +370,72 @@ def test_the_scheduler_and_the_avatar_pass_on_how_strong_her_mood_is():
         emotion_intensity=0.5,
     )
     assert bundle.expressions[0].weight == pytest.approx(0.325)
+
+
+# --- inertia: a new reading moves her mood only when it is at least as strong ---
+
+
+@pytest.mark.parametrize(
+    ("current", "reading", "expected"),
+    [
+        # A neutral reading leaves her mood to fade by itself.
+        (("sad", 0.8), ("neutral", 0.0), None),
+        (("neutral", 0.0), ("neutral", 0.0), None),
+        # The same mood again: as strong as the stronger of the two, as of now.
+        (("sad", 0.4), ("sad", 0.7), ("sad", 0.7)),
+        (("sad", 0.7), ("sad", 0.4), ("sad", 0.7)),
+        # Another mood takes over only when it is at least as strong.
+        (("sad", 0.8), ("worried", 0.5), None),
+        (("sad", 0.5), ("worried", 0.5), ("worried", 0.5)),
+        (("sad", 0.5), ("happy", 0.9), ("happy", 0.9)),
+        # From neutral, any mood that is felt at all.
+        (("neutral", 0.0), ("happy", 0.2), ("happy", 0.2)),
+        (("neutral", 0.0), ("happy", 0.0), None),
+    ],
+)
+def test_a_new_reading_blends_into_her_mood(current, reading, expected):
+    assert blend_mood(*current, *reading) == expected
+
+
+def test_a_faded_mood_gives_way_to_a_weaker_reading_than_it_started_as():
+    """Blended with her mood as it stands now: 0.8 sad five minutes ago is
+    0.4 now, and a 0.5 worried reading takes over."""
+    faded = effective_mood("sad", 0.8, 1000.0, now=1300.0)
+    assert faded == ("sad", pytest.approx(0.4))
+    assert blend_mood(*faded, "worried", 0.5) == ("worried", 0.5)
+    assert blend_mood(*faded, "worried", 0.3) is None
+
+
+def test_the_same_mood_raises_a_faded_one_back_up():
+    faded = effective_mood("sad", 0.8, 1000.0, now=1300.0)
+    assert blend_mood(*faded, "sad", 0.3) == ("sad", pytest.approx(0.4))
+
+
+def test_a_mood_faded_below_the_floor_is_neutral_and_gives_way_to_anything():
+    faded = effective_mood("sad", 0.8, 1000.0, now=1900.0)
+    assert blend_mood(*faded, "calm", 0.16) == ("calm", 0.16)
+
+
+# --- synonyms: near words the model answers with stand for one of the eight ---
+
+
+@pytest.mark.parametrize(
+    ("word", "mood"),
+    [
+        ("joyful", "happy"), ("excited", "happy"), ("amused", "happy"),
+        ("relieved", "calm"), ("at ease", "calm"), ("content", "calm"),
+        ("upset", "sad"), ("lonely", "sad"), ("down", "sad"),
+        ("annoyed", "angry"), ("frustrated", "angry"), ("furious", "angry"),
+        ("anxious", "worried"), ("scared", "worried"), ("nervous", "worried"),
+        ("shy", "embarrassed"), ("flustered", "embarrassed"), ("awkward", "embarrassed"),
+        ("shocked", "surprised"), ("amazed", "surprised"),
+    ],
+)
+def test_near_words_stand_for_one_of_her_moods(word, mood):
+    assert MOOD_SYNONYMS[word] == mood
+
+
+def test_every_synonym_stands_for_a_mood_of_hers_and_is_not_one_itself():
+    assert set(MOOD_SYNONYMS.values()) <= set(CHARACTER_MOODS) - {"neutral"}
+    assert not set(MOOD_SYNONYMS) & set(CHARACTER_MOODS)
+    assert all(word == word.strip().lower() for word in MOOD_SYNONYMS)

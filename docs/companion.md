@@ -165,14 +165,21 @@ Two things set it. The `mood` worker reads both sides of the recent
 conversation, her lines under her name, and judges how she feels at her latest
 line, also from what she said herself: talking about something sad, being
 praised. The latest exchange is set apart from the earlier conversation, which
-is background only. It runs every `mood_every` turns; a word off the list is
-no reading. Between its readings, and without it, the observation of the
+is background only. It runs every `mood_every` turns; a near word the model
+answers with (relieved, annoyed, shy and the like) counts as the mood it means,
+any other word off the list is no reading. Between its readings, and without it, the observation of the
 user's emotion moves her mood by rules (`ai_character_engine.state.relationship`):
 sad when the user turns on her, worried when the user feels bad, happy when
 the user is warm, as strong as the user's emotion was. An unremarkable turn
 leaves her mood as it was. A reading of her mood and an observation of the user from
-the same turn: the reading stands. Nothing replaces what was set for a later
-turn.
+the same turn: the reading stands, even when it left her mood as it was.
+Nothing replaces what was set for a later turn.
+
+A mood holds until something at least as strong comes along. Both the reading
+and the rules are weighed against her mood as it stands now (faded): a neutral
+reading leaves it to fade by itself, the same mood again is as strong as the
+stronger of the two, and another mood takes over only when it is at least as
+strong (`blend_mood` in `ai_character_engine.state.mood`).
 
 Her mood fades as time passes, talked to or not: the intensity halves every
 `mood_half_life_seconds`, and below `mood_floor` she is neutral again. It is
