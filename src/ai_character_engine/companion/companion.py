@@ -66,7 +66,12 @@ from ai_character_engine.runtime import CharacterRuntime
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.session.serialization import state_from_dict, state_to_dict
 from ai_character_engine.state.models import CharacterState
-from ai_character_engine.state.mood import DEFAULT_MOOD_HALF_LIFE_SECONDS, NEUTRAL, effective_mood
+from ai_character_engine.state.mood import (
+    DEFAULT_MOOD_FLOOR,
+    DEFAULT_MOOD_HALF_LIFE_SECONDS,
+    NEUTRAL,
+    effective_mood,
+)
 from ai_character_engine.state.policy import CharacterStatePolicy
 from ai_character_engine.state.relationship import RelationshipStatePolicy
 from ai_character_engine.tasks import MultiTaskRuntime, MultiTaskRuntimeConfig, TaskPriority
@@ -120,6 +125,9 @@ class CompanionSnapshot:
     mood_intensity: float = 0.0
     mood_updated_at: float | None = None
     mood_half_life_seconds: float = DEFAULT_MOOD_HALF_LIFE_SECONDS
+    # Below this intensity, faded, she is neutral again: a host that fades
+    # the face itself stops where the engine does.
+    mood_floor: float = DEFAULT_MOOD_FLOOR
 
 
 @dataclass(frozen=True, slots=True)
@@ -1962,6 +1970,7 @@ class CharacterCompanion:
             mood_intensity=0.0 if mood == NEUTRAL else state.mood_intensity,
             mood_updated_at=state.mood_updated_at,
             mood_half_life_seconds=self.settings.mood_half_life_seconds,
+            mood_floor=self.settings.mood_floor,
         )
 
     def rewrite_memories(

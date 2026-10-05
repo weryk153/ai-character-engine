@@ -204,8 +204,8 @@ faded: the `- emotion:` line of the note and `snapshot().emotion`.
 A host that shows her face reads `snapshot()`: `emotion` is her mood now;
 `mood_intensity` and `mood_updated_at` are the intensity as it was set and
 when, in seconds since the epoch (`mood_intensity` is 0 once she is neutral
-again); `mood_half_life_seconds` lets the host fade the face itself between
-snapshots. `on_mood_change`, a function of the host's, is called with the
+again); `mood_half_life_seconds` and `mood_floor` let the host fade the face
+itself between snapshots and stop where the engine does. `on_mood_change`, a function of the host's, is called with the
 snapshot when a background result changed her mood. `clock`, a function
 returning seconds since the epoch, replaces the system clock for all of this.
 
@@ -281,7 +281,8 @@ inspect.signature(CharacterCompanion.speak_up).parameters` for remarks without
 a question. `ai_character_engine.companion` exports `SELF_MEMORY_LINE`, the
 start of her self memories in the note, and `ASSISTANT_SPEAK` and
 `ACKNOWLEDGEMENTS`, what the checks on what she says look for. From 1.1.0 it also
-exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`.
+exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`;
+from 1.1.1 it also has `mood_floor`.
 
 ## Lifecycle
 

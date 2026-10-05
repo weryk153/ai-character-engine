@@ -321,6 +321,21 @@ def test_a_snapshot_still_builds_from_positions():
     )
 
 
+def test_the_snapshot_gives_the_floor_below_which_her_mood_is_gone(tmp_path):
+    from ai_character_engine.state.mood import DEFAULT_MOOD_FLOOR
+
+    assert CompanionSnapshot("calm", 50.0, 50.0, "stranger").mood_floor == DEFAULT_MOOD_FLOOR
+    assert list(CompanionSnapshot.__dataclass_fields__)[-1] == "mood_floor"
+
+    async def scenario():
+        current = make(tmp_path, mood_floor=0.3)
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    assert asyncio.run(scenario()).mood_floor == 0.3
+
+
 def test_a_state_file_from_before_moods_reads_as_neutral(tmp_path):
     async def scenario():
         engine = tmp_path / "engine"
