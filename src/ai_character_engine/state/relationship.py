@@ -18,8 +18,9 @@ should earn trust, not cost favorability.
 
 Her mood is one of ai_character_engine.state.mood.CHARACTER_MOODS: sad when
 the user turns on her, worried when the user feels bad, happy when the user is
-warm, calm otherwise; as strong as the user's emotion was. A reading of her
-mood from both sides of the same turn (the companion's mood worker) stands.
+warm, as strong as the user's emotion was; an unremarkable turn leaves it as it
+was. A reading of her mood from both sides of the same turn (the companion's
+mood worker) stands.
 
 The default numbers are a starting point measured against eight-turn
 conversations on a local 9B model, not a calibrated model of affection.
@@ -162,17 +163,18 @@ def relationship_patch(
                     trust_delta += rules.trust_per_confiding * intensity
                 elif stance >= rules.notable:
                     emotion = "happy"
-                else:
-                    emotion = "calm"
+                # Otherwise her mood stays as it was: setting one on every
+                # unremarkable turn flipped her face between readings of it.
                 turn = seconds(observation.get("turn_ended_at"))
                 judged = seconds(state.custom.get(MOOD_TURN_KEY))
-                if turn is not None and judged is not None and turn <= judged:
-                    # Her mood was read from both sides of this turn, or of a
-                    # later one. The observation reads the user alone: what he
-                    # did still moves trust, not her mood.
-                    emotion = None
-                elif turn is not None:
-                    custom_updates[MOOD_TURN_KEY] = turn
+                if emotion is not None and turn is not None:
+                    if judged is not None and turn <= judged:
+                        # Her mood was read from both sides of this turn, or of
+                        # a later one. The observation reads the user alone:
+                        # what he did still moves trust, not her mood.
+                        emotion = None
+                    else:
+                        custom_updates[MOOD_TURN_KEY] = turn
 
     bond = (
         _percent(state.trust + trust_delta) + _percent(state.favorability + favorability_delta)

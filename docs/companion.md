@@ -162,12 +162,15 @@ embarrassed, calm, worried. With it come an intensity, 0 to 1, and the time
 it was set.
 
 Two things set it. The `mood` worker reads both sides of the recent
-conversation, her lines under her name, and judges how she feels, also from
-what she said herself: talking about something sad, being praised. It runs
-every `mood_every` turns; a word off the list is no reading. Between its
-readings, and without it, the observation of the user's emotion moves her
-mood by rules (`ai_character_engine.state.relationship`), as strong as the
-user's emotion was. A reading of her mood and an observation of the user from
+conversation, her lines under her name, and judges how she feels at her latest
+line, also from what she said herself: talking about something sad, being
+praised. The latest exchange is set apart from the earlier conversation, which
+is background only. It runs every `mood_every` turns; a word off the list is
+no reading. Between its readings, and without it, the observation of the
+user's emotion moves her mood by rules (`ai_character_engine.state.relationship`):
+sad when the user turns on her, worried when the user feels bad, happy when
+the user is warm, as strong as the user's emotion was. An unremarkable turn
+leaves her mood as it was. A reading of her mood and an observation of the user from
 the same turn: the reading stands. Nothing replaces what was set for a later
 turn.
 

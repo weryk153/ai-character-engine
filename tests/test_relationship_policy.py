@@ -188,9 +188,7 @@ def test_an_observation_without_intensity_makes_a_middling_mood():
     assert (patch.emotion, patch.mood_intensity) == ("sad", 0.5)
 
 
-@pytest.mark.parametrize(
-    ("stance", "valence"), [(-1.0, -1.0), (1.0, -0.6), (0.0, -0.6), (1.0, 1.0), (0.0, 0.0)]
-)
+@pytest.mark.parametrize(("stance", "valence"), [(-1.0, -1.0), (1.0, -0.6), (0.0, -0.6), (1.0, 1.0)])
 def test_the_rules_speak_her_vocabulary(stance, valence):
     patch = relationship_patch(
         state(observed=observed(stance=stance, valence=valence)), count_turn=False, now=1.0
@@ -233,3 +231,33 @@ def test_the_policy_dates_a_mood_by_its_clock():
         state(observed=observed(stance=1.0, valence=0.9)),
     )
     assert patch.mood_updated_at == 4242.0
+
+
+@pytest.mark.parametrize(("stance", "valence"), [(0.0, 0.0), (0.2, 0.9), (-0.2, -0.2), (0.1, 0.5)])
+def test_an_unremarkable_observation_leaves_her_mood_as_it_was(stance, valence):
+    """Only a notable observation moves her mood. Setting calm on every other
+    turn flipped her resting face between neutral and calm between readings."""
+    before = CharacterState(
+        emotion="embarrassed",
+        mood_intensity=0.8,
+        mood_updated_at=500.0,
+        custom={
+            "observed_user_emotion": observed(
+                stance=stance, valence=valence, intensity=0.6, turn_ended_at=101.0
+            ),
+            MOOD_TURN_KEY: 100.0,
+        },
+    )
+
+    patch = relationship_patch(before.snapshot(), count_turn=True, now=1000.0)
+
+    assert (patch.emotion, patch.mood_intensity, patch.mood_updated_at) == (None, None, None)
+    assert patch.custom_updates == {APPLIED_OBSERVATION_KEY: "p1"}
+    assert patch.favorability_delta == pytest.approx(4.0 * stance * 0.6)
+    before.apply(patch)
+    assert (before.emotion, before.mood_intensity, before.mood_updated_at) == (
+        "embarrassed",
+        0.8,
+        500.0,
+    )
+    assert before.custom[MOOD_TURN_KEY] == 100.0

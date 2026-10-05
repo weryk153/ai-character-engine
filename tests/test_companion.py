@@ -568,7 +568,9 @@ def test_a_late_result_gives_way_to_a_newer_one_of_its_kind(tmp_path):
     abandoned, snapshot = run(scenario())
     assert abandoned >= 1
     assert snapshot.favorability == pytest.approx(50.0)
-    assert snapshot.emotion == "calm"
+    # The warm observation would have made her happy; the unremarkable one
+    # that took its place leaves her mood alone.
+    assert snapshot.emotion == "neutral"
 
 
 def test_a_turn_that_asked_for_no_background_work_replaces_nothing(tmp_path):
@@ -621,7 +623,9 @@ def test_a_finished_result_still_gives_way_to_the_newer_job(tmp_path):
 
     snapshot = run(scenario())
     assert snapshot.favorability == pytest.approx(50.0)
-    assert snapshot.emotion == "calm"
+    # The warm observation would have made her happy; the unremarkable one
+    # that took its place leaves her mood alone.
+    assert snapshot.emotion == "neutral"
 
 
 def test_a_result_that_arrives_too_late_is_dropped(tmp_path):
@@ -3647,8 +3651,8 @@ def test_between_readings_of_her_mood_the_users_emotion_still_moves_it(tmp_path)
         await current.close()
         return read, thanked
 
-    # The reading of turn two stands against the calm the rules made of the
-    # same turn; the thanks of turn three moves her again.
+    # The reading of turn two stands; the unremarkable turns leave it alone
+    # and the thanks of turn three moves her again.
     assert run(scenario()) == ("sad", "happy")
 
 
