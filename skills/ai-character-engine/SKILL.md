@@ -5,7 +5,7 @@ description: Install and integrate the AI Character Engine Python SDK into an ap
 
 # AI Character Engine
 
-Connect AI Character Engine to the user's project and deliver a character integration that runs. This skill targets SDK 1.0.0; check the installed version and the signatures before calling anything.
+Connect AI Character Engine to the user's project and deliver a character integration that runs. This skill targets SDK 1.1.0; check the installed version and the signatures before calling anything.
 
 ## Find the engine and the host
 
@@ -17,7 +17,7 @@ Use an existing checkout; do not clone again, and do not move or delete other ve
 
 ## Install and the first turn
 
-1. Use the host's virtual environment. 1.0.0 is verified on Python 3.11–3.13; an existing Python 3.10 environment cannot be used as it is.
+1. Use the host's virtual environment. 1.1.0 is verified on Python 3.11–3.13; an existing Python 3.10 environment cannot be used as it is.
 2. Run `python -m pip install "$ENGINE_ROOT"`; use an editable install only when the engine's own source has to change. Pick extras from `ENGINE_ROOT/docs/configuration.md` as needed; extras download no models and start no services.
 3. Check `python -c "import ai_character_engine as ace; print(ace.__version__, ace.__file__)"` for the version and where it loads from.
 4. Keep the model, endpoint, credentials and character the user named. When the model identifier is missing, read the existing configuration or ask; do not assume one is installed, and do not switch to a cloud service on your own.

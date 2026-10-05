@@ -10,6 +10,7 @@
 - `CompanionSnapshot` has `mood_intensity`, `mood_updated_at` and `mood_half_life_seconds`; `CharacterCompanion` takes `clock` and calls `on_mood_change` when a background result changed her mood. `CharacterState` and `StatePatch` carry `mood_intensity` and `mood_updated_at`; a state saved before has no mood yet.
 - `EmotionExpressionPolicy` has a face for each of her moods (none for neutral) and weighs it by the intensity it is given.
 - Hosts that set `CharacterState.emotion` directly must also set `mood_intensity` (and `mood_updated_at`), because a mood with intensity 0 now reads as neutral.
+- `build_system_prompt` now leaves out the `Background:` section when `CharacterProfile.background` (whitespace-normalised) is already contained in `description` (whitespace-normalised), so a host whose `description` already holds the persona does not show it twice. Every host's reply prompt can be affected.
 
 Known limitations:
 
