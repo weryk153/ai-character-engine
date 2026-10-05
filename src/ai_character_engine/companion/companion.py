@@ -1648,10 +1648,14 @@ class CharacterCompanion:
                     await self._react_to_observation()
                 if any(o.committed and o.target == SELF_MEMORY_TARGET for o in outcomes):
                     self._keep_the_newest_self_memories()
-                if any(o.committed for o in outcomes):
-                    self._save_state()
-                if self._mood_as_stored() != mood_before:
-                    self._tell_mood()
+                try:
+                    if any(o.committed for o in outcomes):
+                        self._save_state()
+                finally:
+                    # Her mood changed whether or not it reached the disk:
+                    # the host still hears of it.
+                    if self._mood_as_stored() != mood_before:
+                        self._tell_mood()
         except asyncio.CancelledError:
             raise
         except Exception as exc:

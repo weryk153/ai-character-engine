@@ -4027,3 +4027,33 @@ def test_companions_sharing_a_host_policy_keep_their_own_clock_and_readings(tmp_
     assert read == [True, False]
     assert shared.clock is host_clock
     assert shared.mood_read_for(5) is False
+
+
+# --- the host hears of her mood -----------------------------------------------
+
+
+def test_the_host_hears_her_mood_change_even_when_saving_the_state_fails(tmp_path):
+    heard = []
+
+    async def scenario():
+        gate = asyncio.Event()
+        current = companion(
+            tmp_path, {"mood": Worker(SAD_MOOD, gate=gate)}, mood_every=1, clock=lambda: 1000.0
+        )
+        current.on_mood_change = heard.append
+        await current.reply("hello", conversation_id="a")
+        save = current._save_state
+
+        def broken():
+            raise OSError("disk full")
+
+        current._save_state = broken
+        gate.set()
+        await current.settle()
+        current._save_state = save
+        mood = current.runtime.state.emotion
+        await current.close()
+        return mood
+
+    assert run(scenario()) == "sad"
+    assert [(s.emotion, s.mood_updated_at) for s in heard] == [("sad", 1000.0)]
