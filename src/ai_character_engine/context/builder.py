@@ -62,7 +62,7 @@ _SCOPE_DISCIPLINE = (
 # Written by the commit coordinator next to what it observed. They identify
 # proposals and revisions; to a model they are noise it may read aloud.
 _BOOKKEEPING_FIELDS = frozenset(
-    {"proposal_id", "source_task_id", "base_revision", "turn_ended_at"}
+    {"proposal_id", "source_task_id", "base_revision", "turn_ended_at", "turn_revision"}
 )
 
 

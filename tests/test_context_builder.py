@@ -266,3 +266,22 @@ def test_the_time_of_an_observation_never_reaches_the_model():
     assert '"emotion": "tired"' in context
     assert "turn_ended_at" not in context
     assert "1234567890" not in context
+
+
+def test_the_turn_revision_of_an_observation_never_reaches_the_model():
+    """turn_revision is the commit coordinator's own bookkeeping, like
+    turn_ended_at: it must not reach the model as a stray revision number."""
+    state = CharacterState(
+        custom={
+            "observed_user_emotion": {
+                "emotion": "tired",
+                "intensity": 0.8,
+                "turn_revision": 42,
+            },
+        }
+    )
+
+    context = ContextBuilder().build_state_context(state)
+
+    assert '"emotion": "tired"' in context
+    assert "turn_revision" not in context
