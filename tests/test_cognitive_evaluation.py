@@ -327,6 +327,16 @@ def test_jsonl_roundtrip_preserves_cognitive_case(tmp_path):
     assert loaded.cases[0].collaborations[0].verification.decision is VerificationDecision.ACCEPT
 
 
+def test_a_case_keeps_her_mood_intensity_and_when_it_was_set():
+    state = CharacterStateSnapshot(
+        emotion="sad", energy=90.0, trust=60.0, favorability=55.0,
+        relationship_stage="friend", mood_intensity=0.7, mood_updated_at=1000.0,
+    )
+    case = CognitiveEvalCase("mood", "char", state=state)
+    loaded = CognitiveEvalCase.from_dict(json.loads(json.dumps(case.to_dict())))
+    assert loaded.state == state
+
+
 def test_dataset_duplicate_ids_rejected():
     case = good_case()
     with pytest.raises(ValueError, match="unique"):

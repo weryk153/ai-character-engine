@@ -335,6 +335,8 @@ def _state_to_dict(state: CharacterStateSnapshot | None) -> dict[str, Any] | Non
         "favorability": state.favorability,
         "relationship_stage": state.relationship_stage,
         "custom": copy.deepcopy(state.custom),
+        "mood_intensity": state.mood_intensity,
+        "mood_updated_at": state.mood_updated_at,
     }
 
 
