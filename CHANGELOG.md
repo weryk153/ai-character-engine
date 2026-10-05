@@ -1,10 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.1
 
-- `ContextBuilder` fades her mood by default (`mood_half_life_seconds` 300, `mood_floor` 0.15), so a bare `CharacterRuntime` tells the model the same faded mood the live face shows; before, the `- emotion:` line gave the mood as stored unless a companion set the builder. A host that builds `CharacterState(emotion=...)` directly must give it a `mood_intensity`, or the line reads neutral. Setting `mood_half_life_seconds = None` still shows the mood as stored.
+- `ContextBuilder` fades her mood by default (`mood_half_life_seconds` 300, `mood_floor` 0.15), so a bare `CharacterRuntime` tells the model the same faded mood the live face shows; before, the `- emotion:` line gave the mood as stored unless a companion set the builder. A host that builds `CharacterState(emotion=...)` directly must give it a `mood_intensity`, or the line reads neutral. The same holds for the other ways a bare runtime gets a mood: one set through a `StatePatch` without an intensity (0.5 by default) fades to neutral after about 8.7 minutes, and a snapshot saved before 1.1.0 restored into a bare runtime, or `state.emotion = ...` assigned directly, reads neutral. Setting `mood_half_life_seconds = None` still shows the mood as stored.
 - The defaults are named once: `DEFAULT_MOOD_HALF_LIFE_SECONDS` and `DEFAULT_MOOD_FLOOR` in `ai_character_engine.state.mood`, used by every reader of her mood.
-- `CharacterCompanion` wires a copy of a host's `RelationshipStatePolicy` (clock, mood settings, `mood_read_for`), so two companions sharing one instance no longer overwrite each other's.
+- `CharacterCompanion` wires a copy of a host's `RelationshipStatePolicy` (clock, mood settings, `mood_read_for`), so two companions sharing one instance no longer overwrite each other's; later changes to the policy go through `companion.runtime.state_policy`.
 - Cognitive evaluation cases keep `mood_intensity` and `mood_updated_at` through `to_dict`/`from_dict`.
 - `effective_mood` treats a half-life of 0 or less, or one that is not finite, as no fading instead of raising `ZeroDivisionError` (or amplifying her mood); this reaches `ContextBuilder` and `BackgroundCognitionRuntime`, whose attributes are not validated.
 - `on_mood_change` is called even when saving the state fails after her mood changed.

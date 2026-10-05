@@ -189,6 +189,12 @@ leaves her mood as it was. On a turn the worker reads, the rules leave her mood
 to that reading, whichever of the two comes in first; the observation still
 moves trust and favorability. Nothing replaces what was set for a later turn.
 
+A host that passes its own `RelationshipStatePolicy` (`state_policy=`) hands
+the companion a template: the companion works on a copy, set to its own clock,
+mood settings and readings, so one instance can serve several companions.
+Later changes to the policy (its `rules`, say) go through
+`companion.runtime.state_policy`, not the instance the host passed.
+
 A mood holds until something at least as strong comes along. Both the reading
 and the rules are weighed against her mood as it stands now (faded): a neutral
 reading leaves it to fade by itself, the same mood again is as strong as the
@@ -212,8 +218,9 @@ background result changed her mood. It runs on the event loop while the turn
 lock is held, so it must be quick and must not block: hand the snapshot on (to
 a queue, a websocket send task) rather than doing the work there. An
 `async def` listener is scheduled on the running loop instead of being awaited
-under the lock. `clock`, a function returning seconds since the epoch, replaces
-the system clock for all of this.
+under the lock; such tasks are not awaited or cancelled by `close()`. `clock`, a
+function returning seconds since the epoch, replaces the system clock for all of
+this.
 
 ## Pictures
 
