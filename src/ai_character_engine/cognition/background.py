@@ -1203,10 +1203,18 @@ def _persona_summary(profile: Any) -> str:
     """Who she is, short, for the mood worker: without it a 9B model read her
     surface tone, a shy character's stammer as worry and a tsundere's habitual
     barbs as anger. The whole persona is not needed, and the conversation must
-    stay the larger part of what the worker reads."""
+    stay the larger part of what the worker reads.
+
+    Prefers ``profile.background`` (who she is) when it is a non-empty
+    string, and falls back to ``profile.description`` otherwise: a host
+    (Tomoshibi) puts its whole system prompt, generic speech rules first,
+    into description, so reading description made this a summary of the
+    host's rules, not of her."""
     if profile is None:
         return ""
-    parts = [str(getattr(profile, "description", "") or "")]
+    background = str(getattr(profile, "background", "") or "").strip()
+    base = background if background else str(getattr(profile, "description", "") or "")
+    parts = [base]
     personality = [str(item).strip() for item in getattr(profile, "personality", None) or ()]
     if any(personality):
         parts.append("Personality: " + ", ".join(item for item in personality if item))

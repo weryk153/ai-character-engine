@@ -1067,6 +1067,34 @@ async def test_without_a_persona_the_mood_worker_has_no_such_section():
 
 
 @pytest.mark.asyncio
+async def test_the_mood_worker_prefers_her_background_over_her_description():
+    """A host (Tomoshibi) puts its whole system prompt, generic speech rules
+    first, into description; the mood worker must read background instead,
+    where a host puts who she actually is."""
+    profile = CharacterProfile(
+        id="c",
+        name="C",
+        description="Speak formally. Never break character. Keep replies under two sentences.",
+        background="A shy maid who stammers when praised.",
+        personality=["introverted"],
+    )
+    _, user, _ = await mood_reading(MOOD_PAYLOAD, profile=profile)
+    earlier, _ = mood_sections(user)
+    persona = earlier.split(PERSONA_LABEL, 1)[1].split("\n\n", 1)[0]
+    assert "A shy maid who stammers when praised." in persona
+    assert "Speak formally" not in persona
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_falls_back_to_description_when_background_is_blank():
+    profile = CharacterProfile(id="c", name="C", description="A shy maid.", background="   ")
+    _, user, _ = await mood_reading(MOOD_PAYLOAD, profile=profile)
+    earlier, _ = mood_sections(user)
+    persona = earlier.split(PERSONA_LABEL, 1)[1].split("\n\n", 1)[0]
+    assert "A shy maid." in persona
+
+
+@pytest.mark.asyncio
 async def test_the_mood_worker_is_given_intensity_anchors():
     system, _, _ = await mood_reading(MOOD_PAYLOAD)
     assert "about 0.2 is a slight feeling" in system

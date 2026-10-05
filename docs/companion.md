@@ -165,10 +165,14 @@ Two things set it. The `mood` worker reads both sides of the recent
 conversation, her lines under her name, and judges how she feels at her latest
 line, also from what she said herself: talking about something sad, being
 praised. The latest exchange is set apart from the earlier conversation, which
-is background only. It is also given who she is, the profile's description and
-personality cut to about 400 characters, so it reads her relative to her
-personality: a shy character's stammer as embarrassed, a tsundere's habitual
-barbs as her manner rather than anger. Its intensity is anchored (about 0.2
+is background only. It is also given who she is, her `CharacterProfile.background`
+(falling back to `description` when background is empty) and personality cut
+to about 400 characters, so it reads her relative to her personality: a shy
+character's stammer as embarrassed, a tsundere's habitual barbs as her manner
+rather than anger. Hosts should put who the character actually is in
+`background`; a host that instead crams its whole system prompt into
+`description` will have the mood worker read that prompt as her persona.
+Its intensity is anchored (about 0.2
 slight, 0.5 clear, 0.8 or more only for a major event), and small talk with no
 particular feeling reads as neutral. It runs every `mood_every` turns; a near word the model
 answers with (relieved, annoyed, shy and the like) counts as the mood it means,
