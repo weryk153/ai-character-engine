@@ -960,7 +960,9 @@ MOOD_PAYLOAD = {"mood": "sad", "intensity": 0.7, "confidence": 0.9, "evidence": 
 NOTE = "Character context for this turn. Private runtime data, not said by the user.\n\n- emotion: calm"
 
 
-async def mood_reading(payload, *, history=None, max_history_messages=20, profile=None):
+async def mood_reading(
+    payload, *, history=None, max_history_messages=20, profile=None, event=None
+):
     client = CapturingClient(payload, name="mood")
     runtime = character()
     if profile is not None:
@@ -980,7 +982,10 @@ async def mood_reading(payload, *, history=None, max_history_messages=20, profil
         ),
     )
     async with tasks:
-        await bg.run_turn("I am exhausted today")
+        if event is None:
+            await bg.run_turn("I am exhausted today")
+        else:
+            await bg.run_foreground(event)
         result = (await bg.collect_all())[0]
     assert result.status is TaskStatus.SUCCEEDED, result.error
     system, user = client.messages
@@ -1021,6 +1026,29 @@ async def test_without_kept_history_the_latest_exchange_is_the_turn_itself():
     _, user, _ = await mood_reading(MOOD_PAYLOAD, history=[], max_history_messages=0)
     _, latest = mood_sections(user)
     assert "User: I am exhausted today" in latest and "C: foreground reply" in latest
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kept", [20, 0], ids=["with history", "without history"])
+async def test_an_event_she_reacted_to_is_the_event_line_of_the_latest_exchange(kept):
+    event = CharacterEvent(type="vision_observation", source="vision:camera", content="red cup")
+    _, user, _ = await mood_reading(
+        MOOD_PAYLOAD,
+        event=event,
+        history=None if kept else [],
+        max_history_messages=kept,
+    )
+    earlier, latest = mood_sections(user)
+    assert "Event: red cup" in latest and "C: foreground reply" in latest
+    assert latest.index("Event: red cup") < latest.index("C: foreground reply")
+    assert "red cup" not in earlier
+    assert "User: red cup" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_is_told_what_an_event_line_is():
+    system, _, _ = await mood_reading(MOOD_PAYLOAD)
+    assert "a line marked \"Event\" is something that happened, not said by anyone" in system
 
 
 @pytest.mark.asyncio

@@ -976,7 +976,8 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
         BackgroundCognitionKind.CHARACTER_MOOD: (
             "Judge how the character feels at the moment of the character's latest line, the "
             "last line under \"Latest exchange\". The character's lines are marked with the name "
-            "on the Character line, the user's with \"User\". The earlier conversation is "
+            "on the Character line, the user's with \"User\"; a line marked \"Event\" is "
+            "something that happened, not said by anyone. The earlier conversation is "
             "background only: a feeling that shows only in earlier lines does not by itself set "
             "the mood now. What the character said counts as much as what the user said: "
             "talking about something sad can make the character sad, being praised can make "
