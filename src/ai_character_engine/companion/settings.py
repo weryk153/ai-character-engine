@@ -63,6 +63,11 @@ class CompanionSettings:
     # forgotten.
     self_memories_kept: int = 40
     self_memories_shown: int = 12
+    # Her mood fades as time passes, talked to or not: its intensity halves
+    # every mood_half_life_seconds (a quarter is left after ten minutes away),
+    # and below mood_floor she is neutral again.
+    mood_half_life_seconds: float = 300.0
+    mood_floor: float = 0.15
 
     def __post_init__(self) -> None:
         for name in (
@@ -92,3 +97,7 @@ class CompanionSettings:
             raise ValueError("call_timeout_seconds must be > 0")
         if self.foreground_patience_seconds <= 0:
             raise ValueError("foreground_patience_seconds must be > 0")
+        if self.mood_half_life_seconds <= 0:
+            raise ValueError("mood_half_life_seconds must be > 0")
+        if not 0 <= self.mood_floor <= 1:
+            raise ValueError("mood_floor must be between 0 and 1")

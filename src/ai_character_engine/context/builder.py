@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 
 from ai_character_engine.character.profile import CharacterProfile
 from ai_character_engine.context.budget import (
@@ -18,6 +19,7 @@ from ai_character_engine.long_term_cognition.models import BeliefRecord, BeliefS
 from ai_character_engine.goals.models import GoalRecord, GoalStatus
 from ai_character_engine.memory.models import RetrievedMemory
 from ai_character_engine.state.models import CharacterState, CharacterStateSnapshot
+from ai_character_engine.state.mood import effective_mood
 from ai_character_engine.tools.models import ToolDefinition
 
 
@@ -186,6 +188,11 @@ class ContextBuilder:
         # first; None for as many as the budget allows. The others are not
         # withdrawn: a goal not in mind is not a goal given up.
         self.goals_shown: int | None = None
+        # How her mood fades, for the "- emotion:" line; CharacterCompanion
+        # sets these from its settings. None: the mood is shown as stored.
+        self.mood_half_life_seconds: float | None = None
+        self.mood_floor: float = 0.0
+        self.clock: Callable[[], float] = time.time
 
     def build_system_prompt(
         self,
@@ -222,7 +229,7 @@ class ContextBuilder:
     ) -> str:
         lines = [
             "Current state:",
-            f"- emotion: {state.emotion}",
+            f"- emotion: {self._mood_word(state)}",
             f"- energy: {state.energy:.1f}/100",
             f"- trust: {state.trust:.1f}/100",
             f"- favorability: {state.favorability:.1f}/100",
@@ -609,15 +616,30 @@ class ContextBuilder:
                     break
 
 
-    @staticmethod
+    def _mood_word(self, state: CharacterState | CharacterStateSnapshot) -> str:
+        """Her mood as it stands now when the builder is told how it fades,
+        as stored otherwise."""
+        if self.mood_half_life_seconds is None:
+            return state.emotion
+        mood, _ = effective_mood(
+            state.emotion,
+            state.mood_intensity,
+            state.mood_updated_at,
+            now=self.clock(),
+            half_life_seconds=self.mood_half_life_seconds,
+            floor=self.mood_floor,
+        )
+        return mood
+
     def _state_lines(
+        self,
         state: CharacterState | CharacterStateSnapshot,
     ) -> list[tuple[str, str]]:
         """(what the line is about, the line). Scores are whole numbers: a
         model does nothing with a trust of 50.3 that it would not do with 50,
         and every change is a line added to the conversation."""
         lines = [
-            ("emotion", state.emotion),
+            ("emotion", self._mood_word(state)),
             ("energy", f"{round(state.energy)}/100"),
             ("trust", f"{round(state.trust)}/100"),
             ("favorability", f"{round(state.favorability)}/100"),

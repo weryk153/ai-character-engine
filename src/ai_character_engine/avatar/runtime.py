@@ -61,6 +61,7 @@ class AvatarRuntime:
         chunk_index: int,
         duration_ms: float | None,
         emotion: str | None = None,
+        emotion_intensity: float = 1.0,
         metadata: dict[str, Any] | None = None,
         allow_text_visemes: bool = True,
     ) -> AvatarCueBundle:
@@ -88,6 +89,7 @@ class AvatarRuntime:
             start_ms=start_ms,
             duration_ms=safe_duration,
             emotion=emotion,
+            emotion_intensity=emotion_intensity,
         ) if safe_duration > 0 else ()
         base = AvatarCueBundle(
             self._turn_id,

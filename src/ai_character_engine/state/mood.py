@@ -45,3 +45,29 @@ def seconds(value: object) -> float | None:
         return None
     number = float(value)
     return number if math.isfinite(number) else None
+
+
+def effective_mood(
+    mood: str,
+    intensity: float,
+    updated_at: float | None,
+    *,
+    now: float,
+    half_life_seconds: float = 300.0,
+    floor: float = 0.15,
+) -> tuple[str, float]:
+    """Her mood as it stands at ``now``: the intensity halves every
+    ``half_life_seconds``, and below ``floor`` she is neutral again.
+
+    Worked out when read, never stored: nothing runs while nobody talks to
+    her. A time ahead of ``now`` (another machine's clock) counts as no time
+    at all, and a mood of unknown time is as of now.
+    """
+    strength = mood_intensity(mood, intensity)
+    if strength <= 0:
+        return NEUTRAL, 0.0
+    elapsed = 0.0 if updated_at is None else max(0.0, now - updated_at)
+    faded = strength * 0.5 ** (elapsed / half_life_seconds)
+    if faded < floor:
+        return NEUTRAL, 0.0
+    return mood, faded

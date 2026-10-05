@@ -65,6 +65,7 @@ from ai_character_engine.runtime import CharacterRuntime
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.session.serialization import state_from_dict, state_to_dict
 from ai_character_engine.state.models import CharacterState
+from ai_character_engine.state.mood import NEUTRAL, effective_mood
 from ai_character_engine.state.policy import CharacterStatePolicy
 from ai_character_engine.state.relationship import RelationshipStatePolicy, relationship_patch
 from ai_character_engine.tasks import MultiTaskRuntime, MultiTaskRuntimeConfig, TaskPriority
@@ -105,12 +106,19 @@ class TurnInterrupted(HostBridgeError):
 
 @dataclass(frozen=True, slots=True)
 class CompanionSnapshot:
+    # Her mood as it stands now, faded by time; see CompanionSettings.
     emotion: str
     trust: float
     favorability: float
     relationship_stage: str
     goals: tuple[str, ...] = ()
     thoughts: tuple[str, ...] = ()
+    # The intensity of her mood as it was set, and when (seconds since the
+    # epoch): a host fades it itself between snapshots with the half-life.
+    # 0 once her mood has faded to neutral.
+    mood_intensity: float = 0.0
+    mood_updated_at: float | None = None
+    mood_half_life_seconds: float = 300.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -757,6 +765,9 @@ class CharacterCompanion:
 
         builder = context_builder or ContextBuilder()
         builder.goals_shown = self.settings.goals_shown
+        builder.mood_half_life_seconds = self.settings.mood_half_life_seconds
+        builder.mood_floor = self.settings.mood_floor
+        builder.clock = self._clock
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -821,6 +832,9 @@ class CharacterCompanion:
         self._background = self._build_background(clients)
         if self._background is not None:
             self._background.output_language = self.settings.language
+            self._background.mood_half_life_seconds = self.settings.mood_half_life_seconds
+            self._background.mood_floor = self.settings.mood_floor
+            self._background.clock = self._clock
         self._commits = CognitiveCommitCoordinator(
             self._tasks, event_history=self.settings.records_kept
         )
@@ -1842,6 +1856,18 @@ class CharacterCompanion:
 
     # --- reading ---------------------------------------------------------------
 
+    def _mood(self) -> tuple[str, float]:
+        """Her mood as it stands now, and how strongly she still feels it."""
+        state = self.runtime.state
+        return effective_mood(
+            state.emotion,
+            state.mood_intensity,
+            state.mood_updated_at,
+            now=self._clock(),
+            half_life_seconds=self.settings.mood_half_life_seconds,
+            floor=self.settings.mood_floor,
+        )
+
     def snapshot(self) -> CompanionSnapshot:
         state = self.runtime.state
         newest_first = sorted(
@@ -1854,13 +1880,17 @@ class CharacterCompanion:
             for goal in self.runtime.goal_manager.active_goals(character_id=self.character.id)
         ][: self.settings.goals_shown]
         thoughts = [record.insight for record in newest_first[: self.settings.thoughts_shown]]
+        mood, _ = self._mood()
         return CompanionSnapshot(
-            emotion=state.emotion,
+            emotion=mood,
             trust=state.trust,
             favorability=state.favorability,
             relationship_stage=state.relationship_stage,
             goals=tuple(goals),
             thoughts=tuple(thoughts),
+            mood_intensity=0.0 if mood == NEUTRAL else state.mood_intensity,
+            mood_updated_at=state.mood_updated_at,
+            mood_half_life_seconds=self.settings.mood_half_life_seconds,
         )
 
     def rewrite_memories(

@@ -24,6 +24,7 @@ from ai_character_engine.autonomy import (
     ProactiveCandidate,
 )
 from ai_character_engine.host import CharacterHostBridge
+from ai_character_engine.state.mood import effective_mood
 from ai_character_engine.voice.base import AudioOutputSink, SpeechToTextProvider, TextToSpeechProvider
 from ai_character_engine.voice.duplex import (
     DuplexVoiceConfig,
@@ -168,6 +169,17 @@ class LiveCharacterOrchestrator:
 
     def _behavior_now_ms(self) -> float:
         return self._monotonic() * 1000.0
+
+    @staticmethod
+    def _effective_mood(state) -> tuple[str, float]:
+        """Her mood as it stands now, faded like every other reader of it.
+
+        No settings reach a bare CharacterRuntime run this way, so this uses
+        the spec's own defaults (see CompanionSettings) and the wall clock.
+        """
+        return effective_mood(
+            state.emotion, state.mood_intensity, state.mood_updated_at, now=time.time()
+        )
 
     def poll_behavior(self, *, force: bool = False, now_ms: float | None = None) -> tuple[LiveRuntimeEvent, ...]:
         """Poll the optional session-scoped avatar behavior runtime.
@@ -733,13 +745,15 @@ class LiveCharacterOrchestrator:
                                 )
 
                             if self.avatar_runtime is not None:
+                                mood, mood_intensity = self._effective_mood(self.bridge.runtime.state)
                                 bundle = self.avatar_runtime.feed_audio(
                                     text=sentence,
                                     chunk=chunk,
                                     segment_sequence=sequence,
                                     chunk_index=chunk_index,
                                     duration_ms=cue_duration,
-                                    emotion=self.bridge.runtime.state.emotion,
+                                    emotion=mood,
+                                    emotion_intensity=mood_intensity,
                                     metadata=chunk.metadata,
                                     allow_text_visemes=not streaming_tts,
                                 )
@@ -1104,7 +1118,8 @@ class LiveCharacterOrchestrator:
                         metadata=dict(synthesized.metadata),
                     )
                     if self.avatar_runtime is not None:
-                        emotion = result.state_after.emotion if result.state_after is not None else self.bridge.runtime.state.emotion
+                        state = result.state_after if result.state_after is not None else self.bridge.runtime.state
+                        emotion, emotion_intensity = self._effective_mood(state)
                         bundle = self.avatar_runtime.feed_audio(
                             text=sentence,
                             chunk=chunk,
@@ -1112,6 +1127,7 @@ class LiveCharacterOrchestrator:
                             chunk_index=0,
                             duration_ms=synthesized.duration_ms,
                             emotion=emotion,
+                            emotion_intensity=emotion_intensity,
                             metadata=chunk.metadata,
                             allow_text_visemes=True,
                         )

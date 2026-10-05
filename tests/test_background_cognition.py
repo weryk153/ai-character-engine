@@ -26,6 +26,7 @@ from ai_character_engine import (
     TaskStatus,
 )
 from ai_character_engine.llm.models import LLMResponse, Message
+from ai_character_engine.state.models import StatePatch
 from ai_character_engine.tasks.models import TaskProposal
 
 
@@ -580,6 +581,34 @@ async def test_goal_worker_is_told_which_source_each_motivation_kind_may_cite():
     for kind, source_types in MOTIVATION_SOURCE_TYPES.items():
         assert f"{kind.value} -> {'|'.join(sorted(source_types))}" in system
     assert "copied exactly" in system
+
+
+@pytest.mark.asyncio
+async def test_her_mood_faded_long_ago_is_neutral_in_a_goal_sources():
+    """BackgroundCognitionRuntime has the spec's own defaults (300s, floor
+    0.15) until a CharacterCompanion passes its settings and clock through;
+    a mood set at the epoch is many half-lives old by now, however this test
+    runs."""
+    from ai_character_engine.goals import GoalManager
+
+    client = CapturingClient({"goals": [], "confidence": 0.5, "evidence": []}, name="goal")
+    runtime = character()
+    runtime.goal_manager = GoalManager()
+    runtime.state.apply(StatePatch(emotion="sad", mood_intensity=0.8, mood_updated_at=0.0))
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.GOAL: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.GOAL_MOTIVATION),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("I am exhausted today")
+        await bg.collect_all()
+    _, user = client.messages
+    assert '"id": "emotion", "value": "neutral"' in user.content
+    assert '"id": "emotion", "value": "sad"' not in user.content
 
 
 class GoalClient:

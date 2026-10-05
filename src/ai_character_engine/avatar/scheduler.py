@@ -6,18 +6,26 @@ from .models import ExpressionCue, ExpressionRequest
 
 
 _DEFAULT_EMOTION_MAP = {
+    # Her moods (ai_character_engine.state.mood.CHARACTER_MOODS). Neutral
+    # makes no face of its own.
     "happy": "happy",
+    "sad": "sad",
+    "angry": "angry",
+    "surprised": "surprised",
+    "embarrassed": "happy",
+    "calm": "relaxed",
+    "worried": "sad",
+    # Other words a host may pass.
     "joy": "happy",
     "joyful": "happy",
     "pleased": "happy",
     "excited": "happy",
-    "sad": "sad",
-    "angry": "angry",
     "mad": "angry",
-    "surprised": "surprised",
     "surprise": "surprised",
     "relaxed": "relaxed",
-    "calm": "relaxed",
+    # What the relationship rules called her mood before 1.1.0.
+    "hurt": "sad",
+    "concerned": "sad",
 }
 
 
@@ -35,8 +43,18 @@ class EmotionExpressionPolicy:
         self.priority = priority
         self.weight = weight
 
-    def cue(self, emotion: str | None, *, start_ms: float, duration_ms: float) -> ExpressionCue | None:
-        if not emotion:
+    def cue(
+        self,
+        emotion: str | None,
+        *,
+        start_ms: float,
+        duration_ms: float,
+        intensity: float = 1.0,
+    ) -> ExpressionCue | None:
+        """The face for her mood. ``intensity`` is how strongly she feels it
+        now (faded by time, see CharacterCompanion.snapshot()): it weighs the
+        face, and none at all makes none."""
+        if not emotion or not intensity > 0:
             return None
         expression = self.mapping.get(emotion.strip().lower())
         if expression is None:
@@ -45,7 +63,7 @@ class EmotionExpressionPolicy:
             expression,
             start_ms,
             duration_ms,
-            weight=self.weight,
+            weight=self.weight * min(1.0, float(intensity)),
             priority=self.priority,
             source="character_state",
             group="face",
@@ -70,10 +88,19 @@ class ExpressionScheduler:
         self._order += 1
         return request.id
 
-    def resolve(self, *, start_ms: float, duration_ms: float, emotion: str | None = None) -> tuple[ExpressionCue, ...]:
+    def resolve(
+        self,
+        *,
+        start_ms: float,
+        duration_ms: float,
+        emotion: str | None = None,
+        emotion_intensity: float = 1.0,
+    ) -> tuple[ExpressionCue, ...]:
         end_ms = start_ms + duration_ms
         candidates: list[tuple[ExpressionCue, int]] = []
-        state_cue = self.policy.cue(emotion, start_ms=start_ms, duration_ms=duration_ms)
+        state_cue = self.policy.cue(
+            emotion, start_ms=start_ms, duration_ms=duration_ms, intensity=emotion_intensity
+        )
         if state_cue is not None:
             candidates.append((state_cue, -1))
 

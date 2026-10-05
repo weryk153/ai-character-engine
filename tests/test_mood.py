@@ -13,10 +13,23 @@ import pytest
 
 import ai_character_engine
 from ai_character_engine import CharacterProfile
-from ai_character_engine.companion import CHARACTER_MOODS, CharacterCompanion, CompanionSettings
+from ai_character_engine.avatar import AvatarRuntime, EmotionExpressionPolicy, ExpressionScheduler
+from ai_character_engine.companion import (
+    CHARACTER_MOODS,
+    CharacterCompanion,
+    CompanionSettings,
+    CompanionSnapshot,
+)
+from ai_character_engine.context.builder import ContextBuilder, is_turn_context
+from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk
 from ai_character_engine.session.serialization import state_from_dict, state_to_dict
+from ai_character_engine.state.mood import effective_mood
 from ai_character_engine.state.models import CharacterState, StatePatch
+from ai_character_engine.voice import AudioChunk, AudioFormat
+from tests.fakes import system_context
+
+CHARACTER = CharacterProfile(id="mei", name="Mei", description="A researcher.")
 
 
 class Talker:
@@ -149,3 +162,211 @@ def test_a_state_file_from_before_moods_loads_with_her_mood_as_of_now(tmp_path):
         return found
 
     assert asyncio.run(scenario()) == (61.0, 0.0, 5000.0)
+
+
+def fades(*, mood="sad", intensity=0.8, updated_at=1000.0, now):
+    return effective_mood(
+        mood, intensity, updated_at, now=now, half_life_seconds=300.0, floor=0.15
+    )
+
+
+@pytest.mark.parametrize(("elapsed", "expected"), [(0, 0.8), (300, 0.4), (600, 0.2)])
+def test_her_mood_halves_every_half_life(elapsed, expected):
+    mood, strength = fades(now=1000.0 + elapsed)
+    assert mood == "sad"
+    assert strength == pytest.approx(expected)
+
+
+def test_below_the_floor_she_is_neutral_again():
+    assert fades(now=1900.0) == ("neutral", 0.0)  # 0.8 / 8 = 0.1
+
+
+def test_neutral_does_not_fade_into_anything():
+    assert fades(mood="neutral", intensity=1.0, now=1000.0) == ("neutral", 0.0)
+
+
+def test_a_time_ahead_of_now_does_not_make_her_mood_stronger():
+    assert fades(mood="happy", intensity=0.6, updated_at=2000.0, now=1000.0) == ("happy", 0.6)
+
+
+def test_a_mood_of_unknown_time_is_as_of_now():
+    assert fades(mood="happy", intensity=0.6, updated_at=None, now=5000.0) == ("happy", 0.6)
+
+
+def test_how_her_mood_fades_is_a_setting():
+    settings = CompanionSettings()
+    assert (settings.mood_half_life_seconds, settings.mood_floor) == (300.0, 0.15)
+    with pytest.raises(ValueError, match="mood_half_life_seconds"):
+        CompanionSettings(mood_half_life_seconds=0)
+    with pytest.raises(ValueError, match="mood_floor"):
+        CompanionSettings(mood_floor=1.5)
+
+
+def fading_builder(now, **options):
+    builder = ContextBuilder(**options)
+    builder.mood_half_life_seconds = 300.0
+    builder.mood_floor = 0.15
+    builder.clock = lambda: now[0]
+    return builder
+
+
+def built(builder, state):
+    return builder.build_for_event(
+        character=CHARACTER, history=[], event=CharacterEvent.user_message("hi"), state=state
+    )
+
+
+def note(messages):
+    return "\n".join(m.content for m in messages if is_turn_context(m))
+
+
+SAD = CharacterState(emotion="sad", mood_intensity=0.8, mood_updated_at=1000.0)
+
+
+def test_the_note_gives_her_mood_as_it_stands_now():
+    now = [1000.0]
+    builder = fading_builder(now)
+    fresh = note(built(builder, SAD))
+    now[0] = 1900.0
+    faded = note(built(builder, SAD))
+    assert "- emotion: sad" in fresh
+    assert "- emotion: neutral" in faded
+
+
+def test_her_mood_stands_in_the_note_of_the_turn_never_in_the_system_prompt():
+    """A change of mood adds a line to the conversation; in the system prompt
+    it would make the server read the whole conversation again."""
+    messages = built(fading_builder([1000.0]), SAD)
+    assert "- emotion:" not in messages[0].content
+    assert "- emotion: sad" in note(messages)
+
+
+def test_the_turn_placement_reads_her_mood_faded_too():
+    messages = built(fading_builder([1900.0], context_placement="turn"), SAD)
+    assert "- emotion: neutral" in note(messages)
+
+
+def test_a_builder_not_told_how_moods_fade_shows_the_mood_as_stored():
+    assert "- emotion: sad" in note(built(ContextBuilder(), CharacterState(emotion="sad")))
+
+
+def test_the_snapshot_says_how_her_mood_fades(tmp_path):
+    async def scenario():
+        now = [1000.0]
+        current = make(tmp_path, clock=lambda: now[0])
+        current.runtime.state.apply(
+            StatePatch(emotion="sad", mood_intensity=0.8, mood_updated_at=1000.0)
+        )
+        first = current.snapshot()
+        now[0] = 1300.0
+        later = current.snapshot()
+        now[0] = 1900.0
+        gone = current.snapshot()
+        await current.close()
+        return first, later, gone
+
+    first, later, gone = asyncio.run(scenario())
+    assert (first.emotion, first.mood_intensity, first.mood_updated_at) == ("sad", 0.8, 1000.0)
+    assert first.mood_half_life_seconds == 300.0
+    # The intensity as it was set: a host fades it itself between snapshots.
+    assert (later.emotion, later.mood_intensity) == ("sad", 0.8)
+    assert (gone.emotion, gone.mood_intensity) == ("neutral", 0.0)
+
+
+def test_a_snapshot_still_builds_from_positions():
+    snapshot = CompanionSnapshot("calm", 50.0, 50.0, "stranger")
+    assert (snapshot.mood_intensity, snapshot.mood_updated_at, snapshot.mood_half_life_seconds) == (
+        0.0,
+        None,
+        300.0,
+    )
+
+
+def test_a_state_file_from_before_moods_reads_as_neutral(tmp_path):
+    async def scenario():
+        engine = tmp_path / "engine"
+        engine.mkdir()
+        (engine / "state.json").write_text(json.dumps(OLD_STATE), encoding="utf-8")
+        current = make(tmp_path, clock=lambda: 5000.0)
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    snapshot = asyncio.run(scenario())
+    assert (snapshot.emotion, snapshot.mood_intensity, snapshot.trust) == ("neutral", 0.0, 61.0)
+
+
+def test_her_reply_hears_her_mood_as_it_stands(tmp_path):
+    async def scenario():
+        now = [1000.0]
+        llm = Talker("The kettle is on.", "Rain again, of all things.")
+        current = make(tmp_path, llm=llm, clock=lambda: now[0])
+        current.runtime.state.apply(
+            StatePatch(emotion="sad", mood_intensity=0.8, mood_updated_at=1000.0)
+        )
+        await current.reply("hello", conversation_id="a")
+        first = system_context(llm.calls[-1])
+        now[0] = 1900.0
+        await current.reply("still there?", conversation_id="a")
+        later = system_context(llm.calls[-1])
+        await current.close()
+        return first, later
+
+    first, later = asyncio.run(scenario())
+    assert "- emotion: sad" in first
+    assert "- emotion: neutral" not in first
+    assert "- emotion: neutral" in later
+
+
+@pytest.mark.parametrize(
+    ("mood", "expression"),
+    [
+        ("happy", "happy"),
+        ("sad", "sad"),
+        ("angry", "angry"),
+        ("surprised", "surprised"),
+        ("embarrassed", "happy"),
+        ("calm", "relaxed"),
+        ("worried", "sad"),
+    ],
+)
+def test_each_of_her_moods_has_a_face(mood, expression):
+    cue = EmotionExpressionPolicy().cue(mood, start_ms=0, duration_ms=100)
+    assert cue is not None and cue.expression == expression
+
+
+def test_neutral_makes_no_face():
+    assert EmotionExpressionPolicy().cue("neutral", start_ms=0, duration_ms=100) is None
+
+
+@pytest.mark.parametrize("old", ["hurt", "concerned"])
+def test_the_moods_the_rules_used_to_name_still_have_a_face(old):
+    assert EmotionExpressionPolicy().cue(old, start_ms=0, duration_ms=100).expression == "sad"
+
+
+def test_a_faint_mood_makes_a_faint_face():
+    cue = EmotionExpressionPolicy().cue("sad", start_ms=0, duration_ms=100, intensity=0.5)
+    assert cue.weight == pytest.approx(0.325)
+
+
+def test_a_mood_with_no_strength_makes_no_face():
+    assert EmotionExpressionPolicy().cue("sad", start_ms=0, duration_ms=100, intensity=0.0) is None
+
+
+def test_the_scheduler_and_the_avatar_pass_on_how_strong_her_mood_is():
+    cues = ExpressionScheduler().resolve(
+        start_ms=0, duration_ms=50, emotion="happy", emotion_intensity=0.5
+    )
+    assert cues[0].weight == pytest.approx(0.325)
+    avatar = AvatarRuntime()
+    avatar.begin_turn("turn")
+    bundle = avatar.feed_audio(
+        text="あ",
+        chunk=AudioChunk(b"\x00\x00" * 800, AudioFormat()),
+        segment_sequence=0,
+        chunk_index=0,
+        duration_ms=50,
+        emotion="sad",
+        emotion_intensity=0.5,
+    )
+    assert bundle.expressions[0].weight == pytest.approx(0.325)

@@ -5,6 +5,7 @@ import pytest
 
 from ai_character_engine import CharacterProfile, CharacterRuntime
 from ai_character_engine.autonomy import AutonomyPolicy, AutonomyScheduler, ProactiveCandidate
+from ai_character_engine.avatar import AvatarRuntime
 from ai_character_engine.host import CharacterHostBridge
 from ai_character_engine.live import (
     LiveCharacterOrchestrator,
@@ -14,6 +15,7 @@ from ai_character_engine.live import (
     LiveRuntimeError,
 )
 from ai_character_engine.llm.models import LLMResponse
+from ai_character_engine.state.models import StatePatch
 from ai_character_engine.vision import ImageInput, VisionAnalysis, VisionFrame, VisionPipeline
 from ai_character_engine.voice.models import AudioFormat, SynthesizedAudio, TranscriptResult
 
@@ -208,6 +210,21 @@ async def test_input_error_becomes_structured_event_and_loop_can_continue():
     live.submit_text("recover")
     second = await live.run_once()
     assert second[-1].type == LiveEventType.REPLY
+
+
+async def test_her_mood_faded_long_ago_reaches_the_avatar_as_neutral():
+    """The orchestrator has no CompanionSettings to read a half-life from, so
+    it uses the spec's own defaults (300s, floor 0.15): a mood set at the
+    epoch is many half-lives old by now, however this test runs."""
+    runtime = engine()
+    runtime.state.apply(StatePatch(emotion="sad", mood_intensity=0.8, mood_updated_at=0.0))
+    live = LiveCharacterOrchestrator(
+        CharacterHostBridge(runtime), tts=FakeTTS(), audio_sink=Sink(), avatar_runtime=AvatarRuntime()
+    )
+    live.submit_text("hello")
+    events = await live.run_once()
+    cue = next(e for e in events if e.type is LiveEventType.AVATAR_CUE)
+    assert cue.data["expressions"] == []
 
 
 async def test_run_generator_is_continuous_and_close_stops_it():

@@ -3,18 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
-from typing import Any, Hashable, Mapping, Sequence
+from typing import Any, Callable, Hashable, Mapping, Sequence
 
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
 from ai_character_engine.llm.models import Message
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.runtime.models import CharacterRunResult
+from ai_character_engine.state.mood import effective_mood
 from ai_character_engine.tasks.errors import (
     TaskQueueFullError,
     TaskRuntimeClosedError,
@@ -566,6 +568,12 @@ class BackgroundCognitionRuntime:
         # The language the workers write in. Empty: the language the user
         # writes in, which the model has to work out from the transcript.
         self.output_language = ""
+        # How her mood fades before a goal source reads it; a CharacterCompanion
+        # sets these from its settings and clock. The spec's own defaults
+        # otherwise (CompanionSettings.mood_half_life_seconds/mood_floor).
+        self.mood_half_life_seconds = 300.0
+        self.mood_floor = 0.15
+        self.clock: Callable[[], float] = time.time
         # The conversation the next turn belongs to, for a host that switches
         # the runtime's history between conversations. Each conversation is
         # then read on its own, and cadence counts its own turns: counted
@@ -779,8 +787,16 @@ class BackgroundCognitionRuntime:
             if item.record.is_active
         ]
         state = result.state_after
+        mood, _ = effective_mood(
+            state.emotion,
+            state.mood_intensity,
+            state.mood_updated_at,
+            now=self.clock(),
+            half_life_seconds=self.mood_half_life_seconds,
+            floor=self.mood_floor,
+        )
         state_values = [
-            {"id": "emotion", "value": state.emotion},
+            {"id": "emotion", "value": mood},
             {"id": "energy", "value": state.energy},
             {"id": "trust", "value": state.trust},
             {"id": "favorability", "value": state.favorability},
