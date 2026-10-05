@@ -20,8 +20,9 @@ Her mood is one of ai_character_engine.state.mood.CHARACTER_MOODS: sad when
 the user turns on her, worried when the user feels bad, happy when the user is
 warm, as strong as the user's emotion was; an unremarkable turn leaves it as it
 was, and so does one that would set a weaker mood than she still feels
-(ai_character_engine.state.mood.blend_mood). A reading of her mood from both
-sides of the same turn (the companion's mood worker) stands.
+(ai_character_engine.state.mood.blend_mood). On a turn whose mood is read
+from both sides (the companion's mood worker), the rules leave her mood to that
+reading; what the user did still moves trust and favorability.
 
 The default numbers are a starting point measured against eight-turn
 conversations on a local 9B model, not a calibrated model of affection.
@@ -124,6 +125,7 @@ def relationship_patch(
     now: float | None = None,
     half_life_seconds: float = 300.0,
     floor: float = 0.15,
+    set_mood: bool = True,
 ) -> StatePatch | None:
     """The change to apply now, or None when there is nothing to change.
 
@@ -135,6 +137,9 @@ def relationship_patch(
     ``now`` dates a new mood, in seconds since the epoch; the system clock
     when not given. Her mood is weighed as it stands at ``now``, faded by
     ``half_life_seconds`` and ``floor`` (see effective_mood).
+
+    ``set_mood=False`` leaves her mood alone: the observation still moves
+    trust and favorability and is still consumed.
     """
     rules = rules or RelationshipRules()
     now = time.time() if now is None else now
@@ -170,6 +175,8 @@ def relationship_patch(
                     emotion = "happy"
                 # Otherwise her mood stays as it was: setting one on every
                 # unremarkable turn flipped her face between readings of it.
+                if not set_mood:
+                    emotion = None
                 turn = seconds(observation.get("turn_ended_at"))
                 judged = seconds(state.custom.get(MOOD_TURN_KEY))
                 if emotion is not None and turn is not None:
@@ -227,20 +234,36 @@ class RelationshipStatePolicy:
         # CharacterCompanion sets its settings.
         self.mood_half_life_seconds = 300.0
         self.mood_floor = 0.15
+        # Whether her mood is read from both sides of the turn of the given
+        # revision (an observation's base_revision): on such a turn the rules
+        # leave her mood to that reading. CharacterCompanion answers from the
+        # mood jobs it scheduled.
+        self.mood_read_for: Callable[[Any], bool] = lambda revision: False
+
+    def patch(
+        self, state: CharacterStateSnapshot, *, count_turn: bool
+    ) -> StatePatch | None:
+        """relationship_patch with this policy's rules, clock and mood settings."""
+        observation = state.custom.get(OBSERVATION_KEY)
+        read = isinstance(observation, dict) and self.mood_read_for(
+            observation.get("base_revision")
+        )
+        return relationship_patch(
+            state,
+            count_turn=count_turn,
+            rules=self.rules,
+            now=self.clock(),
+            half_life_seconds=self.mood_half_life_seconds,
+            floor=self.mood_floor,
+            set_mood=not read,
+        )
 
     def on_event(
         self, event: CharacterEvent, state: CharacterStateSnapshot
     ) -> StatePatch | None:
         if event.type not in {"user_message", "multimodal_user_message"}:
             return None
-        return relationship_patch(
-            state,
-            count_turn=True,
-            rules=self.rules,
-            now=self.clock(),
-            half_life_seconds=self.mood_half_life_seconds,
-            floor=self.mood_floor,
-        )
+        return self.patch(state, count_turn=True)
 
     def on_tool_result(
         self, result: ToolResult, state: CharacterStateSnapshot

@@ -3822,3 +3822,131 @@ def test_the_rules_weigh_against_her_mood_as_faded_by_her_settings(tmp_path):
 
     assert run(scenario()) == "sad"
     assert run(scenario(mood_half_life_seconds=10.0)) == "happy"
+
+
+# --- on a turn her mood is read, the rules leave her mood to that reading ---
+
+WARMLY = {**WARM, "intensity": 0.6}  # notable: happy, as strong as 0.6
+HOSTILE = {**WARM, "emotion": "angry", "valence": -0.8, "stance": -1.0, "intensity": 0.8}
+APPLIED = "_relationship_applied_observation"
+
+
+def stored_mood(current):
+    state = current.runtime.state
+    return state.emotion, state.mood_intensity
+
+
+async def eventually(condition):
+    """Background results go through worker threads: wait in real time."""
+    for _ in range(400):
+        if condition():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("condition never became true")
+
+
+def test_an_observation_before_the_reading_of_her_mood_does_not_move_it(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        current = companion(
+            tmp_path,
+            {"emotion": Worker(WARMLY), "mood": Worker({**SAD_MOOD, "intensity": 0.5}, gate=gate)},
+            emotion_every=1,
+            mood_every=1,
+            clock=lambda: 1000.0,
+        )
+        trust = current.runtime.state.trust
+        await current.reply("thank you for last night", conversation_id="a")
+        await eventually(lambda: APPLIED in current.runtime.state.custom)
+        between = stored_mood(current), current.runtime.state.trust > trust
+        gate.set()
+        await current.settle()
+        after = stored_mood(current)
+        await current.close()
+        return between, after
+
+    (mood_between, trusted), after = run(scenario())
+    # The rules still count the warmth, not her mood: the reading decides it.
+    assert mood_between == ("neutral", 0.0) and trusted
+    assert after == ("sad", pytest.approx(0.5))
+
+
+def test_an_observation_after_the_reading_of_her_mood_does_not_override_it(tmp_path):
+    async def scenario():
+        gate = asyncio.Event()
+        current = companion(
+            tmp_path,
+            {
+                "emotion": Worker(WARMLY, gate=gate),
+                "mood": Worker({**SAD_MOOD, "mood": "neutral", "intensity": 0.0}),
+            },
+            emotion_every=1,
+            mood_every=1,
+            clock=lambda: 1000.0,
+        )
+        await current.reply("thank you for last night", conversation_id="a")
+        # A slow emotion analysis whose hold on the model ran out: the mood
+        # is read and committed first.
+        for key in list(current._access._holds):
+            current._access.release(key)
+        await eventually(lambda: "_mood_turn_ended_at" in current.runtime.state.custom)
+        gate.set()
+        await current.settle()
+        after = stored_mood(current), APPLIED in current.runtime.state.custom
+        await current.close()
+        return after
+
+    assert run(scenario()) == (("neutral", 0.0), True)
+
+
+@pytest.mark.parametrize(
+    ("start", "expected"),
+    [(None, ("happy", 0.6)), (("sad", 0.9), ("sad", 0.9))],
+    ids=["moves it", "with inertia"],
+)
+def test_on_a_turn_without_a_reading_of_her_mood_the_rules_move_it(tmp_path, start, expected):
+    async def scenario():
+        mood = Worker(SAD_MOOD)
+        current = companion(
+            tmp_path,
+            {"emotion": Worker(WARMLY), "mood": mood},
+            emotion_every=1,
+            mood_every=2,
+            clock=lambda: 1000.0,
+        )
+        if start is not None:
+            current.runtime.state.apply(
+                StatePatch(emotion=start[0], mood_intensity=start[1], mood_updated_at=1000.0)
+            )
+        await current.reply("thank you for last night", conversation_id="a")
+        await current.settle()
+        after = stored_mood(current)
+        await current.close()
+        return mood.calls, after
+
+    calls, after = run(scenario())
+    assert calls == 0
+    assert after == (expected[0], pytest.approx(expected[1]))
+
+
+def test_without_the_mood_worker_the_rules_move_her_mood_on_every_notable_turn(tmp_path):
+    async def scenario():
+        answers = [WARMLY, HOSTILE]
+        current = companion(
+            tmp_path,
+            {"emotion": Worker(lambda messages: answers.pop(0))},
+            emotion_every=1,
+            mood_every=0,
+            clock=lambda: 1000.0,
+        )
+        moods = []
+        for text in ("thank you for last night", "you are useless"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+            moods.append(stored_mood(current))
+        await current.close()
+        return moods
+
+    first, second = run(scenario())
+    assert first == ("happy", pytest.approx(0.6))
+    assert second == ("sad", pytest.approx(0.8))

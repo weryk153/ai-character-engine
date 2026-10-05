@@ -167,13 +167,14 @@ line, also from what she said herself: talking about something sad, being
 praised. The latest exchange is set apart from the earlier conversation, which
 is background only. It runs every `mood_every` turns; a near word the model
 answers with (relieved, annoyed, shy and the like) counts as the mood it means,
-any other word off the list is no reading. Between its readings, and without it, the observation of the
+any other word off the list is no reading. On the turns it does not read, and
+without it, the observation of the
 user's emotion moves her mood by rules (`ai_character_engine.state.relationship`):
 sad when the user turns on her, worried when the user feels bad, happy when
 the user is warm, as strong as the user's emotion was. An unremarkable turn
-leaves her mood as it was. A reading of her mood and an observation of the user from
-the same turn: the reading stands, even when it left her mood as it was.
-Nothing replaces what was set for a later turn.
+leaves her mood as it was. On a turn the worker reads, the rules leave her mood
+to that reading, whichever of the two comes in first; the observation still
+moves trust and favorability. Nothing replaces what was set for a later turn.
 
 A mood holds until something at least as strong comes along. Both the reading
 and the rules are weighed against her mood as it stands now (faded): a neutral

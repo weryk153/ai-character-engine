@@ -67,7 +67,7 @@ from ai_character_engine.session.serialization import state_from_dict, state_to_
 from ai_character_engine.state.models import CharacterState
 from ai_character_engine.state.mood import NEUTRAL, effective_mood
 from ai_character_engine.state.policy import CharacterStatePolicy
-from ai_character_engine.state.relationship import RelationshipStatePolicy, relationship_patch
+from ai_character_engine.state.relationship import RelationshipStatePolicy
 from ai_character_engine.tasks import MultiTaskRuntime, MultiTaskRuntimeConfig, TaskPriority
 from ai_character_engine.tasks.errors import UnknownTaskError
 from ai_character_engine.tools.registry import ToolRegistry
@@ -764,6 +764,9 @@ class CharacterCompanion:
         self._access = ModelAccess(self.settings.foreground_patience_seconds)
         # target -> the turn after which a job for it was last scheduled
         self._scheduled_at: dict[str, int] = {}
+        # The turns (revisions) after which her mood was given to the mood
+        # worker to read: on those the rules leave her mood to its reading.
+        self._mood_read_at: deque[int] = deque(maxlen=self.settings.records_kept)
         self._live_by_kind: dict[BackgroundCognitionKind, list] = {}
         self._conversation_by_task: dict[str, str | None] = {}
         # Per task: the first message its conversation held when the job was
@@ -872,6 +875,7 @@ class CharacterCompanion:
             policy.clock = self._clock
             policy.mood_half_life_seconds = self.settings.mood_half_life_seconds
             policy.mood_floor = self.settings.mood_floor
+            policy.mood_read_for = lambda revision: revision in self._mood_read_at
         return policy
 
     def _state_file(self) -> Path | None:
@@ -1590,6 +1594,8 @@ class CharacterCompanion:
             if kind is None:
                 continue
             self._scheduled_at[_TARGET_OF[kind]] = self._tasks.revision
+            if kind is BackgroundCognitionKind.CHARACTER_MOOD:
+                self._mood_read_at.append(self._tasks.revision)
             if kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
                 self._access.hold(handle.task_id, self.settings.call_timeout_seconds)
             live = self._live_by_kind.setdefault(kind, [])
@@ -1739,18 +1745,11 @@ class CharacterCompanion:
         )
 
     async def _react_to_observation(self) -> None:
-        rules = getattr(self.runtime.state_policy, "rules", None)
-        if not isinstance(self.runtime.state_policy, RelationshipStatePolicy):
+        policy = self.runtime.state_policy
+        if not isinstance(policy, RelationshipStatePolicy):
             return
         async with self._tasks.authority_guard():
-            patch = relationship_patch(
-                self.runtime.state.snapshot(),
-                count_turn=False,
-                rules=rules,
-                now=self._clock(),
-                half_life_seconds=self.settings.mood_half_life_seconds,
-                floor=self.settings.mood_floor,
-            )
+            patch = policy.patch(self.runtime.state.snapshot(), count_turn=False)
             if patch is not None:
                 self.runtime.state.apply(patch)
 

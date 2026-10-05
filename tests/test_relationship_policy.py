@@ -338,3 +338,42 @@ def test_the_policy_fades_her_mood_by_its_settings():
 
     assert mood_set(None) is None  # five-minute half-life: still 0.78 sad
     assert mood_set(60.0) == "happy"  # 0.45 sad left
+
+
+def test_rules_told_to_leave_her_mood_still_move_trust():
+    patch = relationship_patch(
+        feeling("neutral", 0.0, None, stance=1.0, valence=0.9, intensity=0.6),
+        count_turn=False,
+        now=1000.0,
+        set_mood=False,
+    )
+    assert (patch.emotion, patch.mood_intensity, patch.mood_updated_at) == (None, None, None)
+    assert patch.custom_updates == {APPLIED_OBSERVATION_KEY: "p1"}
+    assert patch.favorability_delta > 0 and patch.trust_delta > 0
+
+
+def test_the_policy_leaves_her_mood_on_a_turn_her_mood_is_read():
+    from ai_character_engine.events.models import CharacterEvent
+
+    policy = RelationshipStatePolicy()
+    policy.clock = lambda: 1000.0
+    asked = []
+
+    def mood_read_for(revision):
+        asked.append(revision)
+        return revision == 3
+
+    policy.mood_read_for = mood_read_for
+    read = feeling("neutral", 0.0, None, stance=1.0, valence=0.9, base_revision=3)
+    unread = feeling("neutral", 0.0, None, stance=1.0, valence=0.9, base_revision=4)
+    assert policy.patch(read, count_turn=True).emotion is None
+    assert policy.on_event(CharacterEvent.user_message("hi"), read).emotion is None
+    assert policy.on_event(CharacterEvent.user_message("hi"), unread).emotion == "happy"
+    assert asked == [3, 3, 4]
+
+
+def test_by_default_the_policy_moves_her_mood_on_every_notable_turn():
+    patch = RelationshipStatePolicy().patch(
+        feeling("neutral", 0.0, None, stance=1.0, valence=0.9, base_revision=3), count_turn=False
+    )
+    assert patch.emotion == "happy"
