@@ -15,9 +15,11 @@ import pytest
 
 from ai_character_engine import CharacterProfile
 from ai_character_engine.companion import (
+    CHARACTER_MOODS,
     CharacterCompanion,
     CompanionClosed,
     CompanionSettings,
+    CompanionSnapshot,
     TurnInterrupted,
 )
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk, Message
@@ -109,7 +111,7 @@ def warm_only_when_thanked(messages):
     return WARM if thanked else NEUTRAL
 
 
-def companion(tmp_path, workers=None, *, llm=None, **settings):
+def companion(tmp_path, workers=None, *, llm=None, clock=None, **settings):
     defaults = {
         "emotion_every": 0,
         "memory_every": 0,
@@ -117,6 +119,7 @@ def companion(tmp_path, workers=None, *, llm=None, **settings):
         "reflection_every": 0,
         "summary_every": 0,
         "self_memory_every": 0,
+        "mood_every": 0,
     }
     defaults.update(settings)
     return CharacterCompanion(
@@ -125,6 +128,7 @@ def companion(tmp_path, workers=None, *, llm=None, **settings):
         background_llm=workers or {},
         storage_dir=tmp_path / "engine",
         settings=CompanionSettings(**defaults),
+        clock=clock,
     )
 
 
@@ -3579,3 +3583,155 @@ def test_what_she_said_before_the_conversation_was_trimmed_is_still_kept(tmp_pat
         return current.self_memories()
 
     assert run(scenario()) == [TEA[0]]
+
+
+SAD_MOOD = {"mood": "sad", "intensity": 0.8, "confidence": 0.9, "evidence": ["before he left"]}
+
+
+def test_her_mood_is_read_from_both_sides_of_the_conversation(tmp_path):
+    asked = []
+
+    def judge(messages):
+        asked.append(messages[1].content)
+        return SAD_MOOD
+
+    async def scenario():
+        llm = Scripted("My father used to say that, before he left.")
+        current = companion(tmp_path, {"mood": Worker(judge)}, llm=llm, mood_every=1)
+        await current.reply("what did your father say", conversation_id="a")
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    snapshot = run(scenario())
+    assert (snapshot.emotion, snapshot.mood_intensity) == ("sad", pytest.approx(0.8))
+    assert "User: what did your father say" in asked[0]
+    assert "Mei: My father used to say that, before he left." in asked[0]
+
+
+def test_her_mood_is_read_every_second_turn_by_default(tmp_path):
+    assert CompanionSettings().mood_every == 2
+    judge = Worker(SAD_MOOD)
+
+    async def scenario():
+        llm = Scripted("The kettle is on.", "Rain again, of all things.", "The cat is asleep.")
+        current = companion(tmp_path, {"mood": judge}, llm=llm, mood_every=2)
+        for text in ("hello", "how are you", "and the cat"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
+
+    run(scenario())
+    assert judge.calls == 1
+
+
+def test_between_readings_of_her_mood_the_users_emotion_still_moves_it(tmp_path):
+    async def scenario():
+        llm = Scripted("The kettle is on.", "Rain again, of all things.", "The cat is asleep.")
+        current = companion(
+            tmp_path,
+            {"emotion": Worker(warm_only_when_thanked), "mood": Worker(SAD_MOOD)},
+            llm=llm,
+            emotion_every=1,
+            mood_every=2,
+        )
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await current.reply("how are you", conversation_id="a")
+        await current.settle()
+        read = current.snapshot().emotion
+        await current.reply("thank you for last night", conversation_id="a")
+        await current.settle()
+        thanked = current.snapshot().emotion
+        await current.close()
+        return read, thanked
+
+    # The reading of turn two stands against the calm the rules made of the
+    # same turn; the thanks of turn three moves her again.
+    assert run(scenario()) == ("sad", "happy")
+
+
+def test_the_host_hears_when_her_mood_changes(tmp_path):
+    heard = []
+
+    async def scenario():
+        llm = Scripted("The kettle is on.", "Rain again, of all things.")
+        current = companion(
+            tmp_path, {"mood": Worker(SAD_MOOD)}, llm=llm, mood_every=1, clock=lambda: 1000.0
+        )
+        current.on_mood_change = heard.append
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await current.reply("again", conversation_id="a")
+        await current.settle()
+        await current.close()
+
+    run(scenario())
+    # The second reading said the same at the same time: nothing to tell.
+    assert [(s.emotion, s.mood_updated_at) for s in heard] == [("sad", 1000.0)]
+    assert isinstance(heard[0], CompanionSnapshot)
+
+
+def test_a_reading_that_changes_nothing_tells_the_host_nothing(tmp_path):
+    heard = []
+
+    async def scenario():
+        current = companion(
+            tmp_path, {"mood": Worker({**SAD_MOOD, "mood": "開心"})}, mood_every=1
+        )
+        current.on_mood_change = heard.append
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    assert run(scenario()).emotion == "neutral"
+    assert heard == []
+
+
+def test_a_failing_listener_does_not_cost_her_the_mood(tmp_path):
+    def broken(snapshot):
+        raise RuntimeError("the page is gone")
+
+    async def scenario():
+        current = companion(tmp_path, {"mood": Worker(SAD_MOOD)}, mood_every=1)
+        current.on_mood_change = broken
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    assert run(scenario()).emotion == "sad"
+
+
+def test_her_mood_keeps_fading_while_she_is_not_running(tmp_path):
+    now = [1000.0]
+
+    async def scenario():
+        first = companion(tmp_path, {"mood": Worker(SAD_MOOD)}, mood_every=1, clock=lambda: now[0])
+        await first.reply("hello", conversation_id="a")
+        await first.settle()
+        await first.close()
+        now[0] = 1300.0
+        later = companion(tmp_path, clock=lambda: now[0]).snapshot()
+        now[0] = 1900.0
+        gone = companion(tmp_path, clock=lambda: now[0]).snapshot()
+        return later, gone
+
+    later, gone = run(scenario())
+    assert (later.emotion, later.mood_updated_at) == ("sad", 1000.0)
+    assert later.mood_intensity == pytest.approx(0.8)
+    assert gone.emotion == "neutral"
+
+
+def test_a_host_can_tell_her_mood_is_there():
+    from ai_character_engine.cognition import BackgroundCognitionKind, CognitiveRole
+
+    assert CHARACTER_MOODS[0] == "neutral"
+    assert hasattr(CompanionSettings(), "mood_every")
+    assert BackgroundCognitionKind.CHARACTER_MOOD.value == "character_mood"
+    assert CognitiveRole.MOOD.value == "mood"
+    assert "mood_half_life_seconds" in CompanionSnapshot.__dataclass_fields__

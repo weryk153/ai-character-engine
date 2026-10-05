@@ -70,8 +70,8 @@ asyncio.run(main())
 ```
 
 `background_llm` may be one client for every worker or a mapping from worker
-name (`emotion`, `memory`, `self_memory`, `goal`, `reflection`, `summary`) to a
-client. A worker
+name (`emotion`, `mood`, `memory`, `self_memory`, `goal`, `reflection`, `summary`)
+to a client. A worker
 without a client does not run; `background_llm={}` turns background cognition
 off. Background workers must return JSON, so give them a low temperature.
 
@@ -96,8 +96,8 @@ Without `storage_dir` nothing is written to disk.
    which nothing is left for repetition or assistant talk, and which used no
    tool, is asked again once.
 3. Trust grows a little; an observation of the user's emotion committed since the
-   last turn moves mood, trust and favorability
-   (`ai_character_engine.state.relationship`).
+   last turn moves trust, favorability and, between readings of her mood, her
+   mood (`ai_character_engine.state.relationship`; see Her mood below).
 4. Background jobs for this turn are scheduled. The emotion of the turn is read
    first and alone; the others follow one at a time.
 5. Results are committed when they arrive, also when turns have happened in
@@ -154,6 +154,37 @@ conversation the companion has already seen is not replaced;
 The companion keeps the history of the `conversations_kept` most recent
 conversations in memory and does not store transcripts on disk.
 
+## Her mood
+
+Her mood is one of eight words, `CHARACTER_MOODS` in
+`ai_character_engine.companion`: neutral, happy, sad, angry, surprised,
+embarrassed, calm, worried. With it come an intensity, 0 to 1, and the time
+it was set.
+
+Two things set it. The `mood` worker reads both sides of the recent
+conversation, her lines under her name, and judges how she feels, also from
+what she said herself: talking about something sad, being praised. It runs
+every `mood_every` turns; a word off the list is no reading. Between its
+readings, and without it, the observation of the user's emotion moves her
+mood by rules (`ai_character_engine.state.relationship`), as strong as the
+user's emotion was. A reading of her mood and an observation of the user from
+the same turn: the reading stands. Nothing replaces what was set for a later
+turn.
+
+Her mood fades as time passes, talked to or not: the intensity halves every
+`mood_half_life_seconds`, and below `mood_floor` she is neutral again. It is
+worked out when read; nothing runs in between. What reads her mood reads it
+faded: the `- emotion:` line of the note and `snapshot().emotion`.
+`EmotionExpressionPolicy` weighs a face by the intensity it is given.
+
+A host that shows her face reads `snapshot()`: `emotion` is her mood now;
+`mood_intensity` and `mood_updated_at` are the intensity as it was set and
+when, in seconds since the epoch (`mood_intensity` is 0 once she is neutral
+again); `mood_half_life_seconds` lets the host fade the face itself between
+snapshots. `on_mood_change`, a function of the host's, is called with the
+snapshot when a background result changed her mood. `clock`, a function
+returning seconds since the epoch, replaces the system clock for all of this.
+
 ## Pictures
 
 Give the companion a `VisionPipeline` and pass `frames` to `reply()`. Each
@@ -202,7 +233,7 @@ model can run every worker on every turn.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `emotion_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
+| `emotion_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
@@ -215,6 +246,7 @@ model can run every worker on every turn.
 | `memories_recalled` | 40 | How many memories of the conversation she is given at most; what the newest message is about comes first |
 | `language` | empty | The language memories, goals and thoughts are written in; empty means the language the user writes in |
 | `self_memories_kept`, `self_memories_shown` | 40, 12 | How many things she said about herself she keeps (the oldest beyond are forgotten), and how many of the newest stand in the conversation |
+| `mood_half_life_seconds`, `mood_floor` | 300, 0.15 | Her mood's intensity halves every this many seconds; below the floor she is neutral again |
 
 ## Telling what the engine offers
 
@@ -224,7 +256,8 @@ said about herself, `"statement_only" in
 inspect.signature(CharacterCompanion.speak_up).parameters` for remarks without
 a question. `ai_character_engine.companion` exports `SELF_MEMORY_LINE`, the
 start of her self memories in the note, and `ASSISTANT_SPEAK` and
-`ACKNOWLEDGEMENTS`, what the checks on what she says look for.
+`ACKNOWLEDGEMENTS`, what the checks on what she says look for. From 1.1.0 it also
+exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`.
 
 ## Lifecycle
 

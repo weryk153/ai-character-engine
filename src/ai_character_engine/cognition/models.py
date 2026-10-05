@@ -27,6 +27,10 @@ class CognitiveRole(str, Enum):
     # What the character said about herself; a role of its own so that a host
     # can give it a model apart from memory of the user.
     SELF_MEMORY = "self_memory"
+    # The character's own mood, read from both sides of the conversation; a
+    # role of its own so that a host can give it a model apart from the
+    # emotion of the user.
+    MOOD = "mood"
 
 
 class CognitiveOptimization(str, Enum):

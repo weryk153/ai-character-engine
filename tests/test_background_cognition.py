@@ -27,6 +27,7 @@ from ai_character_engine import (
 )
 from ai_character_engine.llm.models import LLMResponse, Message
 from ai_character_engine.state.models import StatePatch
+from ai_character_engine.state.mood import CHARACTER_MOODS
 from ai_character_engine.tasks.models import TaskProposal
 
 
@@ -952,4 +953,135 @@ async def test_handles_of_finished_work_are_not_kept_for_ever():
             await bg.collect_all()
 
     assert len(bg.handles()) == 4
+
+
+MOOD_PAYLOAD = {"mood": "sad", "intensity": 0.7, "confidence": 0.9, "evidence": ["her father left"]}
+NOTE = "Character context for this turn. Private runtime data, not said by the user.\n\n- emotion: calm"
+
+
+async def mood_reading(payload, *, history=None):
+    client = CapturingClient(payload, name="mood")
+    runtime = character()
+    runtime.history = list(
+        history
+        if history is not None
+        else [Message("user", "earlier question"), Message("assistant", "earlier answer")]
+    )
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.MOOD: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.CHARACTER_MOOD),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("I am exhausted today")
+        result = (await bg.collect_all())[0]
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    system, user = client.messages
+    return system.content, user.content, result.output
+
+
+@pytest.mark.asyncio
+async def test_her_mood_is_read_from_both_sides_with_her_name_on_her_lines():
+    _, user, _ = await mood_reading(MOOD_PAYLOAD)
+    assert "User: earlier question" in user
+    assert "C: earlier answer" in user
+    assert "User: I am exhausted today" in user
+    assert "C: foreground reply" in user
+    assert "assistant:" not in user and "user:" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_is_given_her_vocabulary_and_no_language_rule():
+    system, user, _ = await mood_reading(MOOD_PAYLOAD)
+    assert ", ".join(CHARACTER_MOODS) in system
+    assert '"mood":str' in system
+    assert "language the user writes in" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_does_not_read_the_turn_notes():
+    _, user, _ = await mood_reading(
+        MOOD_PAYLOAD, history=[Message("user", "earlier question"), Message("user", NOTE)]
+    )
+    assert "Character context" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_proposes_her_mood_dated_by_its_turn():
+    _, _, output = await mood_reading(MOOD_PAYLOAD)
+    (proposal,) = output.proposals
+    assert proposal.target == "state.mood_candidate"
+    assert dict(proposal.payload) == {"mood": "sad", "intensity": 0.7}
+    assert proposal.confidence == 0.9
+    assert proposal.provenance["worker_kind"] == "character_mood"
+    assert isinstance(proposal.provenance["turn_ended_at"], float)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {**MOOD_PAYLOAD, "mood": "開心"},
+        {**MOOD_PAYLOAD, "mood": "excited"},
+        {key: value for key, value in MOOD_PAYLOAD.items() if key != "mood"},
+        {key: value for key, value in MOOD_PAYLOAD.items() if key != "intensity"},
+        {**MOOD_PAYLOAD, "intensity": "high"},
+        {key: value for key, value in MOOD_PAYLOAD.items() if key != "confidence"},
+    ],
+    ids=["other language", "off the list", "no mood", "no intensity", "unreadable intensity", "no confidence"],
+)
+async def test_an_answer_off_the_list_proposes_nothing(answer):
+    _, _, output = await mood_reading(answer)
+    assert output.proposals == ()
+
+
+@pytest.mark.asyncio
+async def test_a_listed_word_in_another_case_is_the_word():
+    _, _, output = await mood_reading({**MOOD_PAYLOAD, "mood": " Happy "})
+    assert output.proposals[0].payload["mood"] == "happy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("given", "kept"), [(1.7, 1.0), (-0.2, 0.0)])
+async def test_an_intensity_out_of_bounds_is_held_to_them(given, kept):
+    _, _, output = await mood_reading({**MOOD_PAYLOAD, "intensity": given})
+    assert output.proposals[0].payload["intensity"] == kept
+
+
+@pytest.mark.asyncio
+async def test_neutral_is_read_with_no_intensity():
+    _, _, output = await mood_reading({**MOOD_PAYLOAD, "mood": "neutral", "intensity": 0.6})
+    assert dict(output.proposals[0].payload) == {"mood": "neutral", "intensity": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_the_emotion_worker_still_reads_only_the_user_when_her_mood_is_read_too():
+    emotion = CapturingClient(EMOTION_PAYLOAD, name="emotion")
+    mood = CapturingClient(MOOD_PAYLOAD, name="mood")
+    runtime = character()
+    runtime.history = [Message("user", "earlier question"), Message("assistant", "earlier answer")]
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.EMOTION: emotion, CognitiveRole.MOOD: mood}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(
+                BackgroundWorkerSpec(BackgroundCognitionKind.EMOTION_ANALYSIS),
+                BackgroundWorkerSpec(BackgroundCognitionKind.CHARACTER_MOOD),
+            )
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("I am exhausted today")
+        results = await bg.collect_all()
+    by_emotion = emotion.messages[1].content
+    assert "earlier answer" not in by_emotion and "foreground reply" not in by_emotion
+    assert "C: earlier answer" in mood.messages[1].content
+    observation = next(
+        p for r in results for p in r.output.proposals if p.target == "state.emotion_candidate"
+    )
+    assert isinstance(observation.provenance["turn_ended_at"], float)
 

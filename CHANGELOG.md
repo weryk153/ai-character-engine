@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+- Her mood is one of eight words (`CHARACTER_MOODS` in `ai_character_engine.companion`: neutral, happy, sad, angry, surprised, embarrassed, calm, worried) with an intensity and the time it was set, and it fades with time: the intensity halves every `mood_half_life_seconds` (300) and below `mood_floor` (0.15) she is neutral again. The `- emotion:` line of the note and `CompanionSnapshot.emotion` read it faded.
+- A `mood` worker (`BackgroundCognitionKind.CHARACTER_MOOD`, role `CognitiveRole.MOOD`, commit target `state.mood_candidate`) reads both sides of the conversation, her lines under her name, and judges her mood, also from what she said herself; every `mood_every` (2) turns. The emotion worker still reads the user's lines only.
+- The relationship rules name her mood in the new words: `sad` where they said `hurt`, `worried` where they said `concerned`, as strong as the user's emotion was. A reading of her mood from the same turn stands; nothing replaces a mood set for a later turn.
+- `CompanionSnapshot` has `mood_intensity`, `mood_updated_at` and `mood_half_life_seconds`; `CharacterCompanion` takes `clock` and calls `on_mood_change` when a background result changed her mood. `CharacterState` and `StatePatch` carry `mood_intensity` and `mood_updated_at`; a state saved before has no mood yet.
+- `EmotionExpressionPolicy` has a face for each of her moods (none for neutral) and weighs it by the intensity it is given.
+- Hosts that set `CharacterState.emotion` directly must also set `mood_intensity` (and `mood_updated_at`), because a mood with intensity 0 now reads as neutral.
+
 ## 1.0.0
 
 - Stable 374-symbol root Python API, with explicit compatibility and deprecation contracts.

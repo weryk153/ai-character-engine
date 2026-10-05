@@ -16,6 +16,11 @@ class CompanionSettings:
     """
 
     emotion_every: int = 1
+    # Her own mood, from both sides of the conversation; about 7 s a call on
+    # the hardware above, so every second turn. Between readings the emotion of
+    # the user still moves it. A host with a separate background model can
+    # read it every turn.
+    mood_every: int = 2
     memory_every: int = 2
     goal_every: int = 4
     reflection_every: int = 6
@@ -72,6 +77,7 @@ class CompanionSettings:
     def __post_init__(self) -> None:
         for name in (
             "emotion_every",
+            "mood_every",
             "memory_every",
             "goal_every",
             "reflection_every",

@@ -14,9 +14,10 @@ from typing import Any, Callable, Hashable, Mapping, Sequence
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
 from ai_character_engine.llm.models import Message
+from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.runtime.models import CharacterRunResult
-from ai_character_engine.state.mood import effective_mood
+from ai_character_engine.state.mood import CHARACTER_MOODS, effective_mood, mood_intensity, seconds
 from ai_character_engine.tasks.errors import (
     TaskQueueFullError,
     TaskRuntimeClosedError,
@@ -43,6 +44,7 @@ class BackgroundCognitionKind(str, Enum):
     GOAL_MOTIVATION = "goal_motivation"
     VISION_INTERPRETATION = "vision_interpretation"
     SELF_MEMORY_EXTRACTION = "self_memory_extraction"
+    CHARACTER_MOOD = "character_mood"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -53,9 +55,11 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.GOAL_MOTIVATION: CognitiveRole.GOAL,
     BackgroundCognitionKind.VISION_INTERPRETATION: CognitiveRole.VISION,
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: CognitiveRole.SELF_MEMORY,
+    BackgroundCognitionKind.CHARACTER_MOOD: CognitiveRole.MOOD,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
+MOOD_TARGET = "state.mood_candidate"
 # A stage direction between asterisks describes what she does; it is not
 # something she said about herself.
 _STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
@@ -231,6 +235,8 @@ class StructuredBackgroundWorker:
             )
 
     def _messages(self, context: TaskContext) -> list[Message]:
+        if self.spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
+            return _mood_messages(context, self.history_messages)
         history = list(context.snapshot.history[-self.history_messages :])
         payload = context.request.payload
         latest = str(payload.get("latest_user_or_event", "")).strip()
@@ -388,6 +394,27 @@ class StructuredBackgroundWorker:
                 )
             return tuple(normalized), confidence, evidence, proposals
 
+        if kind is BackgroundCognitionKind.CHARACTER_MOOD:
+            mood = str(data.get("mood") or "").strip().casefold()
+            raw = data.get("intensity")
+            if mood not in CHARACTER_MOODS or seconds(raw) is None or confidence is None:
+                # A word off the list ("開心", "excited") or a missing field is
+                # no reading of her mood; her mood stays what it was.
+                return None, confidence, evidence, []
+            value = {"mood": mood, "intensity": mood_intensity(mood, raw)}
+            proposals.append(
+                context.proposal(
+                    MOOD_TARGET,
+                    value,
+                    confidence=confidence,
+                    provenance={
+                        **provenance,
+                        "turn_ended_at": context.snapshot.captured_at.timestamp(),
+                    },
+                )
+            )
+            return value, confidence, evidence, proposals
+
         if kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
             emotion = str(data.get("emotion", "neutral")).strip() or "neutral"
             value = {
@@ -405,7 +432,12 @@ class StructuredBackgroundWorker:
                     "state.emotion_candidate",
                     value,
                     confidence=confidence,
-                    provenance=provenance,
+                    # Dated by its turn: a reading of her mood from the same
+                    # turn stands against the rules (state.relationship).
+                    provenance={
+                        **provenance,
+                        "turn_ended_at": context.snapshot.captured_at.timestamp(),
+                    },
                 )
             )
             return value, confidence, evidence, proposals
@@ -922,6 +954,18 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "Return JSON: {\"items\":[{\"summary\":str,\"kind\":str,\"importance\":0..1,"
             "\"confidence\":0..1,\"evidence\":str}],\"confidence\":0..1,\"evidence\":[str]}."
         ),
+        BackgroundCognitionKind.CHARACTER_MOOD: (
+            "Judge the character's own mood right now from both sides of the recent conversation. "
+            "The character's lines are marked with the name on the Character line, the user's "
+            "with \"User\". What the character said counts as much as what the user said: "
+            "talking about something sad can make the character sad, being praised can make "
+            "them embarrassed, being insulted can make them angry or sad. "
+            "Choose exactly one mood from this list and write it exactly as listed, in English, "
+            "whatever language the conversation is in: " + ", ".join(CHARACTER_MOODS) + ". "
+            "intensity is how strongly the character feels it now, from 0 to 1; neutral has "
+            "intensity 0. "
+            "Return JSON: {\"mood\":str,\"intensity\":0..1,\"confidence\":0..1,\"evidence\":[str]}."
+        ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
             "Interpret only the supplied textual vision observation and recent context. Do not claim unseen pixels. "
             "Return JSON: {\"interpretation\":str,\"tags\":[str],\"confidence\":0..1,\"evidence\":[str]}."
@@ -1125,6 +1169,38 @@ def _assistant_lines(context: TaskContext, *, turns: int) -> list[str]:
         reply = str(payload.get("assistant_response", ""))
         return [reply] if reply.strip() else []
     return _replies_from(history, openers[-max(1, turns):])
+
+
+def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]:
+    """Both sides of the recent conversation, her lines under her name.
+
+    Unlike the emotion worker, this one must read her: what she said herself
+    (something sad, being praised) moves her mood as much as what she was
+    told. The turn notes are the runtime's, nobody's words, and stay out.
+    """
+    name = context.snapshot.character_name
+    lines = [
+        f"{name if message.role == 'assistant' else 'User'}: {message.content.strip()}"
+        for message in context.snapshot.history[-history_messages:]
+        if message.role in {"user", "assistant"}
+        and message.content.strip()
+        and not is_turn_context(message)
+    ]
+    user = (
+        f"Character: {name}\n"
+        "Recent conversation, oldest first:\n"
+        + ("\n".join(lines) or "(empty)")
+        + "\n"
+    )
+    observed = context.snapshot.state.custom.get("observed_user_emotion")
+    if isinstance(observed, Mapping) and str(observed.get("emotion") or "").strip():
+        # The emotion of this very turn is read alongside; this one is older.
+        user += f"\nHow the user seemed most recently: {str(observed['emotion']).strip()}\n"
+    user += "\nReturn only the requested JSON object. The mood is one of the listed English words."
+    return [
+        Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.CHARACTER_MOOD]),
+        Message(role="user", content=user),
+    ]
 
 
 def said_in(quote: str, lines: Sequence[str]) -> bool:

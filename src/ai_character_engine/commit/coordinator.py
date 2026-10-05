@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Iterable
+from typing import Callable, Iterable
 from uuid import uuid4
 
 from ai_character_engine.memory.models import MemoryRecord
@@ -22,6 +23,7 @@ from ai_character_engine.goals import (
     MotivationSignal,
 )
 from ai_character_engine.state.models import StatePatch
+from ai_character_engine.state.mood import CHARACTER_MOODS, MOOD_TURN_KEY, mood_intensity, seconds
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES
 from ai_character_engine.tasks.models import TaskProposal, TaskResult, TaskStatus
 from ai_character_engine.tasks.runtime import MultiTaskRuntime
@@ -57,6 +59,13 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         min_confidence=0.70,
         stale_policy=StalePolicy.RERUN,
         expected_worker_kind="emotion_analysis",
+        max_age_s=90.0,
+    ),
+    # The character's own mood, read from both sides of the conversation.
+    "state.mood_candidate": CommitTargetPolicy(
+        min_confidence=0.70,
+        stale_policy=StalePolicy.RERUN,
+        expected_worker_kind="character_mood",
         max_age_s=90.0,
     ),
     "memory.conversation_summary_candidate": CommitTargetPolicy(
@@ -119,6 +128,9 @@ class CognitiveCommitCoordinator:
         self._conflicts: dict[str, tuple[str, str]] = {}
         self._commit_sequence = 0
         self._attempts: dict[str, int] = {}
+        # Dates her mood when it is written. A host with its own clock
+        # (CharacterCompanion) sets it, so that her mood fades by that clock.
+        self.clock: Callable[[], float] = time.time
 
     @property
     def commit_sequence(self) -> int:
@@ -392,6 +404,14 @@ class CognitiveCommitCoordinator:
                     current_revision,
                     metadata={"evidence_type": evidence_type},
                 )
+        if proposal.target == "state.mood_candidate":
+            if str(proposal.payload.get("mood", "")) not in CHARACTER_MOODS:
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "mood_not_in_vocabulary",
+                    current_revision,
+                )
         if proposal.target == "cognition.reflection_candidate":
             insight = str(proposal.payload.get("insight", "")).strip()
             if not insight:
@@ -637,11 +657,38 @@ class CognitiveCommitCoordinator:
                 if isinstance(score, bool) or not isinstance(score, (int, float)) or score != score:
                     continue
                 value[key] = max(-1.0, min(1.0, float(score)))
+            turn = seconds(proposal.provenance.get("turn_ended_at"))
+            if turn is not None:
+                value["turn_ended_at"] = turn
             try:
                 runtime.state.apply(
                     StatePatch(
                         custom_updates={"observed_user_emotion": value},
                         reason="background emotion analysis accepted by commit coordinator",
+                    )
+                )
+            except Exception:
+                runtime.state.restore(before)
+                raise
+            return None
+
+        if proposal.target == "state.mood_candidate":
+            # The character's own mood: it replaces CharacterState.emotion, with
+            # how strongly she feels it, as of now by this coordinator's clock.
+            before = runtime.state.snapshot()
+            mood = str(proposal.payload.get("mood", ""))
+            custom_updates = {}
+            turn = seconds(proposal.provenance.get("turn_ended_at"))
+            if turn is not None:
+                custom_updates[MOOD_TURN_KEY] = turn
+            try:
+                runtime.state.apply(
+                    StatePatch(
+                        emotion=mood,
+                        custom_updates=custom_updates,
+                        reason="background character mood accepted by commit coordinator",
+                        mood_intensity=mood_intensity(mood, proposal.payload.get("intensity")),
+                        mood_updated_at=self.clock(),
                     )
                 )
             except Exception:
@@ -904,6 +951,19 @@ class CognitiveCommitCoordinator:
                         current_revision,
                         metadata={"existing_record_ids": [record.id for record in same_event]},
                     )
+        if proposal.target == "state.mood_candidate":
+            turn = seconds(proposal.provenance.get("turn_ended_at"))
+            judged = seconds(runtime.state.custom.get(MOOD_TURN_KEY))
+            if turn is not None and judged is not None and turn < judged:
+                # A reading of an earlier turn that arrived late: her mood was
+                # already set from a later one.
+                return self._finalize(
+                    proposal,
+                    CommitStatus.STALE,
+                    "newer_mood_already_committed",
+                    current_revision,
+                    metadata={"turn_ended_at": turn, "mood_turn_ended_at": judged},
+                )
         return None
 
     def _identity(self, proposal: TaskProposal) -> tuple[str | None, str | None, str]:
@@ -928,6 +988,8 @@ class CognitiveCommitCoordinator:
             return None, f"summary:{proposal.base_revision}", fingerprint
         if proposal.target == "state.emotion_candidate":
             return None, f"observed_user_emotion:{proposal.base_revision}", fingerprint
+        if proposal.target == "state.mood_candidate":
+            return None, f"character_mood:{proposal.base_revision}", fingerprint
         if proposal.target == "cognition.reflection_candidate":
             insight = _normalize_text(str(proposal.payload.get("insight", "")))
             claim = _claim_fingerprint(proposal.payload.get("belief_candidate"))

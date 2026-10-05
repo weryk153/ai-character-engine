@@ -40,7 +40,7 @@ from ai_character_engine.cognition import (
     CognitiveRole,
     CognitiveRolePolicy,
 )
-from ai_character_engine.cognition.background import SELF_MEMORY_TARGET, said_in
+from ai_character_engine.cognition.background import MOOD_TARGET, SELF_MEMORY_TARGET, said_in
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
 from ai_character_engine.context.builder import SELF_MEMORY_LINE, ContextBuilder, one_line
@@ -138,6 +138,15 @@ _WORKERS = (
         CognitiveRole.EMOTION,
         TaskPriority.HIGH,
         "state.emotion_candidate",
+    ),
+    # Her own mood, from both sides of the conversation: the face she shows
+    # once she stops talking. Right after the user's emotion; not in its lane.
+    _Worker(
+        "mood",
+        BackgroundCognitionKind.CHARACTER_MOOD,
+        CognitiveRole.MOOD,
+        TaskPriority.HIGH,
+        MOOD_TARGET,
     ),
     _Worker(
         "memory",
@@ -707,7 +716,7 @@ class CharacterCompanion:
         clock: Callable[[], float] | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
-        for every worker, or a mapping from worker name (emotion, memory,
+        for every worker, or a mapping from worker name (emotion, mood, memory,
         self_memory, goal, reflection, summary) to a client; a worker without a client does not
         run. It defaults to ``llm``. Background workers must return JSON, so a
         client with a low temperature serves them better than the one tuned for
@@ -762,6 +771,9 @@ class CharacterCompanion:
         # trimmed since, unless the host took it back.
         self._first_by_task: dict[str, Message | None] = {}
         self._taken_back: deque[Message] = deque(maxlen=self.settings.records_kept)
+        # Called with snapshot() when a background result changed her mood,
+        # for a host that shows her face between replies.
+        self.on_mood_change: Callable[[CompanionSnapshot], None] | None = None
 
         builder = context_builder or ContextBuilder()
         builder.goals_shown = self.settings.goals_shown
@@ -838,6 +850,7 @@ class CharacterCompanion:
         self._commits = CognitiveCommitCoordinator(
             self._tasks, event_history=self.settings.records_kept
         )
+        self._commits.clock = self._clock
         for target, policy in tuple(self._commits.policies.items()):
             # The defaults ask for a rerun whenever a turn happened in between.
             # A local model needs 30 s or more for the background work of one
@@ -1611,6 +1624,7 @@ class CharacterCompanion:
             async with self._turn_lock:
                 if self._closed:
                     return
+                mood_before = self._mood_as_stored()
                 outcomes = [
                     await self._commit_what_she_said(proposal, conversation_id)
                     for proposal in result.output.proposals
@@ -1622,6 +1636,8 @@ class CharacterCompanion:
                     self._keep_the_newest_self_memories()
                 if any(o.committed for o in outcomes):
                     self._save_state()
+                if self._mood_as_stored() != mood_before:
+                    self._tell_mood()
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1629,6 +1645,20 @@ class CharacterCompanion:
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
             self._first_by_task.pop(handle.task_id, None)
+
+    def _mood_as_stored(self) -> tuple[str, float, float | None]:
+        state = self.runtime.state
+        return state.emotion, state.mood_intensity, state.mood_updated_at
+
+    def _tell_mood(self) -> None:
+        listener = self.on_mood_change
+        if listener is None:
+            return
+        try:
+            listener(self.snapshot())
+        except Exception as exc:
+            # The host's listener must not cost her the result.
+            logger.warning("on_mood_change failed (%s: %s)", type(exc).__name__, exc)
 
     def _still_said(
         self, proposal, conversation_id: str | None, first: Message | None

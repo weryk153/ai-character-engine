@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -25,6 +26,7 @@ from ai_character_engine.llm import ModelEndpoint
 from ai_character_engine.llm.models import LLMResponse
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
 from ai_character_engine.runtime import CharacterRuntime
+from ai_character_engine.state.mood import MOOD_TURN_KEY
 from ai_character_engine.tasks import MultiTaskRuntime, TaskProposal
 
 
@@ -565,3 +567,71 @@ async def test_observed_user_emotion_never_stores_a_score_it_cannot_read(garbage
     )
     observed = engine.state.custom["observed_user_emotion"]
     assert "valence" not in observed and "stance" not in observed
+
+
+def mood_proposal(mood="sad", intensity=0.7, *, turn_ended_at=100.0, revision=0, confidence=0.9):
+    return TaskProposal(
+        target="state.mood_candidate",
+        payload={"mood": mood, "intensity": intensity},
+        base_revision=revision,
+        source_task_id="task-mood",
+        confidence=confidence,
+        provenance={
+            "worker_kind": "character_mood",
+            "foreground_event_id": "evt-1",
+            "foreground_event_type": "user_message",
+            "foreground_event_source": "user",
+            "evidence_type": "asserted_fact",
+            "turn_ended_at": turn_ended_at,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_her_mood_is_written_with_its_strength_and_the_time():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    commits.clock = lambda: 5000.0
+    result = await commits.commit(mood_proposal())
+    assert result.status is CommitStatus.COMMITTED
+    state = engine.state
+    assert (state.emotion, state.mood_intensity, state.mood_updated_at) == ("sad", 0.7, 5000.0)
+    assert state.custom[MOOD_TURN_KEY] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_a_mood_outside_her_vocabulary_is_refused():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    result = await commits.commit(mood_proposal(mood="開心"))
+    assert (result.status, result.reason) == (CommitStatus.REJECTED, "mood_not_in_vocabulary")
+    assert engine.state.emotion == "neutral"
+
+
+@pytest.mark.asyncio
+async def test_an_unsure_reading_of_her_mood_is_refused():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    result = await commits.commit(mood_proposal(confidence=0.5))
+    assert (result.status, result.reason) == (CommitStatus.REJECTED, "confidence_below_threshold")
+
+
+@pytest.mark.asyncio
+async def test_a_reading_of_an_earlier_turn_does_not_replace_a_newer_one():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    newer = await commits.commit(mood_proposal("happy", turn_ended_at=200.0))
+    older = await commits.commit(mood_proposal("sad", turn_ended_at=100.0))
+    assert newer.status is CommitStatus.COMMITTED
+    assert (older.status, older.reason) == (CommitStatus.STALE, "newer_mood_already_committed")
+    assert engine.state.emotion == "happy"
+
+
+@pytest.mark.asyncio
+async def test_the_users_emotion_keeps_the_time_of_its_turn():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    p = proposal("state.emotion_candidate", {"emotion": "tired", "intensity": 0.6})
+    p = replace(p, provenance={**p.provenance, "turn_ended_at": 100.0})
+    assert (await commits.commit(p)).status is CommitStatus.COMMITTED
+    assert engine.state.custom["observed_user_emotion"]["turn_ended_at"] == 100.0
