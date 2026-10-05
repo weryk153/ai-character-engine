@@ -59,4 +59,11 @@ distributions after acceptance. A failed producer job blocks aggregation.
 Deliver a source ZIP, four-distribution bundle, SHA-256 checksums and machine-readable
 report. Keep build logs and receipts with the artifact delivery, rather than
 committing stale PASS reports into the source candidate. Publication and registry
-credentials are separate owner-controlled actions; these workflows do not publish.
+credentials are separate owner-controlled actions; the CI and release workflows do not publish.
+
+Publishing is `.github/workflows/publish.yml`, started by hand with the id of a
+successful tag run. It rebuilds nothing: it checks that run's report
+(`ready_for_v1`, matching version), uploads the accepted wheel and sdist of both
+projects to PyPI through Trusted Publishing (environments `pypi` and `pypi-vrm`, one per
+project, since PyPI does not let two projects share a publisher; no stored token)
+and creates the GitHub release from the CHANGELOG section.

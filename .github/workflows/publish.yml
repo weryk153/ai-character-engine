@@ -1,0 +1,137 @@
+# Publishes what a tagged Release Candidate Artifacts run already built and
+# accepted. Nothing is rebuilt: the distributions come from that run, so what
+# reaches PyPI is byte for byte what the release gate inspected.
+#
+# Run it by hand with the id of a successful tag run. PyPI accepts it through
+# Trusted Publishing (no token is stored). Each project names this repository,
+# this workflow file and its own environment as its publisher:
+# ai-character-engine -> `pypi`, ai-character-engine-vrm -> `pypi-vrm`.
+# PyPI does not let two projects share one publisher configuration, hence two.
+
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id of a successful 'Release Candidate Artifacts' run for a v* tag"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read     # read the release run and download its artifacts
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.run_id }}
+    outputs:
+      tag: ${{ steps.run.outputs.tag }}
+      version: ${{ steps.run.outputs.version }}
+    steps:
+      - name: Check the release run
+        id: run
+        shell: bash
+        run: |
+          read -r name event conclusion tag < <(gh run view "$RUN_ID" -R "$GITHUB_REPOSITORY" \
+            --json workflowName,event,conclusion,headBranch \
+            -q '"\(.workflowName|gsub(" ";"_")) \(.event) \(.conclusion) \(.headBranch)"')
+          [ "$name" = "Release_Candidate_Artifacts" ] || { echo "run $RUN_ID is '$name', not the release workflow"; exit 1; }
+          [ "$event" = "push" ] && [[ "$tag" == v* ]] || { echo "run $RUN_ID was not started by a v* tag ($event $tag)"; exit 1; }
+          [ "$conclusion" = "success" ] || { echo "run $RUN_ID did not succeed ($conclusion)"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ai-character-engine-distributions
+          path: accepted
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Check the report and the versions
+        shell: bash
+        env:
+          VERSION: ${{ steps.run.outputs.version }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, pathlib, sys
+          report = json.loads(pathlib.Path("accepted/v1-release-candidate-report.json").read_text())
+          if report.get("ready_for_v1") is not True:
+              sys.exit("the release report is not ready_for_v1")
+          version = os.environ["VERSION"]
+          if report.get("engine_version") != version:
+              sys.exit(f"report is for {report.get('engine_version')}, tag says {version}")
+          for package in ("core", "vrm"):
+              files = sorted(p.name for p in pathlib.Path("accepted/distributions", package).iterdir())
+              if len(files) != 2 or not all(f"-{version}" in name for name in files):
+                  sys.exit(f"{package} distributions do not match {version}: {files}")
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: accepted
+          path: |
+            accepted/distributions/
+            accepted/v1-release-candidate-report.json
+
+  publish-core:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write   # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: accepted
+          path: accepted
+      - name: Publish ai-character-engine
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: accepted/distributions/core/
+
+  # After core: the VRM package depends on ai-character-engine of the same version.
+  publish-vrm:
+    needs: publish-core
+    runs-on: ubuntu-latest
+    environment: pypi-vrm
+    permissions:
+      id-token: write   # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: accepted
+          path: accepted
+      - name: Publish ai-character-engine-vrm
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: accepted/distributions/vrm/
+
+  release:
+    needs: [check, publish-vrm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the GitHub release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.check.outputs.tag }}
+      VERSION: ${{ needs.check.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: accepted
+          path: accepted
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+          path: source
+      - name: Create the GitHub release
+        shell: bash
+        run: |
+          awk -v v="## $VERSION" '$0==v{on=1;next} /^## /{if(on)exit} on' source/CHANGELOG.md > notes.md
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --title "AI Character Engine $VERSION" --notes-file notes.md \
+            accepted/distributions/core/* accepted/distributions/vrm/* accepted/v1-release-candidate-report.json
