@@ -1,3 +1,4 @@
+from ai_character_engine._version import VERSION
 import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -329,7 +330,7 @@ def test_production_runtime_has_no_memory_belief_goal_or_state_write_api():
 
 
 def test_public_version_and_exports():
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.ProductionHardeningRuntime is ProductionHardeningRuntime
     assert ace.DegradedMode is DegradedMode
 

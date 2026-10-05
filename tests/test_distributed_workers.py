@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 import ast
 from dataclasses import replace
@@ -565,7 +566,7 @@ def test_distributed_package_has_no_cloud_queue_vendor_dependency_tokens():
 
 
 def test_public_api_exports_distributed_runtime():
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.DISTRIBUTED_PROTOCOL_VERSION == 1
     assert ace.DistributedWorker is DistributedWorker
     assert ace.InMemoryDistributedTaskBroker is InMemoryDistributedTaskBroker
@@ -576,7 +577,7 @@ def test_both_package_versions_match_v042():
 
     core = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     vrm = tomllib.loads((ROOT / "packages/renderer-vrm/pyproject.toml").read_text())["project"]["version"]
-    assert (core, vrm) == ("1.0.0", "1.0.0")
+    assert (core, vrm) == (VERSION, VERSION)
 
 @pytest.mark.asyncio
 async def test_worker_honors_remote_task_timeout_and_requeues_safe_timeout():

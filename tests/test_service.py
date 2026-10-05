@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 
 import pytest
@@ -71,7 +72,7 @@ def test_health_and_request_trace_headers() -> None:
         headers={"X-Request-ID": "req-1", "X-Trace-ID": "trace-1"},
     )
     assert response.status_code == 200
-    assert response.json()["version"] == "1.0.0"
+    assert response.json()["version"] == VERSION
     assert response.headers["X-Request-ID"] == "req-1"
     assert response.headers["X-Trace-ID"] == "trace-1"
 

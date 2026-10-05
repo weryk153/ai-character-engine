@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 import json
 from dataclasses import replace
@@ -731,4 +732,4 @@ async def test_collaboration_task_output_never_contains_authoritative_task_propo
 
 
 def test_core_version():
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION

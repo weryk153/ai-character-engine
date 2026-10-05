@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 
 import pytest
@@ -385,7 +386,7 @@ async def test_dialogue_role_client_can_power_character_runtime_without_provider
 def test_public_api_exports_cognitive_contracts():
     import ai_character_engine as ace
 
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.CognitiveRole.SUMMARY.value == "summary"
     assert ace.CognitiveOptimization.HIGH_QUALITY.value == "high_quality"
     assert ace.CognitiveModelRuntime is CognitiveModelRuntime

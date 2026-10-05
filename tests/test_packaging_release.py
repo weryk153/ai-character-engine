@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import ast
 from email.message import Message
 import io
@@ -46,7 +47,7 @@ def make_wheel(
     path: Path,
     *,
     name: str = "ai-character-engine",
-    version: str = "1.0.0",
+    version: str = VERSION,
     tag: str = "py3-none-any",
     purelib: bool = True,
     extra_members: tuple[str, ...] = (),
@@ -69,7 +70,7 @@ def make_sdist(
     path: Path,
     *,
     name: str = "ai-character-engine",
-    version: str = "1.0.0",
+    version: str = VERSION,
     extra_members: tuple[str, ...] = (),
 ) -> Path:
     root = f"{name.replace('-', '_')}-{version}"
@@ -148,7 +149,7 @@ def test_inspect_portable_wheel_extracts_metadata_tags_and_members(tmp_path):
     artifact = inspect_distribution_artifact(path)
     assert artifact.kind is DistributionArtifactKind.WHEEL
     assert artifact.distribution == "ai-character-engine"
-    assert artifact.version == "1.0.0"
+    assert artifact.version == VERSION
     assert artifact.requires_python == ">=3.11"
     assert artifact.wheel_tags == ("py3-none-any",)
     assert artifact.root_is_purelib is True
@@ -168,7 +169,7 @@ def test_inspect_sdist_reads_project_metadata(tmp_path):
     artifact = inspect_distribution_artifact(path)
     assert artifact.kind is DistributionArtifactKind.SDIST
     assert artifact.distribution == "ai-character-engine"
-    assert artifact.version == "1.0.0"
+    assert artifact.version == VERSION
     assert artifact.requires_python == ">=3.11"
     assert validate_distribution_artifact(artifact) == ()
 
@@ -238,7 +239,7 @@ def test_distribution_artifact_validation_rejects_bad_hash_and_size():
 def test_release_manifest_roundtrip_and_mapping_immutability(tmp_path):
     artifact = inspect_distribution_artifact(make_wheel(tmp_path / "x.whl"))
     manifest = build_release_manifest(
-        engine_version="1.0.0",
+        engine_version=VERSION,
         python_requires=">=3.11",
         artifacts=(artifact,),
         contract_versions={"public_api": 1},
@@ -255,7 +256,7 @@ def test_release_manifest_roundtrip_and_mapping_immutability(tmp_path):
 def test_release_manifest_rejects_unknown_schema():
     raw = {
         "schema_version": 99,
-        "engine_version": "1.0.0",
+        "engine_version": VERSION,
         "python_requires": ">=3.11",
         "matrix": default_release_matrix().to_dict(),
         "artifacts": [],
@@ -293,10 +294,10 @@ def test_current_project_build_backend_and_src_discovery_are_explicit_setuptools
 def test_adapter_projects_share_core_version_and_setuptools_backend():
     for directory in ("renderer-vrm",):
         data = tomllib.loads((ROOT / "packages" / directory / "pyproject.toml").read_text())
-        assert data["project"]["version"] == ace.__version__ == "1.0.0"
+        assert data["project"]["version"] == ace.__version__ == VERSION
         assert data["build-system"]["build-backend"] == "setuptools.build_meta"
         assert data["tool"]["setuptools"]["packages"]["find"]["where"] == ["src"]
-        assert any(dep.startswith("ai-character-engine>=1.0.0") for dep in data["project"]["dependencies"])
+        assert any(dep.startswith(f"ai-character-engine>={VERSION}") for dep in data["project"]["dependencies"])
 
 
 def test_ci_workflow_declares_full_cross_platform_matrix():
@@ -375,7 +376,7 @@ def test_later_sealed_api_only_adds_symbols():
     current = build_public_api_manifest()
     report = compare_public_api_manifests(baseline, current)
     assert baseline.engine_version == "0.46.0"
-    assert current.engine_version == "1.0.0"
+    assert current.engine_version == VERSION
     assert report.compatible and report.breaking == ()
     assert {issue.code for issue in report.issues} <= {"symbol_added"}
 
@@ -398,7 +399,7 @@ def test_release_cli_manifest(tmp_path, capsys):
     output = tmp_path / "manifest.json"
     assert release_main(["manifest", str(artifact), "--output", str(output)]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["engine_version"] == "1.0.0"
+    assert payload["engine_version"] == VERSION
     assert output.is_file()
 
 
@@ -425,5 +426,5 @@ def test_release_manifest_contract_versions_are_independent_from_engine_semver(t
         artifacts=(artifact,),
         contract_versions=contracts,
     )
-    assert manifest.engine_version == "1.0.0"
+    assert manifest.engine_version == VERSION
     assert set(manifest.contract_versions.values()) == {1}

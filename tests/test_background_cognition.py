@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 import json
 from dataclasses import dataclass
@@ -477,7 +478,7 @@ async def test_background_queue_admission_failure_never_fails_committed_foregrou
 def test_public_api_exports_background_cognition_contracts():
     import ai_character_engine as ace
 
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.BackgroundCognitionKind.CONVERSATION_SUMMARY.value == "conversation_summary"
     assert ace.BackgroundCognitionRuntime is BackgroundCognitionRuntime
     assert ace.BackgroundWorkerSpec is BackgroundWorkerSpec

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import ast
 import asyncio
 import json
@@ -458,7 +459,7 @@ def test_package_and_contract_versions_are_independent():
     from ai_character_engine.compatibility import PUBLIC_API_CONTRACT_VERSION
     from ai_character_engine_vrm import __version__ as vrm_version
 
-    assert (ace.__version__, vrm_version) == ("1.0.0", "1.0.0")
+    assert (ace.__version__, vrm_version) == (VERSION, VERSION)
     assert (PUBLIC_API_CONTRACT_VERSION, EXTENSION_API_VERSION, DISTRIBUTED_PROTOCOL_VERSION) == (1, 1, 1)
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import ast
 import json
 from pathlib import Path
@@ -67,7 +68,7 @@ def manifest(version: str, *symbols: PublicApiSymbol, contract: int = 1) -> Publ
 
 def test_public_api_contract_version_is_independent_from_engine_semver():
     assert PUBLIC_API_CONTRACT_VERSION == 1
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
 
 
 def test_existing_versioned_extension_and_distributed_contracts_do_not_follow_engine_semver():
@@ -94,7 +95,7 @@ def test_contract_requirement_check_accepts_supported_versions():
     )
     assert result.compatible
     assert result.mismatches == ()
-    assert result.engine_version == "1.0.0"
+    assert result.engine_version == VERSION
 
 
 def test_contract_requirement_check_reports_mismatch_without_mutating_any_runtime():
@@ -335,7 +336,7 @@ def test_cli_write_generates_current_manifest(tmp_path):
     path = tmp_path / "current.json"
     assert compatibility_main(["write", str(path)]) == 0
     loaded = load_public_api_manifest(path)
-    assert loaded.engine_version == "1.0.0"
+    assert loaded.engine_version == VERSION
     assert len(loaded.symbols) == len(ace.__all__)
 
 
@@ -410,4 +411,4 @@ def test_all_declared_root_public_exports_are_resolvable():
 def test_package_versions_are_aligned_for_stabilization_release():
     from ai_character_engine_vrm import __version__ as vrm_version
 
-    assert (ace.__version__, vrm_version) == ("1.0.0", "1.0.0")
+    assert (ace.__version__, vrm_version) == (VERSION, VERSION)

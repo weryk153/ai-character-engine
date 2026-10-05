@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 from pathlib import Path
 
@@ -429,7 +430,7 @@ def test_multi_character_package_does_not_import_cognition_authority_modules_dir
 
 def test_public_exports_and_version():
     import ai_character_engine as ace
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.MultiCharacterRuntime is MultiCharacterRuntime
     assert ace.FairCharacterScheduler is FairCharacterScheduler
     assert ace.KnowledgeVisibility.PUBLIC.value == "public"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 
 import pytest
@@ -423,7 +424,7 @@ def test_task_request_payload_is_copied_from_host_input():
 def test_public_api_exports_multitask_contracts():
     import ai_character_engine as ace
 
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.MultiTaskRuntime is MultiTaskRuntime
     assert ace.TaskPriority.NORMAL is TaskPriority.NORMAL
     assert ace.TaskStatus.SUCCEEDED is TaskStatus.SUCCEEDED

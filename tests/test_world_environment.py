@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 from pathlib import Path
 
 import pytest
@@ -418,7 +419,7 @@ def test_world_runtime_has_no_auto_delivery_api():
 def test_public_exports_and_version():
     import ai_character_engine as ace
 
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.WorldRuntime is WorldRuntime
     assert ace.WorldPerceptionScope.PUBLIC.value == "public"
 

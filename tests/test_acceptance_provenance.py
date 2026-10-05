@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 from dataclasses import replace
 import hashlib
 import json
@@ -24,14 +25,14 @@ def receipt(name, code=0):
 
 
 def row():
-    return MatrixEvidence("linux", "3.13", "1.0.0", MatrixEvidenceStatus.PASS, True, True, True,
+    return MatrixEvidence("linux", "3.13", VERSION, MatrixEvidenceStatus.PASS, True, True, True,
                           metadata={"candidate_sha256": candidate_sha256(ROOT), "source_unchanged": True,
                                     "checks": [receipt(n) for n in ("pytest", "compileall", "matrix")]})
 
 
 def validate(item):
     return {g.name: g.status.value for g in validate_matrix_evidence(
-        default_release_matrix(), [item], engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))}["matrix.linux.py3.13"]
+        default_release_matrix(), [item], engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))}["matrix.linux.py3.13"]
 
 
 @pytest.mark.parametrize("field", ["pytest_passed", "compileall_passed", "matrix_self_check_passed"])
@@ -89,7 +90,7 @@ def test_candidate_hash_is_path_independent_and_covers_docs_tests_workflows_lice
 
 
 def final_record(name):
-    return {"schema_version": 1, "gate": name, "engine_version": "1.0.0",
+    return {"schema_version": 1, "gate": name, "engine_version": VERSION,
             "candidate_sha256": candidate_sha256(ROOT), "source_unchanged": True,
             "status": "pass", "checks": [receipt(name)]}
 

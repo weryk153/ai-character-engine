@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import json
 from datetime import UTC, datetime
 
@@ -564,6 +565,6 @@ def test_cognition_evidence_independence_is_source_based_not_excerpt_based():
 def test_public_api_and_version():
     import ai_character_engine as ace
 
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.LongTermCognitionManager is LongTermCognitionManager
     assert ace.BeliefClaim is BeliefClaim

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 import json
 from dataclasses import replace
@@ -369,7 +370,7 @@ def test_public_api_and_version():
     from ai_character_engine import CognitiveEvaluator as PublicEvaluator, CognitiveEvalCase as PublicCase
     assert PublicEvaluator is CognitiveEvaluator
     assert PublicCase is CognitiveEvalCase
-    assert __version__ == "1.0.0"
+    assert __version__ == VERSION
 
 
 def test_cognitive_evaluation_core_has_no_runtime_authority_imports():

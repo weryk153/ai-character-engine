@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 import json
 import subprocess
@@ -308,5 +309,5 @@ def test_retrieval_evaluation_api_is_exported():
         AsyncMemoryReranker, CallableAsyncMemoryReranker, compare_retrievers,
     )
     from ai_character_engine import CharacterRuntime, __version__
-    assert __version__ == '1.0.0'
+    assert __version__ == VERSION
     assert RetrievalEvalDataset((RetrievalEvalCase('c','query',('memory',)),)).cases[0].character_id == 'c'

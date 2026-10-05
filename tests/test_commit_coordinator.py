@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -508,7 +509,7 @@ async def test_what_was_decided_long_ago_is_let_go():
 
 def test_package_version():
     import ai_character_engine as ace
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
 
 
 @pytest.mark.asyncio

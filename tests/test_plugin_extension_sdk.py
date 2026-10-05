@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -618,7 +619,7 @@ def test_plugin_manager_does_not_auto_discover_or_auto_load_installed_plugins(mo
 def test_public_exports_and_versions():
     import ai_character_engine as ace
 
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     assert ace.PluginManager is PluginManager
     assert ace.ExtensionPoint.TOOL.value == "tool"
 
@@ -629,7 +630,7 @@ def test_package_versions_match():
     root = Path(__file__).resolve().parents[1]
     core = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     vrm = tomllib.loads((root / "packages/renderer-vrm/pyproject.toml").read_text())["project"]["version"]
-    assert (core, vrm) == ("1.0.0", "1.0.0")
+    assert (core, vrm) == (VERSION, VERSION)
 
 
 def test_docs_describe_extension_trust_boundary():

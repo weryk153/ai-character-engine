@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import asyncio
 import ast
 from datetime import UTC, datetime, timedelta
@@ -450,7 +451,7 @@ def test_stability_core_has_no_product_renderer_or_vendor_vocabulary():
 
 
 def test_version_and_public_stability_exports():
-    assert ace.__version__ == "1.0.0"
+    assert ace.__version__ == VERSION
     for name in (
         "SoakHarness",
         "SoakConfig",

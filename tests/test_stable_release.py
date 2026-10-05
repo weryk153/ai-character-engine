@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ai_character_engine._version import VERSION
 import ast
 import hashlib
 import json
@@ -37,7 +38,7 @@ FIXTURES = ROOT / "tests/fixtures/persistence/v0.45"
 RC_PACKAGE = ROOT / "src/ai_character_engine/release_candidate"
 
 
-def evidence(platform: str, python_version: str, *, engine_version: str = "1.0.0", status: MatrixEvidenceStatus = MatrixEvidenceStatus.PASS, all_checks: bool = True, source: str = "test") -> MatrixEvidence:
+def evidence(platform: str, python_version: str, *, engine_version: str = VERSION, status: MatrixEvidenceStatus = MatrixEvidenceStatus.PASS, all_checks: bool = True, source: str = "test") -> MatrixEvidence:
     return MatrixEvidence(
         platform=platform,
         python_version=python_version,
@@ -87,7 +88,7 @@ def test_matrix_evidence_rejects_empty_engine_version():
 
 def test_matrix_evidence_rejects_empty_source():
     with pytest.raises(ValueError, match="source"):
-        MatrixEvidence("linux", "3.11", "1.0.0", MatrixEvidenceStatus.PASS, True, True, True, source="")
+        MatrixEvidence("linux", "3.11", VERSION, MatrixEvidenceStatus.PASS, True, True, True, source="")
 
 
 def test_matrix_evidence_rejects_unknown_schema():
@@ -129,40 +130,40 @@ def test_matrix_evidence_file_rejects_non_object(tmp_path):
 
 
 def test_empty_matrix_evidence_blocks_all_nine_rows():
-    gates = validate_matrix_evidence(default_release_matrix(), (), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), (), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert len(gates) == 9
     assert all(gate.status is ReleaseCandidateGateStatus.BLOCKED for gate in gates)
 
 
 def test_all_matrix_evidence_passes_all_nine_rows():
-    gates = validate_matrix_evidence(default_release_matrix(), all_matrix_evidence(), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), all_matrix_evidence(), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert len(gates) == 9
     assert all(gate.status is ReleaseCandidateGateStatus.PASS for gate in gates)
 
 
 def test_duplicate_matrix_evidence_fails_that_row():
     item = evidence("linux", "3.11")
-    gates = validate_matrix_evidence(default_release_matrix(), (item, item), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), (item, item), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert next(g for g in gates if g.name == "matrix.linux.py3.11").status is ReleaseCandidateGateStatus.FAIL
 
 
 def test_unexpected_matrix_target_fails_explicitly():
-    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.10"),), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.10"),), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert any(g.name == "matrix.unexpected.linux.py3.10" and g.status is ReleaseCandidateGateStatus.FAIL for g in gates)
 
 
 def test_matrix_version_mismatch_is_failure():
-    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.11", engine_version="0.47.0"),), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.11", engine_version="0.47.0"),), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert next(g for g in gates if g.name == "matrix.linux.py3.11").status is ReleaseCandidateGateStatus.FAIL
 
 
 def test_matrix_failed_status_is_failure():
-    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.11", status=MatrixEvidenceStatus.FAIL),), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.11", status=MatrixEvidenceStatus.FAIL),), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert next(g for g in gates if g.name == "matrix.linux.py3.11").status is ReleaseCandidateGateStatus.FAIL
 
 
 def test_matrix_partial_check_failure_is_failure():
-    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.11", all_checks=False),), engine_version="1.0.0", candidate_sha256=candidate_sha256(ROOT))
+    gates = validate_matrix_evidence(default_release_matrix(), (evidence("linux", "3.11", all_checks=False),), engine_version=VERSION, candidate_sha256=candidate_sha256(ROOT))
     assert next(g for g in gates if g.name == "matrix.linux.py3.11").status is ReleaseCandidateGateStatus.FAIL
 
 
@@ -170,9 +171,9 @@ def test_release_candidate_report_ready_only_when_every_gate_passes():
     passing = ReleaseCandidateGate("x", ReleaseCandidateGateStatus.PASS, "ok")
     blocked = ReleaseCandidateGate("y", ReleaseCandidateGateStatus.BLOCKED, "wait")
     failing = ReleaseCandidateGate("z", ReleaseCandidateGateStatus.FAIL, "bad")
-    assert ReleaseCandidateReport("1.0.0", (passing,)).ready_for_v1
-    assert not ReleaseCandidateReport("1.0.0", (passing, blocked)).ready_for_v1
-    assert not ReleaseCandidateReport("1.0.0", (passing, failing)).ready_for_v1
+    assert ReleaseCandidateReport(VERSION, (passing,)).ready_for_v1
+    assert not ReleaseCandidateReport(VERSION, (passing, blocked)).ready_for_v1
+    assert not ReleaseCandidateReport(VERSION, (passing, failing)).ready_for_v1
 
 
 def test_release_candidate_report_blocker_and_failure_views():
@@ -181,7 +182,7 @@ def test_release_candidate_report_blocker_and_failure_views():
         ReleaseCandidateGate("blocked", ReleaseCandidateGateStatus.BLOCKED, "wait"),
         ReleaseCandidateGate("fail", ReleaseCandidateGateStatus.FAIL, "bad"),
     )
-    report = ReleaseCandidateReport("1.0.0", gates)
+    report = ReleaseCandidateReport(VERSION, gates)
     assert [item.name for item in report.blockers] == ["blocked", "fail"]
     assert [item.name for item in report.failures] == ["fail"]
     assert report.to_dict()["ready_for_v1"] is False
@@ -189,14 +190,14 @@ def test_release_candidate_report_blocker_and_failure_views():
 
 def test_stable_manifest_is_v1_and_all_symbols_are_stable():
     manifest = load_public_api_manifest(STABLE)
-    assert manifest.engine_version == "1.0.0"
+    assert manifest.engine_version == VERSION
     assert len(manifest.symbols) == 374
     assert all(item.stability is ApiStability.STABLE for item in manifest.symbols)
 
 
 def test_stable_manifest_exactly_matches_current_root_api():
     stable = load_public_api_manifest(STABLE)
-    current = build_public_api_manifest(stability=ApiStability.STABLE, engine_version="1.0.0")
+    current = build_public_api_manifest(stability=ApiStability.STABLE, engine_version=VERSION)
     report = compare_public_api_manifests(stable, current)
     assert report.compatible
     assert report.issues == ()
@@ -259,7 +260,7 @@ def test_compatibility_cli_can_write_stable_manifest(tmp_path):
     output = tmp_path / "stable.json"
     assert compatibility_main(["write", str(output), "--stability", "stable"]) == 0
     manifest = load_public_api_manifest(output)
-    assert manifest.engine_version == "1.0.0"
+    assert manifest.engine_version == VERSION
     assert all(item.stability is ApiStability.STABLE for item in manifest.symbols)
 
 
@@ -271,7 +272,7 @@ def test_rc_cli_evidence_writes_versioned_record(tmp_path, monkeypatch):
     output = tmp_path / "row.json"
     assert rc_main(["evidence", "--output", str(output)]) == 0
     item = load_matrix_evidence(output)
-    assert item.engine_version == "1.0.0"
+    assert item.engine_version == VERSION
     assert item.passed
 
 
@@ -323,7 +324,7 @@ def test_release_candidate_tooling_is_not_exported_into_frozen_root_api():
 def test_versions_and_contracts_remain_synchronized():
     from ai_character_engine_vrm import __version__ as vrm_version
 
-    assert (ace.__version__, vrm_version) == ("1.0.0", "1.0.0")
+    assert (ace.__version__, vrm_version) == (VERSION, VERSION)
     assert (
         ace.PUBLIC_API_CONTRACT_VERSION,
         ace.EXTENSION_API_VERSION,
@@ -387,6 +388,6 @@ def test_rc_report_json_is_machine_readable():
     report = evaluate_release_candidate(ROOT, matrix_evidence=(evidence("linux", "3.13"),))
     payload = report.to_dict()
     assert payload["schema_version"] == 1
-    assert payload["engine_version"] == "1.0.0"
+    assert payload["engine_version"] == VERSION
     assert isinstance(payload["gates"], list)
     assert isinstance(payload["matrix_evidence"], list)

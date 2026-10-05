@@ -1,3 +1,4 @@
+from ai_character_engine._version import VERSION
 from pathlib import Path
 import ast
 import tomllib
@@ -51,4 +52,4 @@ def test_neutral_avatar_cues_do_not_expose_renderer_payload():
     assert "vrm" not in behavior
 
 def test_core_package_version_is_0292():
-    assert ai_character_engine.__version__ == "1.0.0"
+    assert ai_character_engine.__version__ == VERSION
