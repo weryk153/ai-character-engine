@@ -24,6 +24,43 @@ def test_system_prompt_contains_character_data() -> None:
     assert messages[-1].content == "Hello"
 
 
+def test_background_section_is_omitted_when_the_description_already_has_it() -> None:
+    """Tomoshibi's host prompt (description) already contains the whole
+    persona it also puts in background alone; printing both would show her
+    persona twice in her own conversation prompt."""
+    description = (
+        "Speak formally. Never break character.\n\n"
+        "A shy maid who stammers when praised.\n\n"
+        "Keep replies under two sentences."
+    )
+    with_background = CharacterProfile(
+        id="alice",
+        name="Alice",
+        description=description,
+        # Whitespace differs (newline, extra spaces) from how it reads in
+        # description; the comparison is whitespace-normalised.
+        background="A shy maid who\nstammers   when praised.",
+    )
+    without_background = CharacterProfile(id="alice", name="Alice", description=description)
+
+    prompt_with = ContextBuilder().build_system_prompt(with_background)
+    prompt_without = ContextBuilder().build_system_prompt(without_background)
+
+    assert "Background:" not in prompt_with
+    assert prompt_with == prompt_without
+
+
+def test_background_section_is_kept_when_not_already_in_the_description() -> None:
+    character = CharacterProfile(
+        id="alice",
+        name="Alice",
+        description="A test character.",
+        background="Grew up on a farm, the youngest of four.",
+    )
+    prompt = ContextBuilder().build_system_prompt(character)
+    assert "Background:\nGrew up on a farm, the youngest of four." in prompt
+
+
 from ai_character_engine import CharacterRuntime, StatePatch
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.llm.models import Message

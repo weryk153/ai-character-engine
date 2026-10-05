@@ -211,7 +211,13 @@ class ContextBuilder:
             sections.append(
                 "Speaking style:\n" + "\n".join(f"- {x}" for x in character.speaking_style)
             )
-        if character.background:
+        if character.background and one_line(character.background) not in one_line(
+            character.description
+        ):
+            # Tomoshibi (and hosts like it) put their whole system prompt,
+            # persona included, in description, and the persona alone in
+            # background: printing both would show it twice in her own
+            # conversation prompt.
             sections.append(f"Background:\n{character.background}")
         if character.rules:
             sections.append("Rules:\n" + "\n".join(f"- {x}" for x in character.rules))

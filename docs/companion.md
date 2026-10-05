@@ -172,6 +172,10 @@ character's stammer as embarrassed, a tsundere's habitual barbs as her manner
 rather than anger. Hosts should put who the character actually is in
 `background`; a host that instead crams its whole system prompt into
 `description` will have the mood worker read that prompt as her persona.
+`background` also appears in her conversation system prompt
+(`ContextBuilder.build_system_prompt`), as its own `Background:` section,
+unless `description` already contains it (whitespace-normalised), so a host
+whose `description` already holds the persona does not show it twice.
 Its intensity is anchored (about 0.2
 slight, 0.5 clear, 0.8 or more only for a major event), and small talk with no
 particular feeling reads as neutral. It runs every `mood_every` turns; a near word the model
