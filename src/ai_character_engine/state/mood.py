@@ -81,11 +81,14 @@ def effective_mood(
 
     Worked out when read, never stored: nothing runs while nobody talks to
     her. A time ahead of ``now`` (another machine's clock) counts as no time
-    at all, and a mood of unknown time is as of now.
+    at all, and a mood of unknown time is as of now. A half-life that is no
+    length of time (0 or less, not finite) means no fading.
     """
     strength = mood_intensity(mood, intensity)
     if strength <= 0:
         return NEUTRAL, 0.0
+    if not math.isfinite(half_life_seconds) or half_life_seconds <= 0:
+        return mood, strength
     elapsed = 0.0 if updated_at is None else max(0.0, now - updated_at)
     faded = strength * 0.5 ** (elapsed / half_life_seconds)
     if faded < floor:

@@ -193,6 +193,21 @@ def test_a_mood_of_unknown_time_is_as_of_now():
     assert fades(mood="happy", intensity=0.6, updated_at=None, now=5000.0) == ("happy", 0.6)
 
 
+@pytest.mark.parametrize("half_life", [0.0, -60.0, float("nan"), float("inf")])
+def test_a_half_life_that_is_no_length_of_time_means_no_fading(half_life):
+    """CompanionSettings refuses these, but a builder's or a background
+    runtime's attribute can still be set to one."""
+    assert effective_mood(
+        "sad", 0.8, 1000.0, now=1900.0, half_life_seconds=half_life, floor=0.15
+    ) == ("sad", 0.8)
+
+
+def test_a_builder_set_to_a_zero_half_life_still_builds():
+    builder = fading_builder([1900.0])
+    builder.mood_half_life_seconds = 0.0
+    assert "- emotion: sad" in note(built(builder, SAD))
+
+
 def test_how_her_mood_fades_is_a_setting():
     settings = CompanionSettings()
     assert (settings.mood_half_life_seconds, settings.mood_floor) == (300.0, 0.15)
