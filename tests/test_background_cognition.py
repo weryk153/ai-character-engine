@@ -959,9 +959,10 @@ MOOD_PAYLOAD = {"mood": "sad", "intensity": 0.7, "confidence": 0.9, "evidence": 
 NOTE = "Character context for this turn. Private runtime data, not said by the user.\n\n- emotion: calm"
 
 
-async def mood_reading(payload, *, history=None):
+async def mood_reading(payload, *, history=None, max_history_messages=20):
     client = CapturingClient(payload, name="mood")
     runtime = character()
+    runtime.max_history_messages = max_history_messages
     runtime.history = list(
         history
         if history is not None
@@ -991,6 +992,41 @@ async def test_her_mood_is_read_from_both_sides_with_her_name_on_her_lines():
     assert "User: I am exhausted today" in user
     assert "C: foreground reply" in user
     assert "assistant:" not in user and "user:" not in user
+
+
+LATEST_EXCHANGE = "Latest exchange"
+
+
+def mood_sections(user):
+    earlier, _, latest = user.partition(LATEST_EXCHANGE)
+    assert latest, user
+    return earlier, latest
+
+
+@pytest.mark.asyncio
+async def test_her_mood_is_judged_on_the_latest_exchange_with_earlier_lines_as_background():
+    _, user, _ = await mood_reading(MOOD_PAYLOAD)
+    earlier, latest = mood_sections(user)
+    assert "User: earlier question" in earlier and "C: earlier answer" in earlier
+    assert "I am exhausted today" not in earlier and "foreground reply" not in earlier
+    assert "User: I am exhausted today" in latest and "C: foreground reply" in latest
+    assert "earlier question" not in latest and "earlier answer" not in latest
+
+
+@pytest.mark.asyncio
+async def test_without_kept_history_the_latest_exchange_is_the_turn_itself():
+    _, user, _ = await mood_reading(MOOD_PAYLOAD, history=[], max_history_messages=0)
+    _, latest = mood_sections(user)
+    assert "User: I am exhausted today" in latest and "C: foreground reply" in latest
+
+
+@pytest.mark.asyncio
+async def test_the_mood_worker_is_told_her_mood_is_how_she_feels_at_her_latest_line():
+    system, _, _ = await mood_reading(MOOD_PAYLOAD)
+    assert "at the moment of the character's latest line" in system
+    assert "background only" in system
+    assert "quote words from the latest exchange" in system
+    assert "If the latest exchange shows no particular feeling, answer neutral" in system
 
 
 @pytest.mark.asyncio

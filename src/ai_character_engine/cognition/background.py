@@ -955,15 +955,18 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "\"confidence\":0..1,\"evidence\":str}],\"confidence\":0..1,\"evidence\":[str]}."
         ),
         BackgroundCognitionKind.CHARACTER_MOOD: (
-            "Judge the character's own mood right now from both sides of the recent conversation. "
-            "The character's lines are marked with the name on the Character line, the user's "
-            "with \"User\". What the character said counts as much as what the user said: "
+            "Judge how the character feels at the moment of the character's latest line, the "
+            "last line under \"Latest exchange\". The character's lines are marked with the name "
+            "on the Character line, the user's with \"User\". The earlier conversation is "
+            "background only: a feeling that shows only in earlier lines does not by itself set "
+            "the mood now. What the character said counts as much as what the user said: "
             "talking about something sad can make the character sad, being praised can make "
             "them embarrassed, being insulted can make them angry or sad. "
             "Choose exactly one mood from this list and write it exactly as listed, in English, "
             "whatever language the conversation is in: " + ", ".join(CHARACTER_MOODS) + ". "
+            "If the latest exchange shows no particular feeling, answer neutral. "
             "intensity is how strongly the character feels it now, from 0 to 1; neutral has "
-            "intensity 0. "
+            "intensity 0. Each evidence item must quote words from the latest exchange. "
             "Return JSON: {\"mood\":str,\"intensity\":0..1,\"confidence\":0..1,\"evidence\":[str]}."
         ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
@@ -1172,24 +1175,57 @@ def _assistant_lines(context: TaskContext, *, turns: int) -> list[str]:
 
 
 def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]:
-    """Both sides of the recent conversation, her lines under her name.
+    """Both sides of the conversation, her lines under her name, with the
+    latest exchange apart from what came before.
 
     Unlike the emotion worker, this one must read her: what she said herself
     (something sad, being praised) moves her mood as much as what she was
-    told. The turn notes are the runtime's, nobody's words, and stay out.
+    told. Her mood is read as of her latest line; given the conversation as
+    one block, a 9B model kept citing a sigh from earlier turns as how she
+    felt now. The turn notes are the runtime's, nobody's words, and stay out.
     """
     name = context.snapshot.character_name
-    lines = [
-        f"{name if message.role == 'assistant' else 'User'}: {message.content.strip()}"
+    spoken = [
+        message
         for message in context.snapshot.history[-history_messages:]
-        if message.role in {"user", "assistant"}
+        if message.role in {"user", "assistant", "event"}
         and message.content.strip()
         and not is_turn_context(message)
     ]
+    opener = next(
+        (index for index in range(len(spoken) - 1, -1, -1) if spoken[index].role != "assistant"),
+        None,
+    )
+    payload = context.request.payload
+    if opener is None:
+        # The host keeps no history (max_history_messages=0): only this turn is known.
+        earlier: list[Message] = []
+        said = payload.get("foreground_event_type") == "user_message"
+        latest = [
+            Message(role=role, content=content)
+            for role, content in (
+                ("user" if said else "event", str(payload.get("latest_user_or_event", "")).strip()),
+                ("assistant", str(payload.get("assistant_response", "")).strip()),
+            )
+            if content
+        ]
+    else:
+        earlier = [message for message in spoken[:opener] if message.role != "event"]
+        latest = spoken[opener:]
+        if latest[0].role == "event" and str(payload.get("latest_user_or_event", "")).strip():
+            # The event as it happened, not the runtime's record of it.
+            latest[0] = Message(role="event", content=str(payload["latest_user_or_event"]).strip())
+
+    def line(message: Message) -> str:
+        speaker = {"assistant": name, "user": "User"}.get(message.role, "Event")
+        return f"{speaker}: {message.content.strip()}"
+
     user = (
         f"Character: {name}\n"
-        "Recent conversation, oldest first:\n"
-        + ("\n".join(lines) or "(empty)")
+        "Earlier conversation, oldest first (background only):\n"
+        + ("\n".join(line(message) for message in earlier) or "(empty)")
+        + "\n\nLatest exchange (judge the mood as of the last line here):\n"
+        + ("\n".join(line(message) for message in latest) or "(empty)")
         + "\n"
     )
     observed = context.snapshot.state.custom.get("observed_user_emotion")
