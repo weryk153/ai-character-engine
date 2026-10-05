@@ -245,3 +245,24 @@ def test_bookkeeping_in_custom_state_never_reaches_the_model():
     for leaked in ("d4e869422238499ea1e82ad78525d734", "470b50f12f1e4a8096268286bf4ff52d",
                    "base_revision", "_relationship_applied_observation"):
         assert leaked not in context
+
+
+def test_the_time_of_an_observation_never_reaches_the_model():
+    """The commit coordinator dates observed_user_emotion with the turn it
+    came from (turn_ended_at); that timing is for staleness checks, not for
+    the model to read aloud as a stray epoch float."""
+    state = CharacterState(
+        custom={
+            "observed_user_emotion": {
+                "emotion": "tired",
+                "intensity": 0.8,
+                "turn_ended_at": 1234567890.5,
+            },
+        }
+    )
+
+    context = ContextBuilder().build_state_context(state)
+
+    assert '"emotion": "tired"' in context
+    assert "turn_ended_at" not in context
+    assert "1234567890" not in context
