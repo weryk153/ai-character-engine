@@ -1185,6 +1185,22 @@ async def test_neutral_is_read_with_no_intensity():
 
 
 @pytest.mark.asyncio
+async def test_the_mood_worker_is_told_evidence_is_at_most_three_quotes():
+    """One answer repeated '嘿嘿' in the evidence list until the token limit;
+    the prompt now caps evidence at 3 short quotes."""
+    system, _, _ = await mood_reading(MOOD_PAYLOAD)
+    assert "evidence is at most 3 short quotes" in system
+
+
+@pytest.mark.asyncio
+async def test_a_mood_reading_with_many_evidence_items_keeps_only_three():
+    payload = {**MOOD_PAYLOAD, "evidence": [f"quote {i}" for i in range(10)]}
+    _, _, output = await mood_reading(payload)
+    (proposal,) = output.proposals
+    assert proposal.provenance["evidence"] == ["quote 0", "quote 1", "quote 2"]
+
+
+@pytest.mark.asyncio
 async def test_the_emotion_worker_still_reads_only_the_user_when_her_mood_is_read_too():
     emotion = CapturingClient(EMOTION_PAYLOAD, name="emotion")
     mood = CapturingClient(MOOD_PAYLOAD, name="mood")

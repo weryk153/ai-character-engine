@@ -401,6 +401,10 @@ class StructuredBackgroundWorker:
             return tuple(normalized), confidence, evidence, proposals
 
         if kind is BackgroundCognitionKind.CHARACTER_MOOD:
+            # One answer repeated the same quote in the evidence list until
+            # the token limit; items past the first 3 are ignored, not a
+            # reason to reject the reading.
+            evidence = evidence[:3]
             mood = str(data.get("mood") or "").strip().lower()
             # A near word ("relieved", "annoyed") stands for the mood it means.
             mood = MOOD_SYNONYMS.get(mood, mood)
@@ -417,6 +421,7 @@ class StructuredBackgroundWorker:
                     confidence=confidence,
                     provenance={
                         **provenance,
+                        "evidence": list(evidence),
                         "turn_ended_at": context.snapshot.captured_at.timestamp(),
                     },
                 )
@@ -988,7 +993,8 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "surprise. Small talk with no particular feeling is neutral, or a low intensity "
             "when a faint feeling is there. confidence is how clearly the latest exchange shows "
             "the feeling; do not default to a high value. "
-            "Each evidence item must quote words from the latest exchange. "
+            "evidence is at most 3 short quotes; each must quote words from the latest exchange, "
+            "and do not repeat the same quote. "
             "Return JSON: {\"mood\":str,\"intensity\":0..1,\"confidence\":0..1,\"evidence\":[str]}."
         ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
