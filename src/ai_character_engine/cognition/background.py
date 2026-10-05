@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time
 from collections import deque
@@ -24,7 +25,6 @@ from ai_character_engine.state.mood import (
     MOOD_SYNONYMS,
     effective_mood,
     mood_intensity,
-    seconds,
 )
 from ai_character_engine.tasks.errors import (
     TaskQueueFullError,
@@ -410,8 +410,8 @@ class StructuredBackgroundWorker:
             mood = str(data.get("mood") or "").strip().lower()
             # A near word ("relieved", "annoyed") stands for the mood it means.
             mood = MOOD_SYNONYMS.get(mood, mood)
-            raw = data.get("intensity")
-            if mood not in CHARACTER_MOODS or seconds(raw) is None or confidence is None:
+            raw = _number(data.get("intensity"))
+            if mood not in CHARACTER_MOODS or raw is None or confidence is None:
                 # Any other word ("開心", "nostalgic") or a missing field is no
                 # reading of her mood; her mood stays what it was.
                 return None, confidence, evidence, []
@@ -1085,6 +1085,20 @@ def _confidence(value: Any) -> float | None:
     if not 0 <= numeric <= 1:
         raise ValueError("confidence must be between 0 and 1")
     return numeric
+
+
+def _number(value: Any) -> float | None:
+    """A finite number, also written as one in a string ("0.6", as models
+    sometimes answer), or None."""
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _unit_float(value: Any, *, default: float) -> float:

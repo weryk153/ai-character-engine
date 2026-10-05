@@ -1180,6 +1180,23 @@ async def test_an_intensity_out_of_bounds_is_held_to_them(given, kept):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("given", "kept"), [("0.6", 0.6), (" 1.7 ", 1.0)])
+async def test_an_intensity_written_as_a_number_in_a_string_is_read(given, kept):
+    """Confidence was read from "0.9" while the same answer's "0.6" for
+    intensity made it no reading at all."""
+    _, _, output = await mood_reading({**MOOD_PAYLOAD, "intensity": given, "confidence": "0.9"})
+    (proposal,) = output.proposals
+    assert proposal.payload["intensity"] == kept
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("given", ["nan", "inf", "", True])
+async def test_an_intensity_that_is_no_number_is_still_no_reading(given):
+    _, _, output = await mood_reading({**MOOD_PAYLOAD, "intensity": given})
+    assert output.proposals == ()
+
+
+@pytest.mark.asyncio
 async def test_neutral_is_read_with_no_intensity():
     _, _, output = await mood_reading({**MOOD_PAYLOAD, "mood": "neutral", "intensity": 0.6})
     assert dict(output.proposals[0].payload) == {"mood": "neutral", "intensity": 0.0}
