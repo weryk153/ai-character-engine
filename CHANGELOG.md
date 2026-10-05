@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `ContextBuilder` fades her mood by default (`mood_half_life_seconds` 300, `mood_floor` 0.15), so a bare `CharacterRuntime` tells the model the same faded mood the live face shows; before, the `- emotion:` line gave the mood as stored unless a companion set the builder. A host that builds `CharacterState(emotion=...)` directly must give it a `mood_intensity`, or the line reads neutral. Setting `mood_half_life_seconds = None` still shows the mood as stored.
+- The defaults are named once: `DEFAULT_MOOD_HALF_LIFE_SECONDS` and `DEFAULT_MOOD_FLOOR` in `ai_character_engine.state.mood`, used by every reader of her mood.
+- `CharacterCompanion` wires a copy of a host's `RelationshipStatePolicy` (clock, mood settings, `mood_read_for`), so two companions sharing one instance no longer overwrite each other's.
+- Cognitive evaluation cases keep `mood_intensity` and `mood_updated_at` through `to_dict`/`from_dict`.
+- `effective_mood` treats a half-life of 0 or less, or one that is not finite, as no fading instead of raising `ZeroDivisionError` (or amplifying her mood); this reaches `ContextBuilder` and `BackgroundCognitionRuntime`, whose attributes are not validated.
+- `on_mood_change` is called even when saving the state fails after her mood changed.
+- The `mood` worker reads an intensity written as a number in a string (`"0.6"`), clamped like a number, as it already did for confidence.
+- An `async def` `on_mood_change` is scheduled on the running loop (it was never awaited); a failure is logged. `docs/companion.md` says the listener runs on the event loop under the turn lock and must be quick and non-blocking.
+- `CompanionSnapshot` has `mood_floor` (last field, defaulted), so a host that fades the face itself stops where the engine does.
+- A saved `mood_updated_at` later than the load time (another machine's clock, milliseconds read as seconds) is dated as of loading, so her mood fades.
+- The `mood` worker's prompt says a line marked `Event` is something that happened, not said by anyone.
+
 ## 1.1.0
 
 - Her mood is one of eight words (`CHARACTER_MOODS` in `ai_character_engine.companion`: neutral, happy, sad, angry, surprised, embarrassed, calm, worried) with an intensity and the time it was set, and it fades with time: the intensity halves every `mood_half_life_seconds` (300) and below `mood_floor` (0.15) she is neutral again. The `- emotion:` line of the note and `CompanionSnapshot.emotion` read it faded.

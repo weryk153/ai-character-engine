@@ -205,9 +205,15 @@ A host that shows her face reads `snapshot()`: `emotion` is her mood now;
 `mood_intensity` and `mood_updated_at` are the intensity as it was set and
 when, in seconds since the epoch (`mood_intensity` is 0 once she is neutral
 again); `mood_half_life_seconds` and `mood_floor` let the host fade the face
-itself between snapshots and stop where the engine does. `on_mood_change`, a function of the host's, is called with the
-snapshot when a background result changed her mood. `clock`, a function
-returning seconds since the epoch, replaces the system clock for all of this.
+itself between snapshots and stop where the engine does.
+
+`on_mood_change`, a function of the host's, is called with the snapshot when a
+background result changed her mood. It runs on the event loop while the turn
+lock is held, so it must be quick and must not block: hand the snapshot on (to
+a queue, a websocket send task) rather than doing the work there. An
+`async def` listener is scheduled on the running loop instead of being awaited
+under the lock. `clock`, a function returning seconds since the epoch, replaces
+the system clock for all of this.
 
 ## Pictures
 
