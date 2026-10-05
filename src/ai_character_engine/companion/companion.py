@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import time
 import unicodedata
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -695,6 +696,7 @@ class CharacterCompanion:
         vision: VisionPipeline | None = None,
         state_policy: CharacterStatePolicy | None = None,
         bridge_config: HostBridgeConfig | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, memory,
@@ -704,8 +706,12 @@ class CharacterCompanion:
         conversation.
 
         Without ``storage_dir`` everything is kept in memory only.
+
+        ``clock`` returns the time in seconds since the epoch; her mood is
+        dated and fades by it. The system clock when not given.
         """
         self.settings = settings or CompanionSettings()
+        self._clock: Callable[[], float] = clock or time.time
         self._character = character
         self._notes: tuple[str, ...] = ()
         self._dir = Path(storage_dir) if storage_dir is not None else None
@@ -776,7 +782,7 @@ class CharacterCompanion:
             context_builder=builder,
             tool_registry=tool_registry,
             state=self._load_state(),
-            state_policy=state_policy or RelationshipStatePolicy(),
+            state_policy=self._policy(state_policy),
             memory_manager=MemoryManager(
                 store=memory,
                 ledger=_RecentEvents(self.settings.records_kept),
@@ -831,6 +837,12 @@ class CharacterCompanion:
     def _store(self, persistent, in_memory, name: str):
         return persistent(self._dir / name) if self._dir is not None else in_memory()
 
+    def _policy(self, state_policy: CharacterStatePolicy | None) -> CharacterStatePolicy:
+        policy = state_policy or RelationshipStatePolicy()
+        if isinstance(policy, RelationshipStatePolicy):
+            policy.clock = self._clock
+        return policy
+
     def _state_file(self) -> Path | None:
         return self._dir / "state.json" if self._dir is not None else None
 
@@ -843,6 +855,10 @@ class CharacterCompanion:
             except Exception as exc:
                 # A damaged file must not keep the character from starting.
                 logger.warning("state file unreadable, starting fresh: %s", exc)
+        if state.mood_updated_at is None:
+            # A state saved before 1.1.0 does not say when her mood was set:
+            # it is as of now.
+            state.mood_updated_at = self._clock()
         return state
 
     def _save_state(self) -> None:
@@ -1680,7 +1696,7 @@ class CharacterCompanion:
             return
         async with self._tasks.authority_guard():
             patch = relationship_patch(
-                self.runtime.state.snapshot(), count_turn=False, rules=rules
+                self.runtime.state.snapshot(), count_turn=False, rules=rules, now=self._clock()
             )
             if patch is not None:
                 self.runtime.state.apply(patch)

@@ -16,6 +16,11 @@ They are separate because they mean different things. Someone who was shouted
 at all day and comes to talk feels bad and is warm toward the character: that
 should earn trust, not cost favorability.
 
+Her mood is one of ai_character_engine.state.mood.CHARACTER_MOODS: sad when
+the user turns on her, worried when the user feels bad, happy when the user is
+warm, calm otherwise; as strong as the user's emotion was. A reading of her
+mood from both sides of the same turn (the companion's mood worker) stands.
+
 The default numbers are a starting point measured against eight-turn
 conversations on a local 9B model, not a calibrated model of affection.
 """
@@ -23,10 +28,12 @@ conversations on a local 9B model, not a calibrated model of affection.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from ai_character_engine.events.models import CharacterEvent
+from ai_character_engine.state.mood import MOOD_TURN_KEY, seconds
 from ai_character_engine.state.models import CharacterStateSnapshot, StatePatch
 from ai_character_engine.tools.models import ToolResult
 
@@ -112,6 +119,7 @@ def relationship_patch(
     *,
     count_turn: bool,
     rules: RelationshipRules | None = None,
+    now: float | None = None,
 ) -> StatePatch | None:
     """The change to apply now, or None when there is nothing to change.
 
@@ -119,12 +127,16 @@ def relationship_patch(
     committed in the background, usually before the next turn starts, and
     reacting then lets the next reply already carry the new mood. That moment
     is not another turn, so it earns no per-turn trust.
+
+    ``now`` dates a new mood, in seconds since the epoch; the system clock
+    when not given.
     """
     rules = rules or RelationshipRules()
     trust_delta = rules.trust_per_turn if count_turn else 0.0
     favorability_delta = 0.0
     emotion = None
-    applied = None
+    intensity = 0.5
+    custom_updates: dict[str, Any] = {}
 
     observation = state.custom.get(OBSERVATION_KEY)
     if isinstance(observation, dict):
@@ -132,7 +144,7 @@ def relationship_patch(
         if observation_id and observation_id != state.custom.get(APPLIED_OBSERVATION_KEY):
             # An observation without readable scores is consumed too, or it
             # would be inspected again on every turn.
-            applied = observation_id
+            custom_updates[APPLIED_OBSERVATION_KEY] = observation_id
             stance = _score(observation.get("stance"))
             valence = _score(observation.get("valence"))
             intensity = _unit(observation.get("intensity"), 0.5)
@@ -144,14 +156,23 @@ def relationship_patch(
                     rules.trust_per_warmth if warmth > 0 else rules.trust_per_hostility
                 ) * warmth
                 if stance <= -rules.notable:
-                    emotion = "hurt"
+                    emotion = "sad"
                 elif valence <= -rules.notable:
-                    emotion = "concerned"
+                    emotion = "worried"
                     trust_delta += rules.trust_per_confiding * intensity
                 elif stance >= rules.notable:
                     emotion = "happy"
                 else:
                     emotion = "calm"
+                turn = seconds(observation.get("turn_ended_at"))
+                judged = seconds(state.custom.get(MOOD_TURN_KEY))
+                if turn is not None and judged is not None and turn <= judged:
+                    # Her mood was read from both sides of this turn, or of a
+                    # later one. The observation reads the user alone: what he
+                    # did still moves trust, not her mood.
+                    emotion = None
+                elif turn is not None:
+                    custom_updates[MOOD_TURN_KEY] = turn
 
     bond = (
         _percent(state.trust + trust_delta) + _percent(state.favorability + favorability_delta)
@@ -161,8 +182,10 @@ def relationship_patch(
         trust_delta=trust_delta,
         favorability_delta=favorability_delta,
         relationship_stage=_stage(bond, state.relationship_stage, rules),
-        custom_updates={APPLIED_OBSERVATION_KEY: applied} if applied else {},
+        custom_updates=custom_updates,
         reason="relationship rules",
+        mood_intensity=intensity if emotion is not None else None,
+        mood_updated_at=(time.time() if now is None else now) if emotion is not None else None,
     )
     return None if patch.is_noop else patch
 
@@ -172,13 +195,15 @@ class RelationshipStatePolicy:
 
     def __init__(self, rules: RelationshipRules | None = None) -> None:
         self.rules = rules or RelationshipRules()
+        # Where the time of a new mood comes from; CharacterCompanion sets its own.
+        self.clock: Callable[[], float] = time.time
 
     def on_event(
         self, event: CharacterEvent, state: CharacterStateSnapshot
     ) -> StatePatch | None:
         if event.type not in {"user_message", "multimodal_user_message"}:
             return None
-        return relationship_patch(state, count_turn=True, rules=self.rules)
+        return relationship_patch(state, count_turn=True, rules=self.rules, now=self.clock())
 
     def on_tool_result(
         self, result: ToolResult, state: CharacterStateSnapshot

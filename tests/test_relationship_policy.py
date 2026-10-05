@@ -10,6 +10,7 @@ import pytest
 
 from ai_character_engine import CharacterEvent, CharacterProfile, CharacterRuntime
 from ai_character_engine.state.models import CharacterState
+from ai_character_engine.state.mood import CHARACTER_MOODS, MOOD_TURN_KEY
 from ai_character_engine.state.relationship import (
     APPLIED_OBSERVATION_KEY,
     RelationshipRules,
@@ -19,12 +20,14 @@ from ai_character_engine.state.relationship import (
 from tests.fakes import FakeLLMClient
 
 
-def state(*, trust=50.0, favorability=50.0, stage="stranger", observed=None, applied=None):
+def state(*, trust=50.0, favorability=50.0, stage="stranger", observed=None, applied=None, judged=None):
     custom = {}
     if observed is not None:
         custom["observed_user_emotion"] = observed
     if applied is not None:
         custom[APPLIED_OBSERVATION_KEY] = applied
+    if judged is not None:
+        custom[MOOD_TURN_KEY] = judged
     return CharacterState(
         trust=trust, favorability=favorability, relationship_stage=stage, custom=custom
     ).snapshot()
@@ -69,7 +72,7 @@ def test_hostility_costs_more_trust_than_warmth_earns():
 
     assert patch.favorability_delta == pytest.approx(-4.0)
     assert patch.trust_delta == pytest.approx(0.3 - 3.0)
-    assert patch.emotion == "hurt"
+    assert patch.emotion == "sad"
 
 
 def test_someone_hurting_makes_the_character_concerned_even_when_they_are_warm():
@@ -81,7 +84,7 @@ def test_someone_hurting_makes_the_character_concerned_even_when_they_are_warm()
         count_turn=True,
     )
 
-    assert patch.emotion == "concerned"
+    assert patch.emotion == "worried"
     assert patch.favorability_delta > 0
     assert patch.trust_delta > 0.3
 
@@ -93,7 +96,7 @@ def test_a_bad_day_that_is_not_about_the_character_earns_trust_not_dislike():
 
     assert patch.favorability_delta == 0
     assert patch.trust_delta == pytest.approx(0.3 + 0.8)
-    assert patch.emotion == "concerned"
+    assert patch.emotion == "worried"
 
 
 def test_the_same_observation_is_applied_only_once():
@@ -167,3 +170,66 @@ async def test_as_a_state_policy_it_moves_the_character_on_every_user_turn():
     await runtime.process_event(CharacterEvent(type="clock_tick", source="host", content="noon"))
 
     assert runtime.state.trust == pytest.approx(50.3)
+
+
+def test_her_mood_takes_its_strength_from_the_observation():
+    patch = relationship_patch(
+        state(observed=observed(stance=1.0, valence=0.9, intensity=0.7)),
+        count_turn=False,
+        now=1000.0,
+    )
+    assert (patch.emotion, patch.mood_intensity, patch.mood_updated_at) == ("happy", 0.7, 1000.0)
+
+
+def test_an_observation_without_intensity_makes_a_middling_mood():
+    without = observed(stance=-1.0, valence=-0.8)
+    del without["intensity"]
+    patch = relationship_patch(state(observed=without), count_turn=False, now=1.0)
+    assert (patch.emotion, patch.mood_intensity) == ("sad", 0.5)
+
+
+@pytest.mark.parametrize(
+    ("stance", "valence"), [(-1.0, -1.0), (1.0, -0.6), (0.0, -0.6), (1.0, 1.0), (0.0, 0.0)]
+)
+def test_the_rules_speak_her_vocabulary(stance, valence):
+    patch = relationship_patch(
+        state(observed=observed(stance=stance, valence=valence)), count_turn=False, now=1.0
+    )
+    assert patch.emotion in CHARACTER_MOODS
+    assert patch.emotion not in {"hurt", "concerned"}
+
+
+def test_a_reading_of_her_mood_from_the_same_turn_is_not_replaced_by_the_rules():
+    """The mood worker read both sides of the turn; the observation read the
+    user alone. What the user did still counts for trust."""
+    patch = relationship_patch(
+        state(observed=observed(stance=1.0, valence=0.9, turn_ended_at=100.0), judged=100.0),
+        count_turn=False,
+        now=1.0,
+    )
+    assert patch.emotion is None
+    assert patch.mood_intensity is None
+    assert patch.favorability_delta == pytest.approx(4.0)
+    assert patch.custom_updates == {APPLIED_OBSERVATION_KEY: "p1"}
+
+
+def test_a_newer_turn_moves_her_mood_again():
+    patch = relationship_patch(
+        state(observed=observed(stance=1.0, valence=0.9, turn_ended_at=101.0), judged=100.0),
+        count_turn=False,
+        now=1.0,
+    )
+    assert patch.emotion == "happy"
+    assert patch.custom_updates == {APPLIED_OBSERVATION_KEY: "p1", MOOD_TURN_KEY: 101.0}
+
+
+def test_the_policy_dates_a_mood_by_its_clock():
+    policy = RelationshipStatePolicy()
+    policy.clock = lambda: 4242.0
+    from ai_character_engine.events.models import CharacterEvent
+
+    patch = policy.on_event(
+        CharacterEvent.user_message("hi"),
+        state(observed=observed(stance=1.0, valence=0.9)),
+    )
+    assert patch.mood_updated_at == 4242.0

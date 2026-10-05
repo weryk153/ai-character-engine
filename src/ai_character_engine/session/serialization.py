@@ -6,6 +6,7 @@ from typing import Any
 from ai_character_engine.llm.models import Message
 from ai_character_engine.persistence import PersistenceSurface, migrate_persistence_payload, stamp_current_schema
 from ai_character_engine.state.models import CharacterStateSnapshot
+from ai_character_engine.state.mood import mood_intensity, seconds
 from ai_character_engine.tools.models import ToolCall, ToolResult
 
 from .models import SessionRecord, SessionRuntimeSnapshot
@@ -70,17 +71,24 @@ def state_to_dict(state: CharacterStateSnapshot) -> dict[str, Any]:
         "favorability": state.favorability,
         "relationship_stage": state.relationship_stage,
         "custom": state.custom,
+        "mood_intensity": state.mood_intensity,
+        "mood_updated_at": state.mood_updated_at,
     }
 
 
 def state_from_dict(payload: dict[str, Any]) -> CharacterStateSnapshot:
+    emotion = payload.get("emotion", "neutral")
+    # A state saved before 1.1.0 has neither mood field; an unreadable one is
+    # no mood rather than a state that cannot be read at all.
     return CharacterStateSnapshot(
-        emotion=payload.get("emotion", "neutral"),
+        emotion=emotion,
         energy=float(payload.get("energy", 100.0)),
         trust=float(payload.get("trust", 50.0)),
         favorability=float(payload.get("favorability", 50.0)),
         relationship_stage=payload.get("relationship_stage", "stranger"),
         custom=dict(payload.get("custom", {})),
+        mood_intensity=mood_intensity(str(emotion), payload.get("mood_intensity", 0.0)),
+        mood_updated_at=seconds(payload.get("mood_updated_at")),
     )
 
 

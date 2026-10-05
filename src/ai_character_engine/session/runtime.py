@@ -22,6 +22,8 @@ def state_from_snapshot(snapshot: CharacterStateSnapshot) -> CharacterState:
         favorability=snapshot.favorability,
         relationship_stage=snapshot.relationship_stage,
         custom=dict(snapshot.custom),
+        mood_intensity=snapshot.mood_intensity,
+        mood_updated_at=snapshot.mood_updated_at,
     )
 
 
