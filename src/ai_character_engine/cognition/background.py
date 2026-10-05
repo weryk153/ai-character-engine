@@ -17,7 +17,7 @@ from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, Motivation
 from ai_character_engine.llm.models import Message
 from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.evidence import classify_user_text
-from ai_character_engine.memory.self_kinds import self_memory_kind
+from ai_character_engine.memory.self_kinds import SELF_MEMORY_KINDS, self_memory_kind
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.state.mood import (
     CHARACTER_MOODS,
@@ -950,6 +950,11 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "Each summary restates its evidence quote as a short sentence in the same language as that quote. "
             "Return JSON: {\"items\":[{\"summary\":str,\"kind\":str,\"importance\":0..1,\"confidence\":0..1,"
             "\"evidence\":str}],\"confidence\":0..1,\"evidence\":[str]}."
+            # 1.2.0, added at the end only: what comes before is cached.
+            " A sentence the user practises or repeats because the character asked (a sentence in a "
+            "language being learned, words said after the character) says nothing about the user. "
+            "A summary says only what its quote says: it adds no right or wrong, nothing learned or "
+            "failed; that is the character's judgement."
         ),
         BackgroundCognitionKind.EMOTION_ANALYSIS: (
             "Infer the user's currently expressed emotion conservatively; do not diagnose hidden mental states. "
@@ -959,6 +964,11 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "the character's person. "
             "Return JSON: {\"emotion\":str,\"intensity\":0..1,\"valence\":-1..1,\"stance\":-1..1,"
             "\"confidence\":0..1,\"evidence\":[str]}."
+            # 1.2.0, added at the end only: what comes before is cached.
+            " Judge only from the Latest event/user content. The earlier user lines are background: "
+            "a feeling that shows only in earlier lines is not the user's emotion now. When the latest "
+            "content shows no particular feeling, answer neutral with a low intensity, valence 0 and "
+            "stance 0."
         ),
         BackgroundCognitionKind.CONVERSATION_SUMMARY: (
             "Summarize the recent conversation faithfully, preserving corrections and unresolved items. "
@@ -972,6 +982,14 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "A belief_candidate is only a structured hypothesis key/value, never an authoritative fact; use null when the "
             "insight should not become a long-term belief. Return JSON: {\"insight\":str,\"belief_candidate\":null|"
             "{\"subject\":str,\"predicate\":str,\"object\":str},\"confidence\":0..1,\"evidence\":[str]}."
+            # 1.2.0, added at the end only: what comes before is cached.
+            " Keep what was seen apart from the character's interpretation, and write the "
+            "interpretation as the character's own feeling (\"I feel ...\", \"I think ...\"). Each "
+            "evidence item is an exact quote of the user's own words from the transcript; the "
+            "character's own lines are not evidence about the user. A mistake the user made while the "
+            "character was teaching or correcting them is not evidence, unless the user admitted it. "
+            "When the insight rests only on the character's judgement of the user, belief_candidate "
+            "is null."
         ),
         BackgroundCognitionKind.GOAL_MOTIVATION: (
             "Propose zero or more durable character goals only when supported by the supplied authoritative source ids. "
@@ -1004,6 +1022,13 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "\"<name> is not interested in horror films at all.\" "
             "Return JSON: {\"items\":[{\"summary\":str,\"kind\":str,\"importance\":0..1,"
             "\"confidence\":0..1,\"evidence\":str}],\"confidence\":0..1,\"evidence\":[str]}."
+            # 1.2.0, added at the end only: what comes before is cached.
+            " kind is one of: " + ", ".join(SELF_MEMORY_KINDS) + ". What the character is doing in "
+            "this conversation or plans to do next in it (teaching the user, a game, a task under "
+            "way) is working_on or plan, not habit or history; habit is only what the character does "
+            "in every conversation. The character's judgement of the user, a reproach, or what the "
+            "user did is not a fact about the character: its kind is view_of_user, written as "
+            "\"<name> thinks the user ...\"."
         ),
         BackgroundCognitionKind.CHARACTER_MOOD: (
             "Judge how the character feels at the moment of the character's latest line, the "

@@ -1431,3 +1431,71 @@ async def test_without_kept_history_the_emotion_worker_reads_the_latest_line_alo
     user = await emotion_prompt(history=[], max_history_messages=0)
     assert "Earlier user lines (background only):\n(empty)" in user
     assert "Latest event/user content:\nwhat manga are you reading?\n" in user
+
+
+# --- 1.2.0: the prompts, added to at the end only --------------------------------------
+
+# (length, sha256) of each prompt as 1.1.1 shipped it. A model server caches the
+# start of a prompt (LM Studio in steps of 256 tokens); a change in the middle
+# makes it read the whole prompt again on every call.
+PROMPTS_OF_1_1 = {
+    BackgroundCognitionKind.MEMORY_EXTRACTION: (
+        906, "87d22c791d20838066ef70e0981137317c071a8011ba2ab6cacac04b3d96a3a2"
+    ),
+    BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: (
+        1244, "afde5474c5eee14afc3760aa6c826e6a0dca884fab4dfce48fa3fb245cae6426"
+    ),
+    BackgroundCognitionKind.REFLECTION: (
+        634, "85ea363e79ac030535f988ba7943c0c59b5e1c8edcbed5c96a1984d48f1d3989"
+    ),
+    BackgroundCognitionKind.EMOTION_ANALYSIS: (
+        551, "a55958351dbd4a4106f264e547418bf035f7d26ab5ccdcb9dc3861cc3918e696"
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", list(PROMPTS_OF_1_1), ids=lambda kind: kind.value)
+def test_the_prompts_of_1_1_are_kept_word_for_word_and_added_to(kind):
+    import hashlib
+
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+
+    length, digest = PROMPTS_OF_1_1[kind]
+    prompt = _SYSTEM_PROMPTS[kind]
+    assert hashlib.sha256(prompt[:length].encode("utf-8")).hexdigest() == digest
+    assert len(prompt) > length
+
+
+def test_the_self_memory_worker_is_told_the_kinds_and_what_stays_in_a_conversation():
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+    from ai_character_engine.memory.self_kinds import SELF_MEMORY_KINDS
+
+    prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.SELF_MEMORY_EXTRACTION]
+    assert "kind is one of: " + ", ".join(SELF_MEMORY_KINDS) + "." in prompt
+    assert "is working_on or plan, not habit or history" in prompt
+    assert "its kind is view_of_user" in prompt
+
+
+def test_the_memory_worker_is_told_a_practised_sentence_is_not_the_user():
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+
+    prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.MEMORY_EXTRACTION]
+    assert "says nothing about the user" in prompt
+    assert "it adds no right or wrong" in prompt
+
+
+def test_the_reflection_worker_is_told_evidence_is_the_users_own_words():
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+
+    prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.REFLECTION]
+    assert "exact quote of the user's own words" in prompt
+    assert "the character's own lines are not evidence about the user" in prompt
+    assert "belief_candidate is null" in prompt
+
+
+def test_the_emotion_worker_is_told_to_judge_the_latest_line_only():
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+
+    prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.EMOTION_ANALYSIS]
+    assert "Judge only from the Latest event/user content." in prompt
+    assert "answer neutral with a low intensity, valence 0 and stance 0" in prompt
