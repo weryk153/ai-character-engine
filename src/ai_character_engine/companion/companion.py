@@ -778,6 +778,8 @@ class CharacterCompanion:
         # Called with snapshot() when a background result changed her mood,
         # for a host that shows her face between replies.
         self.on_mood_change: Callable[[CompanionSnapshot], None] | None = None
+        # Async listeners under way: held so that they are not collected.
+        self._listening: set[asyncio.Future] = set()
 
         builder = context_builder or ContextBuilder()
         builder.goals_shown = self.settings.goals_shown
@@ -1673,9 +1675,32 @@ class CharacterCompanion:
         if listener is None:
             return
         try:
-            listener(self.snapshot())
+            told = listener(self.snapshot())
         except Exception as exc:
             # The host's listener must not cost her the result.
+            logger.warning("on_mood_change failed (%s: %s)", type(exc).__name__, exc)
+            return
+        if not inspect.isawaitable(told):
+            return
+        # An async listener: run it on the loop, not under the turn lock
+        # this is called with.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if inspect.iscoroutine(told):
+                told.close()
+            logger.warning("on_mood_change is async but no event loop is running")
+            return
+        task = asyncio.ensure_future(told, loop=loop)
+        self._listening.add(task)
+        task.add_done_callback(self._listened)
+
+    def _listened(self, task: asyncio.Future) -> None:
+        self._listening.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
             logger.warning("on_mood_change failed (%s: %s)", type(exc).__name__, exc)
 
     def _still_said(

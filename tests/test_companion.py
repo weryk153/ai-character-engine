@@ -4057,3 +4057,57 @@ def test_the_host_hears_her_mood_change_even_when_saving_the_state_fails(tmp_pat
 
     assert run(scenario()) == "sad"
     assert [(s.emotion, s.mood_updated_at) for s in heard] == [("sad", 1000.0)]
+
+
+def test_an_async_listener_is_run_on_the_event_loop(tmp_path):
+    heard = []
+
+    async def listener(snapshot):
+        await asyncio.sleep(0)
+        heard.append(snapshot)
+
+    async def scenario():
+        current = companion(
+            tmp_path, {"mood": Worker(SAD_MOOD)}, mood_every=1, clock=lambda: 1000.0
+        )
+        current.on_mood_change = listener
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await until(lambda: heard)
+        await current.close()
+
+    run(scenario())
+    assert [(s.emotion, s.mood_updated_at) for s in heard] == [("sad", 1000.0)]
+
+
+def test_a_failing_async_listener_does_not_cost_her_the_mood(tmp_path, caplog):
+    async def broken(snapshot):
+        raise RuntimeError("the page is gone")
+
+    async def scenario():
+        current = companion(tmp_path, {"mood": Worker(SAD_MOOD)}, mood_every=1)
+        current.on_mood_change = broken
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await until(lambda: "the page is gone" in caplog.text)
+        snapshot = current.snapshot()
+        await current.close()
+        return snapshot
+
+    with caplog.at_level("WARNING"):
+        assert run(scenario()).emotion == "sad"
+
+
+def test_an_async_listener_without_a_running_loop_is_dropped_with_a_warning(tmp_path, caplog):
+    called = []
+
+    async def listener(snapshot):
+        called.append(snapshot)
+
+    current = companion(tmp_path)
+    current.on_mood_change = listener
+    with caplog.at_level("WARNING"):
+        current._tell_mood()
+    assert called == []
+    assert "no event loop is running" in caplog.text
+    run(current.close())
