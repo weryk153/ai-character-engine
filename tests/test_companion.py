@@ -3987,3 +3987,43 @@ def test_an_observation_moved_past_a_remark_of_hers_still_leaves_her_mood_to_the
     assert observation["base_revision"] == revision  # moved onto her remark
     assert between == ("neutral", 0.0)
     assert after == ("sad", pytest.approx(0.5))
+
+
+# --- a host's state policy is its own ----------------------------------------
+
+
+def test_companions_sharing_a_host_policy_keep_their_own_clock_and_readings(tmp_path):
+    """Each companion wires the policy to its own clock and mood readings; on
+    the host's one instance the second companion overwrote the first's."""
+    from ai_character_engine.state.relationship import RelationshipStatePolicy
+
+    shared = RelationshipStatePolicy()
+    host_clock = shared.clock
+
+    def build(name, now):
+        return CharacterCompanion(
+            character=CharacterProfile(id=name, name=name, description="A researcher."),
+            llm=Foreground(),
+            storage_dir=tmp_path / name,
+            settings=CompanionSettings(mood_every=0),
+            clock=lambda: now,
+            state_policy=shared,
+        )
+
+    async def scenario():
+        first, second = build("a", 1000.0), build("b", 2000.0)
+        first._mood_read_at.append(5)
+        policies = first.runtime.state_policy, second.runtime.state_policy
+        result = (
+            [policy.clock() for policy in policies],
+            [policy.mood_read_for(5) for policy in policies],
+        )
+        await first.close()
+        await second.close()
+        return result
+
+    clocks, read = run(scenario())
+    assert clocks == [1000.0, 2000.0]
+    assert read == [True, False]
+    assert shared.clock is host_clock
+    assert shared.mood_read_for(5) is False

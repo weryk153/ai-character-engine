@@ -13,6 +13,7 @@ policies that were needed.
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import itertools
 import json
@@ -872,6 +873,9 @@ class CharacterCompanion:
     def _policy(self, state_policy: CharacterStatePolicy | None) -> CharacterStatePolicy:
         policy = state_policy or RelationshipStatePolicy()
         if isinstance(policy, RelationshipStatePolicy):
+            # A copy: the host's instance may serve another companion, whose
+            # clock and mood readings these would otherwise overwrite.
+            policy = copy.copy(policy)
             policy.clock = self._clock
             policy.mood_half_life_seconds = self.settings.mood_half_life_seconds
             policy.mood_floor = self.settings.mood_floor
