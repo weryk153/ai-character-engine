@@ -235,9 +235,9 @@ class RelationshipStatePolicy:
         self.mood_half_life_seconds = 300.0
         self.mood_floor = 0.15
         # Whether her mood is read from both sides of the turn of the given
-        # revision (an observation's base_revision): on such a turn the rules
-        # leave her mood to that reading. CharacterCompanion answers from the
-        # mood jobs it scheduled.
+        # revision (the observation's turn_revision, else its base_revision):
+        # on such a turn the rules leave her mood to that reading.
+        # CharacterCompanion answers from the mood jobs it scheduled.
         self.mood_read_for: Callable[[Any], bool] = lambda revision: False
 
     def patch(
@@ -246,7 +246,7 @@ class RelationshipStatePolicy:
         """relationship_patch with this policy's rules, clock and mood settings."""
         observation = state.custom.get(OBSERVATION_KEY)
         read = isinstance(observation, dict) and self.mood_read_for(
-            observation.get("base_revision")
+            observation.get("turn_revision", observation.get("base_revision"))
         )
         return relationship_patch(
             state,

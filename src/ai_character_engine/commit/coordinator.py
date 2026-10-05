@@ -658,6 +658,12 @@ class CognitiveCommitCoordinator:
                 "intensity": float(proposal.payload.get("intensity", 0.5)),
                 "confidence": proposal.confidence,
                 "base_revision": proposal.base_revision,
+                # The turn observed, also when the proposal was moved onto a
+                # later revision (rebase): a remark of hers in between is not
+                # the turn the user's emotion was read from.
+                "turn_revision": proposal.provenance.get(
+                    "rebased_from_revision", proposal.base_revision
+                ),
                 "source_task_id": proposal.source_task_id,
                 "proposal_id": proposal.id,
             }

@@ -3950,3 +3950,40 @@ def test_without_the_mood_worker_the_rules_move_her_mood_on_every_notable_turn(t
     first, second = run(scenario())
     assert first == ("happy", pytest.approx(0.6))
     assert second == ("sad", pytest.approx(0.8))
+
+
+def test_an_observation_moved_past_a_remark_of_hers_still_leaves_her_mood_to_the_reading(tmp_path):
+    """She spoke up before the emotion analysis of the turn came back. Its
+    observation is moved onto the turn of her remark, which read no mood; it
+    is still of the turn whose mood is being read."""
+
+    async def scenario():
+        emotion_gate, mood_gate = asyncio.Event(), asyncio.Event()
+        current = companion(
+            tmp_path,
+            {
+                "emotion": Worker(WARMLY, gate=emotion_gate),
+                "mood": Worker({**SAD_MOOD, "intensity": 0.5}, gate=mood_gate),
+            },
+            llm=Scripted("The kettle is on.", "Oh, the rain stopped."),
+            emotion_every=1,
+            mood_every=1,
+            clock=lambda: 1000.0,
+        )
+        await current.reply("thank you for last night", conversation_id="a")
+        await current.speak_up("a")
+        revision = current._tasks.revision
+        emotion_gate.set()
+        await eventually(lambda: APPLIED in current.runtime.state.custom)
+        observation = current.runtime.state.custom["observed_user_emotion"]
+        between = stored_mood(current)
+        mood_gate.set()
+        await current.settle()
+        after = stored_mood(current)
+        await current.close()
+        return revision, observation, between, after
+
+    revision, observation, between, after = run(scenario())
+    assert observation["base_revision"] == revision  # moved onto her remark
+    assert between == ("neutral", 0.0)
+    assert after == ("sad", pytest.approx(0.5))

@@ -11,6 +11,7 @@ from ai_character_engine.commit import (
     CognitiveCommitCoordinator,
     CommitNextAction,
     CommitStatus,
+    StalePolicy,
 )
 from ai_character_engine.cognition import (
     BackgroundCognitionConfig,
@@ -712,3 +713,29 @@ async def test_a_late_reading_of_an_earlier_turn_is_still_stale_when_the_newer_o
         "newer_mood_already_committed",
     )
     assert mood == ("sad", 0.8, 5000.0)
+
+
+@pytest.mark.asyncio
+async def test_an_observation_moved_onto_a_later_turn_keeps_the_turn_it_observed():
+    engine = runtime()
+    tasks = MultiTaskRuntime(engine)
+    commits = CognitiveCommitCoordinator(tasks)
+    commits.policies["state.emotion_candidate"] = replace(
+        commits.policies["state.emotion_candidate"], stale_policy=StalePolicy.ALLOW_MANUAL_REBASE
+    )
+    observed = proposal("state.emotion_candidate", {"emotion": "glad", "intensity": 0.6})
+    await tasks.run_turn("one more")  # a turn in between
+    moved = commits.rebase(observed, reason="still valid")
+    assert (await commits.commit(moved)).status is CommitStatus.COMMITTED
+    value = engine.state.custom["observed_user_emotion"]
+    assert value["base_revision"] == moved.base_revision != observed.base_revision
+    assert value["turn_revision"] == observed.base_revision
+
+
+@pytest.mark.asyncio
+async def test_an_observation_on_its_own_turn_is_of_that_turn():
+    engine = runtime()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    await commits.commit(proposal("state.emotion_candidate", {"emotion": "glad", "intensity": 0.6}))
+    value = engine.state.custom["observed_user_emotion"]
+    assert value["turn_revision"] == value["base_revision"] == 0
