@@ -11,6 +11,13 @@
 - `EmotionExpressionPolicy` has a face for each of her moods (none for neutral) and weighs it by the intensity it is given.
 - Hosts that set `CharacterState.emotion` directly must also set `mood_intensity` (and `mood_updated_at`), because a mood with intensity 0 now reads as neutral.
 
+Known limitations:
+
+- Small talk tends to read as a mild happy.
+- A scolding is sometimes read as embarrassed.
+- Surprised is under-used.
+- On turns without a mood reading, the rules give only happy, sad or worried.
+
 ## 1.0.0
 
 - Stable 374-symbol root Python API, with explicit compatibility and deprecation contracts.

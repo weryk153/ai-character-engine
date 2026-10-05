@@ -180,5 +180,12 @@ def evaluate_release_candidate(
     )
     gates.append(_gate("docs.release_candidate", docs_ok, "release documentation is present", "release documentation is incomplete"))
 
-    gates.append(_gate("version.runtime", version == VERSION == "1.0.0", "runtime/project version is 1.0.0", f"version mismatch: project={version}, runtime={VERSION}"))
+    gates.append(
+        _gate(
+            "version.runtime",
+            version == VERSION and VERSION.split(".", 1)[0] == "1",
+            f"runtime/project version is {VERSION}",
+            f"version mismatch: project={version}, runtime={VERSION}",
+        )
+    )
     return ReleaseCandidateReport(version, tuple(gates), matrix_evidence, candidate_sha256=identity, acceptance_evidence=acceptance_evidence)

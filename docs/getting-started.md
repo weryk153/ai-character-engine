@@ -22,7 +22,7 @@ python -m pip install .
 python -c "import ai_character_engine; print(ai_character_engine.__version__)"
 ```
 
-The version should be `1.0.0`. The root README shows a two-turn character connected
+The version should be `1.1.0`. The root README shows a two-turn character connected
 to a running local model. For an already built distribution, install the local
 wheel instead of the source directory.
 

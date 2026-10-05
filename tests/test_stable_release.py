@@ -391,3 +391,9 @@ def test_rc_report_json_is_machine_readable():
     assert payload["engine_version"] == VERSION
     assert isinstance(payload["gates"], list)
     assert isinstance(payload["matrix_evidence"], list)
+
+
+def test_the_version_gate_holds_for_this_release():
+    by_name = {gate.name: gate for gate in evaluate_release_candidate(ROOT).gates}
+    assert by_name["version.runtime"].status is ReleaseCandidateGateStatus.PASS
+    assert by_name["api.stable_manifest"].status is ReleaseCandidateGateStatus.PASS

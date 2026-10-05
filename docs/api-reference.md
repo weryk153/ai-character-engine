@@ -1,6 +1,6 @@
 # Stable root API reference
 
-374 exports in `ai_character_engine`, version 1.0.0.
+374 exports in `ai_character_engine`, version 1.1.0.
 
 Import these names from the package root. This index records the frozen
 root call shapes and links to implementations for full annotations, defaults
@@ -3184,7 +3184,7 @@ Kind: function. Stability: stable.
 
 Kind: function. Stability: stable.
 
-Translate a read-only evaluation into an operational mode suggestion.
+Translate a read-only cognitive evaluation into an operational mode suggestion.
 
 [Source](../src/ai_character_engine/production/runtime.py)
 
