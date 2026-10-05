@@ -137,14 +137,14 @@ state and mood, her long-term goals and beliefs, and what she said about her
 tastes, traits, habits, history, relationships and opinions. What she is doing
 stays in the conversation it is done in (`plans_stay_in_conversation`, on by
 default): what she said she is working on or plans to do there, what she
-thinks of the user there, her short-term goals and her thoughts. Every result
-of a background worker is marked with the conversation it came from
-(`metadata["conversation_id"]` of the record); in another conversation these
-are not in her mind, and back in theirs they are again, also after a restart.
-A short-term goal also leaves her mind after `short_term_goal_max_age_hours`
-(24) untouched, in its own conversation too; a long-term goal after
-`goal_max_age_days`. A host that names no conversation has one, `None`, and
-sees no difference but that.
+thinks of the user there, her short-term goals and her thoughts. Each record
+the memory, self-memory, goal and reflection workers keep is marked with the
+conversation it came from (`metadata["conversation_id"]`); what she is doing
+is not in her mind in another conversation, and back in its own it is again,
+also after a restart. A short-term goal also leaves her mind after
+`short_term_goal_max_age_hours` (24) untouched, in its own conversation too; a
+long-term goal after `goal_max_age_days`. A host that names no conversation
+has one, `None`; for it, what was kept before 1.2.0 is the difference (below).
 
 The `self_memory` worker reads her own lines, never the user's, and keeps what
 she stated about herself, each with a kind: `identity`, `trait`, `taste`,
@@ -181,7 +181,8 @@ another conversation and is no longer in her mind; `self_memories()` still
 lists it. A self memory of before whose kind says it is hers everywhere
 (`habit`, say) stays in mind whatever it says; the user removes it on the
 memory page. `plans_stay_in_conversation=False` keeps everything in every
-conversation, as before 1.2.0.
+conversation, as before 1.2.0 (the `short_term_goal_max_age_hours` window still
+applies).
 
 What the workers keep about the user is the user's own words. A memory needs
 an exact quote of the user; an item without one is dropped, and so is one
@@ -194,8 +195,8 @@ dropped, and a thought left with none is not proposed. The emotion worker is
 given the user's earlier lines apart from the latest one and judges the latest
 one only.
 
-Known limits, as of 1.2.0: `self_memories_kept` holds for each conversation,
-so what she keeps in all of them together grows with the number of
+Known limits: `self_memories_kept` holds for each conversation, so what she
+keeps in all of them together grows with the number of
 conversations. A goal proposed again in another conversation is merged into
 the one she has and moves to that conversation, out of the first. The
 `short_term_goal_max_age_hours` window is wall time, not the companion's
@@ -332,7 +333,7 @@ model can run every worker on every turn.
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
 | `goal_max_age_days` | 7 | Goals untouched for this long leave the context |
-| `plans_stay_in_conversation` | true | What she is doing, short-term goals and thoughts are in mind only in the conversation they came from; false keeps them in every conversation, as before 1.2.0 |
+| `plans_stay_in_conversation` | true | What she is doing, short-term goals and thoughts are in mind only in the conversation they came from; false keeps them in every conversation, as before 1.2.0 (the `short_term_goal_max_age_hours` window still applies) |
 | `short_term_goal_max_age_hours` | 24 | A short-term goal untouched for this long leaves the context; 0 leaves it to `goal_max_age_days` |
 | `goals_shown`, `thoughts_shown` | 3, 2 | How many goals (the most pressing) and thoughts (the newest) she keeps in mind; the rest stay stored |
 | `conversations_kept` | 8 | Conversations whose history is kept in memory |
