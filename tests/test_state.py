@@ -40,6 +40,7 @@ def test_context_builder_includes_authoritative_state() -> None:
     character = CharacterProfile(id="alice", name="Alice", description="Test")
     state = CharacterState(
         emotion="annoyed",
+        mood_intensity=0.5,
         energy=42,
         trust=61,
         favorability=72,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ai_character_engine.state.mood import DEFAULT_MOOD_FLOOR, DEFAULT_MOOD_HALF_LIFE_SECONDS
+
 
 @dataclass(frozen=True, slots=True)
 class CompanionSettings:
@@ -71,8 +73,8 @@ class CompanionSettings:
     # Her mood fades as time passes, talked to or not: its intensity halves
     # every mood_half_life_seconds (a quarter is left after ten minutes away),
     # and below mood_floor she is neutral again.
-    mood_half_life_seconds: float = 300.0
-    mood_floor: float = 0.15
+    mood_half_life_seconds: float = DEFAULT_MOOD_HALF_LIFE_SECONDS
+    mood_floor: float = DEFAULT_MOOD_FLOOR
 
     def __post_init__(self) -> None:
         for name in (

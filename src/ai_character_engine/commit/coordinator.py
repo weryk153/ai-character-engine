@@ -25,6 +25,8 @@ from ai_character_engine.goals import (
 from ai_character_engine.state.models import StatePatch
 from ai_character_engine.state.mood import (
     CHARACTER_MOODS,
+    DEFAULT_MOOD_FLOOR,
+    DEFAULT_MOOD_HALF_LIFE_SECONDS,
     MOOD_TURN_KEY,
     blend_mood,
     effective_mood,
@@ -139,8 +141,8 @@ class CognitiveCommitCoordinator:
         self.clock: Callable[[], float] = time.time
         # How her mood fades before a new reading is weighed against it
         # (CompanionSettings.mood_half_life_seconds/mood_floor).
-        self.mood_half_life_seconds = 300.0
-        self.mood_floor = 0.15
+        self.mood_half_life_seconds = DEFAULT_MOOD_HALF_LIFE_SECONDS
+        self.mood_floor = DEFAULT_MOOD_FLOOR
 
     @property
     def commit_sequence(self) -> int:

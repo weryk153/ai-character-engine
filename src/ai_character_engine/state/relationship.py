@@ -36,7 +36,14 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ai_character_engine.events.models import CharacterEvent
-from ai_character_engine.state.mood import MOOD_TURN_KEY, blend_mood, effective_mood, seconds
+from ai_character_engine.state.mood import (
+    DEFAULT_MOOD_FLOOR,
+    DEFAULT_MOOD_HALF_LIFE_SECONDS,
+    MOOD_TURN_KEY,
+    blend_mood,
+    effective_mood,
+    seconds,
+)
 from ai_character_engine.state.models import CharacterStateSnapshot, StatePatch
 from ai_character_engine.tools.models import ToolResult
 
@@ -123,8 +130,8 @@ def relationship_patch(
     count_turn: bool,
     rules: RelationshipRules | None = None,
     now: float | None = None,
-    half_life_seconds: float = 300.0,
-    floor: float = 0.15,
+    half_life_seconds: float = DEFAULT_MOOD_HALF_LIFE_SECONDS,
+    floor: float = DEFAULT_MOOD_FLOOR,
     set_mood: bool = True,
 ) -> StatePatch | None:
     """The change to apply now, or None when there is nothing to change.
@@ -232,8 +239,8 @@ class RelationshipStatePolicy:
         self.clock: Callable[[], float] = time.time
         # How her mood fades before the rules weigh a new one against it;
         # CharacterCompanion sets its settings.
-        self.mood_half_life_seconds = 300.0
-        self.mood_floor = 0.15
+        self.mood_half_life_seconds = DEFAULT_MOOD_HALF_LIFE_SECONDS
+        self.mood_floor = DEFAULT_MOOD_FLOOR
         # Whether her mood is read from both sides of the turn of the given
         # revision (the observation's turn_revision, else its base_revision):
         # on such a turn the rules leave her mood to that reading.

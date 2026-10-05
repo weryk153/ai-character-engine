@@ -65,7 +65,7 @@ from ai_character_engine.runtime import CharacterRuntime
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.session.serialization import state_from_dict, state_to_dict
 from ai_character_engine.state.models import CharacterState
-from ai_character_engine.state.mood import NEUTRAL, effective_mood
+from ai_character_engine.state.mood import DEFAULT_MOOD_HALF_LIFE_SECONDS, NEUTRAL, effective_mood
 from ai_character_engine.state.policy import CharacterStatePolicy
 from ai_character_engine.state.relationship import RelationshipStatePolicy
 from ai_character_engine.tasks import MultiTaskRuntime, MultiTaskRuntimeConfig, TaskPriority
@@ -118,7 +118,7 @@ class CompanionSnapshot:
     # 0 once her mood has faded to neutral.
     mood_intensity: float = 0.0
     mood_updated_at: float | None = None
-    mood_half_life_seconds: float = 300.0
+    mood_half_life_seconds: float = DEFAULT_MOOD_HALF_LIFE_SECONDS
 
 
 @dataclass(frozen=True, slots=True)

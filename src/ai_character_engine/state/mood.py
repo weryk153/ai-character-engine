@@ -37,6 +37,11 @@ MOOD_SYNONYMS: dict[str, str] = {
 }
 # The strength of a mood set without one, as by a host's own state policy.
 DEFAULT_MOOD_INTENSITY = 0.5
+# How her mood fades unless a host says otherwise (CompanionSettings): the
+# intensity halves every DEFAULT_MOOD_HALF_LIFE_SECONDS, and below
+# DEFAULT_MOOD_FLOOR she is neutral again. Every reader of her mood uses these.
+DEFAULT_MOOD_HALF_LIFE_SECONDS = 300.0
+DEFAULT_MOOD_FLOOR = 0.15
 # Custom state: when the turn ended whose reading set her mood, in seconds
 # since the epoch. A reading of an earlier turn that arrives later does not
 # replace it. Leading underscore: bookkeeping, kept out of the model's context.
@@ -68,8 +73,8 @@ def effective_mood(
     updated_at: float | None,
     *,
     now: float,
-    half_life_seconds: float = 300.0,
-    floor: float = 0.15,
+    half_life_seconds: float = DEFAULT_MOOD_HALF_LIFE_SECONDS,
+    floor: float = DEFAULT_MOOD_FLOOR,
 ) -> tuple[str, float]:
     """Her mood as it stands at ``now``: the intensity halves every
     ``half_life_seconds``, and below ``floor`` she is neutral again.

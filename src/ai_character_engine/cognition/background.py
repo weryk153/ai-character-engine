@@ -19,6 +19,8 @@ from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.state.mood import (
     CHARACTER_MOODS,
+    DEFAULT_MOOD_FLOOR,
+    DEFAULT_MOOD_HALF_LIFE_SECONDS,
     MOOD_SYNONYMS,
     effective_mood,
     mood_intensity,
@@ -616,8 +618,8 @@ class BackgroundCognitionRuntime:
         # How her mood fades before a goal source reads it; a CharacterCompanion
         # sets these from its settings and clock. The spec's own defaults
         # otherwise (CompanionSettings.mood_half_life_seconds/mood_floor).
-        self.mood_half_life_seconds = 300.0
-        self.mood_floor = 0.15
+        self.mood_half_life_seconds = DEFAULT_MOOD_HALF_LIFE_SECONDS
+        self.mood_floor = DEFAULT_MOOD_FLOOR
         self.clock: Callable[[], float] = time.time
         # The conversation the next turn belongs to, for a host that switches
         # the runtime's history between conversations. Each conversation is

@@ -246,8 +246,32 @@ def test_the_turn_placement_reads_her_mood_faded_too():
     assert "- emotion: neutral" in note(messages)
 
 
-def test_a_builder_not_told_how_moods_fade_shows_the_mood_as_stored():
-    assert "- emotion: sad" in note(built(ContextBuilder(), CharacterState(emotion="sad")))
+def test_a_builder_not_told_how_moods_fade_fades_her_mood_like_every_other_reader():
+    """A bare CharacterRuntime has no companion to set the builder: its
+    "- emotion:" line must fade as the live face does, or tone and face
+    disagree."""
+    from ai_character_engine.state.mood import DEFAULT_MOOD_FLOOR, DEFAULT_MOOD_HALF_LIFE_SECONDS
+
+    builder = ContextBuilder()
+    assert (builder.mood_half_life_seconds, builder.mood_floor) == (
+        DEFAULT_MOOD_HALF_LIFE_SECONDS,
+        DEFAULT_MOOD_FLOOR,
+    )
+    builder.clock = lambda: 1000.0
+    assert "- emotion: sad" in note(built(builder, SAD))
+    builder.clock = lambda: 1900.0
+    assert "- emotion: neutral" in note(built(builder, SAD))
+
+
+def test_the_mood_defaults_are_named_once():
+    from ai_character_engine.state.mood import DEFAULT_MOOD_FLOOR, DEFAULT_MOOD_HALF_LIFE_SECONDS
+
+    assert (DEFAULT_MOOD_HALF_LIFE_SECONDS, DEFAULT_MOOD_FLOOR) == (300.0, 0.15)
+    settings = CompanionSettings()
+    assert (settings.mood_half_life_seconds, settings.mood_floor) == (
+        DEFAULT_MOOD_HALF_LIFE_SECONDS,
+        DEFAULT_MOOD_FLOOR,
+    )
 
 
 def test_the_snapshot_says_how_her_mood_fades(tmp_path):

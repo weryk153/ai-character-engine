@@ -108,7 +108,7 @@ async def test_the_system_prompt_never_changes_with_the_state():
 
 
 def test_the_first_note_introduces_the_state():
-    messages = build(state=CharacterState(emotion="calm", trust=61.4))
+    messages = build(state=CharacterState(emotion="calm", mood_intensity=0.5, trust=61.4))
 
     (note,) = notes(messages)
     assert "- emotion: calm" in note
@@ -149,20 +149,20 @@ def test_how_to_read_the_notes_is_explained_once_in_the_system_prompt():
 
 
 def test_nothing_new_means_no_note():
-    first = build(state=CharacterState(emotion="calm"))
+    first = build(state=CharacterState(emotion="calm", mood_intensity=0.5))
     history = [*first[1:], Message("assistant", "fine")]
 
-    second = build(history, state=CharacterState(emotion="calm"))
+    second = build(history, state=CharacterState(emotion="calm", mood_intensity=0.5))
 
     assert len(notes(second)) == 1
     assert second[-2] == Message("assistant", "fine")
 
 
 def test_a_later_note_says_only_what_changed():
-    first = build(state=CharacterState(emotion="calm", trust=50))
+    first = build(state=CharacterState(emotion="calm", mood_intensity=0.5, trust=50))
     history = [*first[1:], Message("assistant", "fine")]
 
-    second = build(history, state=CharacterState(emotion="hurt", trust=50))
+    second = build(history, state=CharacterState(emotion="hurt", mood_intensity=0.5, trust=50))
 
     assert "- emotion: hurt" in notes(second)[-1]
     assert "trust" not in notes(second)[-1]
@@ -173,10 +173,10 @@ def test_a_value_that_returns_to_an_earlier_one_is_said_again():
     newest word on the matter."""
     history = []
     for mood in ("calm", "hurt"):
-        built = build(history, state=CharacterState(emotion=mood))
+        built = build(history, state=CharacterState(emotion=mood, mood_intensity=0.5))
         history = [*built[1:], Message("assistant", "fine")]
 
-    third = build(history, state=CharacterState(emotion="calm"))
+    third = build(history, state=CharacterState(emotion="calm", mood_intensity=0.5))
 
     assert "- emotion: calm" in notes(third)[-1]
 

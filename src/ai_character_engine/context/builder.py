@@ -19,7 +19,11 @@ from ai_character_engine.long_term_cognition.models import BeliefRecord, BeliefS
 from ai_character_engine.goals.models import GoalRecord, GoalStatus
 from ai_character_engine.memory.models import RetrievedMemory
 from ai_character_engine.state.models import CharacterState, CharacterStateSnapshot
-from ai_character_engine.state.mood import effective_mood
+from ai_character_engine.state.mood import (
+    DEFAULT_MOOD_FLOOR,
+    DEFAULT_MOOD_HALF_LIFE_SECONDS,
+    effective_mood,
+)
 from ai_character_engine.tools.models import ToolDefinition
 
 
@@ -190,10 +194,12 @@ class ContextBuilder:
         # first; None for as many as the budget allows. The others are not
         # withdrawn: a goal not in mind is not a goal given up.
         self.goals_shown: int | None = None
-        # How her mood fades, for the "- emotion:" line; CharacterCompanion
-        # sets these from its settings. None: the mood is shown as stored.
-        self.mood_half_life_seconds: float | None = None
-        self.mood_floor: float = 0.0
+        # How her mood fades, for the "- emotion:" line: by default as every
+        # other reader of it fades it (the live face too), so that tone and
+        # face agree; CharacterCompanion sets these from its settings. None:
+        # the mood is shown as stored.
+        self.mood_half_life_seconds: float | None = DEFAULT_MOOD_HALF_LIFE_SECONDS
+        self.mood_floor: float = DEFAULT_MOOD_FLOOR
         self.clock: Callable[[], float] = time.time
 
     def build_system_prompt(
@@ -625,8 +631,8 @@ class ContextBuilder:
 
 
     def _mood_word(self, state: CharacterState | CharacterStateSnapshot) -> str:
-        """Her mood as it stands now when the builder is told how it fades,
-        as stored otherwise."""
+        """Her mood as it stands now, faded; as stored when
+        ``mood_half_life_seconds`` is None."""
         if self.mood_half_life_seconds is None:
             return state.emotion
         mood, _ = effective_mood(

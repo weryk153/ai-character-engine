@@ -98,9 +98,9 @@ def test_what_changes_between_turns_never_touches_the_prompt_before_the_history(
     2 s to 5 s over eight turns, because every change makes the server re-read
     the whole conversation. With a system prompt that never changes it stayed
     at 2 s."""
-    calm = built(state=CharacterState(emotion="calm", trust=50))
+    calm = built(state=CharacterState(emotion="calm", mood_intensity=0.5, trust=50))
     hurt = built(
-        state=CharacterState(emotion="hurt", trust=20),
+        state=CharacterState(emotion="hurt", mood_intensity=0.5, trust=20),
         memories=(remembered("User is called Dawn"),),
         text="Another line",
     )
@@ -111,7 +111,7 @@ def test_what_changes_between_turns_never_touches_the_prompt_before_the_history(
 
 def test_state_and_memories_sit_between_the_history_and_the_newest_message():
     messages = built(
-        state=CharacterState(emotion="hurt", trust=20),
+        state=CharacterState(emotion="hurt", mood_intensity=0.5, trust=20),
         memories=(remembered("User is called Dawn"),),
     )
 
@@ -129,7 +129,7 @@ def test_the_context_is_not_a_system_message():
     the newest message 4.6 s, the same context in a user-role message 1.9 s,
     no context 1.8 s. Chat templates may move every system message to the
     top, which changes the start of the prompt each turn."""
-    roles = [message.role for message in built(state=CharacterState(emotion="hurt"))]
+    roles = [message.role for message in built(state=CharacterState(emotion="hurt", mood_intensity=0.5))]
 
     assert roles == ["system", "user", "assistant", "user", "user"]
 
@@ -137,13 +137,13 @@ def test_the_context_is_not_a_system_message():
 def test_the_newest_message_is_exactly_what_was_said():
     """Hosts and custom model clients read the last message as the user's
     words: the README example and the voice pipeline both do."""
-    messages = built(state=CharacterState(emotion="hurt"))
+    messages = built(state=CharacterState(emotion="hurt", mood_intensity=0.5))
 
     assert messages[-1] == Message("user", "Hello")
 
 
 def test_the_model_is_told_the_context_was_not_said_by_the_user():
-    context = built(state=CharacterState(emotion="hurt"))[-2]
+    context = built(state=CharacterState(emotion="hurt", mood_intensity=0.5))[-2]
 
     assert context.content.index("not said by the user") < context.content.index("emotion: hurt")
 
@@ -157,7 +157,7 @@ def test_without_anything_to_say_there_is_no_context_message():
 def test_a_host_can_keep_everything_in_the_system_prompt():
     messages = built(
         ContextBuilder(context_placement="system"),
-        state=CharacterState(emotion="hurt"),
+        state=CharacterState(emotion="hurt", mood_intensity=0.5),
         memories=(remembered("User is called Dawn"),),
     )
 
