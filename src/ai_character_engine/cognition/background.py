@@ -57,6 +57,8 @@ class BackgroundCognitionKind(str, Enum):
     SELF_MEMORY_EXTRACTION = "self_memory_extraction"
     CHARACTER_MOOD = "character_mood"
     REPLY_CHECK = "reply_check"
+    USER_STATE = "user_state"
+    DIARY = "diary"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -69,6 +71,8 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: CognitiveRole.SELF_MEMORY,
     BackgroundCognitionKind.CHARACTER_MOOD: CognitiveRole.MOOD,
     BackgroundCognitionKind.REPLY_CHECK: CognitiveRole.REPLY_CHECK,
+    BackgroundCognitionKind.USER_STATE: CognitiveRole.USER_STATE,
+    BackgroundCognitionKind.DIARY: CognitiveRole.DIARY,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
@@ -87,6 +91,18 @@ REPLY_CHECK_KINDS: tuple[str, ...] = (
 # A fix is one short sentence; longer is cut.
 REPLY_FIX_CHARS = 40
 _REPLY_ISSUES_KEPT = 2
+# How the user has been lately: written over what was there before.
+USER_STATE_TARGET = "state.user_state_candidate"
+USER_ENERGY_LEVELS: tuple[str, ...] = ("low", "normal", "high")
+USER_MOOD_TRENDS: tuple[str, ...] = ("down", "flat", "up")
+# A concern is a few words; at most this many, each with the user's own words.
+USER_CONCERN_CHARS = 30
+USER_CONCERNS_KEPT = 3
+# Her day, in her words. Nothing is written for it by the coordinator:
+# CharacterCompanion keeps her diary.
+DIARY_TARGET = "memory.diary_candidate"
+DIARY_SENTENCES = 6
+_EVIDENCE_KEPT = 3
 # A stage direction between asterisks describes what she does; it is not
 # something she said about herself.
 _STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
@@ -191,6 +207,8 @@ class _Reading:
     # given. None: nothing of the conversation that begins with first_line.
     read_up_to: Message | None = None
     said_up_to: Message | None = None
+    # The same for the user state: how the user has been since its last run.
+    state_up_to: Message | None = None
     first_line: Message | None = None
     known: bool = False
     turns: int = 0
@@ -279,6 +297,10 @@ class StructuredBackgroundWorker:
             return _mood_messages(context, self.history_messages)
         if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK:
             return _reply_check_messages(context, self.history_messages)
+        if self.spec.kind is BackgroundCognitionKind.USER_STATE:
+            return _user_state_messages(context, self.spec.every_n_revisions)
+        if self.spec.kind is BackgroundCognitionKind.DIARY:
+            return _diary_messages(context)
         history = list(context.snapshot.history[-self.history_messages :])
         payload = context.request.payload
         latest = str(payload.get("latest_user_or_event", "")).strip()
@@ -586,6 +608,103 @@ class StructuredBackgroundWorker:
             )
             return tuple(issues), confidence, evidence, proposals
 
+        if kind is BackgroundCognitionKind.USER_STATE:
+            energy = str(data.get("energy") or "").strip().casefold()
+            trend = str(data.get("mood_trend") or "").strip().casefold()
+            if energy not in USER_ENERGY_LEVELS or trend not in USER_MOOD_TRENDS:
+                # Any other word is no reading; what was there stays.
+                return None, confidence, (), []
+            said = _state_lines(context, turns=self.spec.every_n_revisions)
+            hers = _her_lines(context, self.history_messages)
+            script = _fix_script(
+                str(context.request.payload.get("output_language") or ""), " ".join(said)
+            )
+
+            def the_users(quote: str) -> bool:
+                # The user's own words, not a sentence of hers said after her.
+                return _line_quoted(quote, said) is not None and not _echoes(quote, hers)
+
+            concerns: list[str] = []
+            quotes: list[str] = []
+            raw_concerns = data.get("concerns")
+            for raw in raw_concerns if isinstance(raw_concerns, list) else ():
+                if not isinstance(raw, dict):
+                    continue
+                concern = " ".join(str(raw.get("concern") or "").split())
+                concern = concern[:USER_CONCERN_CHARS].strip()
+                quote = str(raw.get("evidence") or "").strip()
+                # A concern the user did not voice, a diagnosis, or one she
+                # cannot read in the language of the conversation is dropped.
+                if not concern or not the_users(quote) or _DIAGNOSIS.search(concern):
+                    continue
+                if script and not _written_in(concern, script):
+                    continue
+                if concern in concerns or len(concerns) >= USER_CONCERNS_KEPT:
+                    continue
+                concerns.append(concern)
+                quotes.append(quote)
+            quotes += [quote for quote in evidence if the_users(quote)]
+            evidence = tuple(dict.fromkeys(quotes))[:_EVIDENCE_KEPT]
+            if not evidence:
+                # Nothing the user said shows it: how the user has been is
+                # not known, so it is ordinary.
+                energy, trend = "normal", "flat"
+            value = {
+                "energy": energy,
+                "mood_trend": trend,
+                "concerns": concerns,
+                "evidence": list(evidence),
+            }
+            proposals.append(
+                context.proposal(
+                    USER_STATE_TARGET,
+                    value,
+                    # Every part is held to the user's own words, checked above.
+                    confidence=1.0,
+                    provenance={**provenance, "evidence": list(evidence)},
+                )
+            )
+            return value, confidence, evidence, proposals
+
+        if kind is BackgroundCognitionKind.DIARY:
+            day = context.request.payload.get("diary")
+            day = day if isinstance(day, Mapping) else {}
+            happened = [line for _, lines in _diary_sections(day) for line in lines]
+            text = _diary_text(str(data.get("text") or ""))
+            script = _fix_script(
+                str(context.request.payload.get("output_language") or ""),
+                " ".join(line for title, lines in _diary_sections(day) if title != _MOODS
+                         for line in lines),
+            )
+            evidence = tuple(
+                dict.fromkeys(
+                    quote
+                    for quote in evidence
+                    if len(_letters(quote)) >= _SHORTEST_ECHO
+                    and _line_quoted(quote, happened) is not None
+                )
+            )[:_EVIDENCE_KEPT]
+            # A day told with nothing of the day under it is made up; one in a
+            # language she does not speak there is no diary of hers.
+            if not text or not evidence or (script and not _written_in(text, script)):
+                return None, confidence, evidence, []
+            value = {
+                "date": str(day.get("date") or ""),
+                "text": text,
+                "evidence": list(evidence),
+                "conversation_ids": list(day.get("conversation_ids") or ()),
+                "until": day.get("until"),
+            }
+            proposals.append(
+                context.proposal(
+                    DIARY_TARGET,
+                    value,
+                    confidence=1.0,
+                    provenance={**provenance, "evidence": list(evidence)},
+                )
+            )
+            return value, confidence, evidence, proposals
+
         if kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
             emotion = str(data.get("emotion", "neutral")).strip() or "neutral"
             value = {
@@ -804,6 +923,13 @@ class BackgroundCognitionRuntime:
         # revisions of the runtime.
         self.conversation: Hashable | None = None
         self._readings: dict[Hashable | None, _Reading] = {}
+        # What a host adds to the job of a worker, asked when the job is due
+        # by cadence: a mapping merged into its payload, or None when there is
+        # no job this time. The diary runs only with one (its day comes from
+        # the host); the user state reads how the user seemed from one.
+        self.job_extras: dict[
+            BackgroundCognitionKind, Callable[[], Mapping[str, Any] | None]
+        ] = {}
         self._handles: dict[str, TaskHandle] = {}
         self._task_kind: dict[str, BackgroundCognitionKind] = {}
         self._install_workers()
@@ -848,6 +974,7 @@ class BackgroundCognitionRuntime:
             # Before the first turn seen here nothing is this runtime's to read.
             reading.read_up_to = openers[-2] if len(openers) > 1 else None
             reading.said_up_to = reading.read_up_to
+            reading.state_up_to = reading.read_up_to
             reading.first_line = openers[0]
             reading.known = True
         handles: list[TaskHandle] = []
@@ -860,6 +987,11 @@ class BackgroundCognitionRuntime:
                 continue
             if spec.kind is BackgroundCognitionKind.VISION_INTERPRETATION and not _is_vision_event(event):
                 self._emit(spec.kind, "not_applicable", revision, event.id)
+                continue
+            if spec.kind is BackgroundCognitionKind.DIARY and spec.kind not in self.job_extras:
+                # Her day is the host's to give: what she remembers of it
+                # lies in stores this runtime does not read.
+                self._emit(spec.kind, "not_applicable", revision, event.id, detail="no_day_given")
                 continue
             if turn % spec.every_n_revisions != 0:
                 self._emit(spec.kind, "cadence_skipped", revision, event.id)
@@ -901,6 +1033,30 @@ class BackgroundCognitionRuntime:
                 )
                 if persona:
                     job = {**payload, "character_persona": persona}
+            if spec.kind is BackgroundCognitionKind.USER_STATE:
+                start = _unread(reading, openers, reading.state_up_to)
+                if start is not None:
+                    job = {
+                        **job,
+                        "user_lines_for_state": [
+                            message.content
+                            for message in openers[start:]
+                            if message.role == "user"
+                        ],
+                    }
+            if spec.kind is BackgroundCognitionKind.DIARY:
+                persona = _persona_summary(
+                    getattr(self.tasks.runtime, "character", None), limit=_DIARY_PERSONA_CHARS
+                )
+                if persona:
+                    job = {**job, "character_persona": persona}
+            extras = self.job_extras.get(spec.kind)
+            if extras is not None:
+                extra = extras()
+                if extra is None:
+                    self._emit(spec.kind, "not_due", revision, event.id)
+                    continue
+                job = {**job, **extra}
             try:
                 handle = await self.tasks.submit_background(
                     spec.kind.value,
@@ -926,6 +1082,9 @@ class BackgroundCognitionRuntime:
             if spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION and openers:
                 reading.said_up_to = openers[-1]
                 reading.known = True
+            if spec.kind is BackgroundCognitionKind.USER_STATE and openers:
+                reading.state_up_to = openers[-1]
+                reading.known = True
             self._scheduled_keys[key] = None
             self._handles[handle.task_id] = handle
             self._task_kind[handle.task_id] = spec.kind
@@ -937,6 +1096,35 @@ class BackgroundCognitionRuntime:
             handles.append(handle)
             self._emit(spec.kind, "scheduled", revision, event.id, task_id=handle.task_id)
         return tuple(handles)
+
+    async def submit_now(
+        self, kind: BackgroundCognitionKind, extra: Mapping[str, Any]
+    ) -> TaskHandle:
+        """A job of ``kind`` outside a turn, for a host that asks for one (her
+        diary before a stream): no event, ``extra`` as what the job reads."""
+        spec = self.config.spec_for(kind)
+        if spec is None or not spec.enabled:
+            raise ValueError(f"no background worker for {kind.value}")
+        job: dict[str, Any] = {"foreground_event_type": "host_request", **extra}
+        if self.output_language.strip():
+            job["output_language"] = self.output_language.strip()
+        if kind is BackgroundCognitionKind.DIARY:
+            persona = _persona_summary(
+                getattr(self.tasks.runtime, "character", None), limit=_DIARY_PERSONA_CHARS
+            )
+            if persona:
+                job["character_persona"] = persona
+        handle = await self.tasks.submit_background(
+            kind.value,
+            job,
+            priority=spec.priority,
+            timeout_s=spec.timeout_s,
+            source="background_cognition",
+        )
+        self._handles[handle.task_id] = handle
+        self._task_kind[handle.task_id] = kind
+        self._emit(kind, "scheduled", self.tasks.revision, task_id=handle.task_id)
+        return handle
 
     async def collect(self, handle: TaskHandle) -> Any:
         try:
@@ -1252,6 +1440,35 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "\"fix\":str}]}, against empty for the other kinds; when there is no slip, return "
             "{\"issues\":[]}."
         ),
+        BackgroundCognitionKind.USER_STATE: (
+            "Sum up how the user has been lately, from the user's own lines and how the user "
+            "seemed on each turn. energy is how much energy the user shows: low (tired, worn "
+            "out, sleepy, unwell), high (excited, eager, lively) or normal. mood_trend is how "
+            "the user's mood moved over these lines: down, flat or up. concerns are at most 3 "
+            "things weighing on the user that the user spoke of (work, sleep, an exam, a "
+            "person), each in a few words, each with evidence: the user's sentence that shows "
+            "it, copied exactly from the user's lines. This is not a diagnosis and not a "
+            "judgement of the user: never name an illness or a disorder, and do not say what "
+            "the user should do. A sentence the user practises or says after the character is "
+            "not about the user. When the lines show nothing particular, answer normal, flat "
+            "and no concerns. evidence is at most 3 of the user's sentences, copied exactly "
+            "from the user's lines, that show the energy and the trend. "
+            "Return JSON: {\"energy\":\"low|normal|high\",\"mood_trend\":\"down|flat|up\","
+            "\"concerns\":[{\"concern\":str,\"evidence\":str}],\"evidence\":[str]}."
+        ),
+        BackgroundCognitionKind.DIARY: (
+            "Write the character's diary entry for the day, as the character: in the first "
+            "person, in the character's own voice and way of speaking, as one short paragraph "
+            "of 3 to 6 sentences that tells the day, not a list of details. Every sentence "
+            "must rest on something in what happened: what was talked about, what the user "
+            "told the character, what the character said and thought, how the character felt "
+            "and what the character set out to do. Do not add events, people, places, times "
+            "or feelings that are not in what happened, and do not guess what anyone did "
+            "beyond it. Call the user by the name what happened gives, if it gives one. Do "
+            "not mention notes, summaries, records, prompts or being an AI. evidence is at "
+            "most 3 lines copied exactly from what happened, the ones the entry rests on "
+            "most. Return JSON: {\"text\":str,\"evidence\":[str]}."
+        ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
             "Interpret only the supplied textual vision observation and recent context. Do not claim unseen pixels. "
             "Return JSON: {\"interpretation\":str,\"tags\":[str],\"confidence\":0..1,\"evidence\":[str]}."
@@ -1483,6 +1700,8 @@ _PERSONA_SUMMARY_CHARS = 400
 # is written come late in one. The persona stands before the conversation in
 # what the worker reads, the same on every turn, so a model server reuses it.
 _REPLY_CHECK_PERSONA_CHARS = 1500
+# Her diary is in her voice: more of who she is than her mood needs.
+_DIARY_PERSONA_CHARS = 1500
 
 
 def _persona_summary(profile: Any, *, limit: int = _PERSONA_SUMMARY_CHARS) -> str:
@@ -1972,6 +2191,137 @@ def _reply_check_messages(context: TaskContext, history_messages: int) -> list[M
     )
     return [
         Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.REPLY_CHECK]),
+        Message(role="user", content=user),
+    ]
+
+
+# Names of an illness or a disorder: how the user has been is no diagnosis.
+_DIAGNOSIS = re.compile(
+    r"depress|disorder|syndrome|diagnos|adhd|ptsd|bipolar"
+    r"|憂鬱症|抑鬱症|抑郁症|焦慮症|焦虑症|躁鬱|躁郁|失眠症|症候群|障礙|障碍"
+    r"|うつ病|鬱病|障害|不眠症",
+    re.IGNORECASE,
+)
+
+
+def _state_lines(context: TaskContext, *, turns: int) -> list[str]:
+    """What the user said since the user state was last read; see _user_lines."""
+    unread = context.request.payload.get("user_lines_for_state")
+    if isinstance(unread, (list, tuple)):
+        return [str(line) for line in unread]
+    return _user_lines(context, turns=turns)
+
+
+def _user_state_messages(context: TaskContext, turns: int) -> list[Message]:
+    """The user's lines only, and how the user seemed on each turn: nothing
+    she said is evidence of how the user has been."""
+    payload = context.request.payload
+    lines = _state_lines(context, turns=turns)
+    readings = []
+    for raw in payload.get("user_emotions") or ():
+        if not isinstance(raw, Mapping) or not str(raw.get("emotion") or "").strip():
+            continue
+        scores = [
+            f"{key} {score:.1f}"
+            for key in ("valence", "stance")
+            if (score := _number(raw.get(key))) is not None
+        ]
+        readings.append(
+            f"- {str(raw['emotion']).strip()}" + (f" ({', '.join(scores)})" if scores else "")
+        )
+    user = (
+        f"Character: {context.snapshot.character_name}\n"
+        "The user's lines, oldest first:\n"
+        + ("\n".join(f"- {line}" for line in lines) or "(none)")
+        + "\n\nHow the user seemed on each turn, oldest first (valence from -1 unpleasant to "
+        "1 pleasant; stance towards the character from -1 hostile to 1 warm):\n"
+        + ("\n".join(readings) or "(not read)")
+        + "\n"
+    )
+    language = str(payload.get("output_language") or "").strip()
+    user += "\nReturn only the requested JSON object. " + (
+        f"concerns are written in {language}."
+        if language
+        else "concerns are written in the language of the user's lines, not in English "
+        "unless the user writes English."
+    )
+    return [
+        Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.USER_STATE]),
+        Message(role="user", content=user),
+    ]
+
+
+_MOODS = "How the character felt through the day (time, mood)"
+# What happened on her day, as the host gives it: (title, payload key).
+_DIARY_SECTIONS = (
+    ("Conversations of the day", "summaries"),
+    ("What the user told the character", "user_told"),
+    ("What the character said about themselves", "said_about_herself"),
+    ("What the character thought of the user", "views_of_user"),
+    (_MOODS, "moods"),
+    ("What the character set out to do", "goals"),
+)
+
+
+def _diary_sections(day: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
+    sections = []
+    for title, key in _DIARY_SECTIONS:
+        lines = [one for raw in day.get(key) or () if (one := " ".join(str(raw).split()))]
+        if lines:
+            sections.append((title, lines))
+    return sections
+
+
+# A line of a list: "- ", "* ", "• ", "1. ", "1) ".
+_LIST_ITEM = re.compile(r"^\s*(?:[-*•・]|\d+[.)、])\s*")
+# Where a sentence ends: after 。！？!?… (and the closing marks after them), or
+# after a full stop before a space.
+_DIARY_SENTENCE_END = re.compile(
+    r"(?<=[。！？!?…])(?![」』）)\"'”’。！？!?…])|(?<=[.!?][\"'”’)])\s+|(?<=\.)\s+"
+)
+
+
+def _diary_text(raw: str) -> str:
+    """Her entry as one paragraph of at most DIARY_SENTENCES sentences; empty
+    when it is a list of details, which is no diary."""
+    lines = [line.strip() for line in raw.strip().splitlines() if line.strip()]
+    if sum(bool(_LIST_ITEM.match(line)) for line in lines) >= 2:
+        return ""
+    wide = _script(raw) in ("zh", "ja", "ko")
+    text = ("" if wide else " ").join(lines)
+    sentences = [part.strip() for part in _DIARY_SENTENCE_END.split(text) if part.strip()]
+    return ("" if wide else " ").join(sentences[:DIARY_SENTENCES])
+
+
+def _diary_messages(context: TaskContext) -> list[Message]:
+    """Who she is, and what happened on her day, section by section."""
+    payload = context.request.payload
+    day = payload.get("diary")
+    day = day if isinstance(day, Mapping) else {}
+    persona = str(payload.get("character_persona") or "").strip()
+    happened = "\n\n".join(
+        f"{title}:\n" + "\n".join(f"- {line}" for line in lines)
+        for title, lines in _diary_sections(day)
+    )
+    user = (
+        f"Character: {context.snapshot.character_name}\n"
+        + (
+            f"Who the character is (background, not part of the day):\n{persona}\n\n"
+            if persona
+            else ""
+        )
+        + f"The day: {str(day.get('date') or '').strip() or '(today)'}\n\n"
+        + f"What happened:\n\n{happened or '(nothing)'}\n"
+    )
+    language = str(payload.get("output_language") or "").strip()
+    user += "\nReturn only the requested JSON object. " + (
+        f"The entry is written in {language}."
+        if language
+        else "The entry is written in the language of what happened, not in English unless "
+        "what happened is in English."
+    )
+    return [
+        Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.DIARY]),
         Message(role="user", content=user),
     ]
 

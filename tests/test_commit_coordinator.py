@@ -794,3 +794,108 @@ async def test_a_note_without_a_slip_on_the_list_is_refused(issues):
     commits = CognitiveCommitCoordinator(MultiTaskRuntime(runtime()))
     result = await commits.commit(reply_note(issues))
     assert (result.status, result.reason) == (CommitStatus.REJECTED, "reply_note_without_issue")
+
+
+# --- user state and diary ------------------------------------------------------------
+
+
+def user_state(payload=None, *, revision=0):
+    return TaskProposal(
+        target="state.user_state_candidate",
+        payload=payload
+        if payload is not None
+        else {
+            "energy": "low",
+            "mood_trend": "down",
+            "concerns": ["work never ends"],
+            "evidence": ["I am so tired, work never ends"],
+        },
+        base_revision=revision,
+        source_task_id="task-state",
+        confidence=1.0,
+        provenance={"worker_kind": "user_state"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_how_the_user_has_been_is_written_over_what_was_there_dated_by_the_clock():
+    engine = runtime()
+    engine.state.custom["user_state"] = {"energy": "high", "mood_trend": "up", "concerns": ["x"]}
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    commits.clock = lambda: 5000.0
+    result = await commits.commit(user_state())
+    assert result.status is CommitStatus.COMMITTED
+    stored = engine.state.custom["user_state"]
+    assert {key: stored[key] for key in ("energy", "mood_trend", "concerns", "evidence")} == {
+        "energy": "low",
+        "mood_trend": "down",
+        "concerns": ["work never ends"],
+        "evidence": ["I am so tired, work never ends"],
+    }
+    assert stored["updated_at"] == 5000.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [{"energy": "exhausted"}, {"mood_trend": "sideways"}, {"concerns": ["a", "b", "c", "d"]},
+     {"concerns": "work"}, {"evidence": ["1", "2", "3", "4"]}],
+    ids=["energy", "trend", "four concerns", "concerns not a list", "four quotes"],
+)
+async def test_a_user_state_off_its_vocabulary_is_refused(change):
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(runtime()))
+    proposal = user_state()
+    result = await commits.commit(replace(proposal, payload={**proposal.payload, **change}))
+    assert (result.status, result.reason) == (CommitStatus.REJECTED, "user_state_off_vocabulary")
+
+
+def diary_entry(payload=None, *, revision=0):
+    return TaskProposal(
+        target="memory.diary_candidate",
+        payload=payload
+        if payload is not None
+        else {
+            "date": "2026-10-06",
+            "text": "Dawn came by.",
+            "evidence": ["The user's name is Dawn."],
+            "conversation_ids": ["a"],
+            "until": 100.0,
+        },
+        base_revision=revision,
+        source_task_id="task-diary",
+        confidence=1.0,
+        provenance={"worker_kind": "diary"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_her_diary_entry_is_committed_without_writing_anything():
+    engine = runtime()
+    before = engine.state.snapshot()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    result = await commits.commit(diary_entry())
+    assert result.status is CommitStatus.COMMITTED
+    assert engine.state.snapshot() == before
+    assert engine.memory_manager.store.list_for_character(engine.memory_scope_id) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [{"text": " "}, {"evidence": []}, {"evidence": "x"}])
+async def test_a_diary_entry_without_text_or_evidence_is_refused(change):
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(runtime()))
+    proposal = diary_entry()
+    result = await commits.commit(replace(proposal, payload={**proposal.payload, **change}))
+    assert (result.status, result.reason) == (CommitStatus.REJECTED, "diary_without_evidence")
+
+
+@pytest.mark.asyncio
+async def test_a_diary_entry_written_while_she_talked_on_can_still_be_kept():
+    engine = runtime()
+    tasks = MultiTaskRuntime(engine)
+    commits = CognitiveCommitCoordinator(tasks)
+    async with tasks:
+        await tasks.run_foreground_turn(lambda: engine.run_turn("hi"))
+    stale = await commits.commit(diary_entry(revision=0))
+    assert stale.next_action is CommitNextAction.REBASE
+    rebased = commits.rebase(diary_entry(revision=0), reason="late")
+    assert (await commits.commit(rebased)).status is CommitStatus.COMMITTED
