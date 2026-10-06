@@ -56,15 +56,21 @@ def stays_in_conversation(kind: object) -> bool:
     return self_memory_kind(kind) in CONVERSATION_SELF_MEMORY_KINDS
 
 
-# Durable kinds a model files its judgements of the user under. relationship
-# and taste are left out: "I like you" is hers to keep.
-_KINDS_MISTAKEN_FOR_A_VIEW = frozenset({"opinion", "trait", "habit", "history"})
+# Durable kinds a model files its judgements of the user under. taste and
+# identity are left out: "I like the same tea as the user" is hers to keep.
+# relationship is in, as the prompt says: how she stands to this user is a
+# view of this user, not hers in every conversation (a stream has a different
+# user each time).
+_KINDS_MISTAKEN_FOR_A_VIEW = frozenset({"opinion", "trait", "habit", "history", "relationship"})
 
 # How a summary names the user, by language. Whole words for Latin script;
-# the CJK and Korean words need no boundary.
+# the CJK and Korean words need no boundary. Japanese 君 only as the pronoun
+# (君は／君の…, not after a name: 田中君が), not 君子.
 _USER_WORDS = re.compile(
-    r"(?:\b(?:the\s+user|user|you|your|yours)\b"
-    r"|用戶|用户|使用者|對方|对方|ユーザー|あなた|君|사용자|당신)",
+    r"(?:\b(?:the\s+user|users?|you|your|yours)\b"
+    r"|用戶|用户|使用者|對方|对方|你|妳|您"
+    r"|ユーザー?|あなた|相手|(?<![一-鿿])君(?=[はがのをにも])"
+    r"|사용자|당신)",
     re.IGNORECASE,
 )
 

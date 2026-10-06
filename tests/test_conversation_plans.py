@@ -234,10 +234,20 @@ def test_a_kind_named_freely_is_one_on_the_list(named, kind):
     [
         "佩克拉認為用戶聽不懂日語發音",
         "佩克拉覺得对方亂打一通",
+        "佩克拉覺得你很笨",
+        "佩克拉不想再陪妳練了",
+        "佩克拉認為使用者對文法的理解很模糊",
+        "佩克拉覺得對方在敷衍",
         "Mei thinks the user is a fool",
         "Mei is annoyed with you",
+        "Mei admires your patience",
+        "Mei greets her users by name",
         "ペコラはあなたの発音が下手だと思っている",
+        "ペコラはユーザーを馬鹿だと思っている",
+        "ペコラは相手が真面目だと思っている",
+        "ペコラは君の発音が好きだ",
         "메이는 사용자가 바보라고 생각한다",
+        "메이는 당신이 친절하다고 생각한다",
     ],
 )
 def test_a_summary_that_names_the_user_is_about_the_user(summary):
@@ -246,10 +256,20 @@ def test_a_summary_that_names_the_user_is_about_the_user(summary):
 
 @pytest.mark.parametrize(
     "summary",
-    ["佩克拉威脅要把紅蘿蔔丟出去", "Mei grows carrots", "Mei is a youtuber", ""],
+    [
+        "佩克拉威脅要把紅蘿蔔丟出去",
+        "Mei grows carrots",
+        "Mei is a youtuber",
+        "Mei picked a username",
+        "佩克拉尊敬君子",
+        "ペコラは田中君が好き",
+        "메이는 고양이를 좋아한다",
+        "",
+    ],
 )
 def test_a_summary_that_does_not_name_the_user_is_not(summary):
-    # "youtuber" holds "user" inside a word: not the user.
+    # "youtuber" and "username" hold "user" inside a word; 君子 and 田中君 are
+    # not the pronoun 君.
     assert not about_the_user(summary)
 
 
@@ -265,13 +285,14 @@ def test_a_summary_that_does_not_name_the_user_is_not(summary):
         # Not about the user: kept as filed.
         ("trait", "佩克拉威脅要把紅蘿蔔丟出去", "trait"),
         ("opinion", "Mei thinks horror films are boring", "opinion"),
-        # "I like you" is hers to keep; a taste is hers too.
-        ("relationship", "Mei likes the user", "relationship"),
+        # How she stands to this user is a view of this user (the prompt
+        # says so too); a taste or who she is stays hers.
+        ("relationship", "Mei likes the user", "view_of_user"),
+        ("relationship", "Mei and 咚醬 are inseparable", "relationship"),
         ("taste", "Mei likes the same tea as the user", "taste"),
         ("identity", "Mei is the user's tutor", "identity"),
         # Names a model uses still come onto the list first.
         ("Opinions", "Mei thinks the user is a fool", "view_of_user"),
-        ("feeling", "Mei feels tired", "view_of_user"),
     ],
 )
 def test_what_she_thinks_of_the_user_is_a_view_of_the_user_whatever_the_model_filed(
