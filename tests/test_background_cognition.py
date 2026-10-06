@@ -2567,6 +2567,7 @@ async def test_the_diary_is_told_to_write_her_day_in_her_voice_from_what_happene
     assert "Every sentence must rest on something in what happened" in system
     assert "copied exactly from what happened" in system
     assert "nothing in it happened on this day" in system
+    assert "is the user's, not the character's" in system
     assert 'never address the user as "you"' in system
     assert '"text":str' in system and '"evidence":[str]' in system
     assert "Who the character is (background, not part of the day):\nA quiet librarian." in user
