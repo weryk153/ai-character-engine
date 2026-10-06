@@ -122,30 +122,93 @@ prompt extends the one before it and the inference server can reuse its work
 | `companion.character = profile` | Rewrite the persona between turns; the id cannot change |
 | `companion.tools.register(definition, handler)` | Give the character a tool |
 | `memories(conversation_id)` / `rewrite_memories(conversation_id, lines, edited_from=shown)` | Show what she remembers of a conversation, and take the user's edit back: a shown line that is gone is forgotten, a new line is remembered; what arrived while the page was open stays |
-| `self_memories()` / `rewrite_self_memories(lines, edited_from=shown)` | What she said about herself, in any conversation, oldest first, and the user's edit of it, the same way as `rewrite_memories`. Beyond `self_memories_kept` the oldest are forgotten. For memories brought in from before the engine kept them, pass `from_before=True` (and `edited_from=[]` to only add): they are dated before every one she holds, so they are in mind last and forgotten first |
+| `self_memories()` / `rewrite_self_memories(lines, edited_from=shown)` | What she said about herself, in any conversation, oldest first (`in_conversation=` for those in her mind in one conversation), and the user's edit of it, the same way as `rewrite_memories`. Beyond `self_memories_kept` the oldest are forgotten. For memories brought in from before the engine kept them, pass `from_before=True` (and `edited_from=[]` to only add): they are dated before every one she holds, so they are in mind last and forgotten first |
 | `speak_up(conversation_id, notes=[...])` | She speaks up on her own; the host decides when. What she says comes from her: what is still open, what she wants and thinks, or turning to the user. `notes` suggest material for this remark only; `instruction` replaces the engine's own, for a host that asks in the language she speaks. What she says is generated whole and checked before any of it is passed on: the sentences a reply leaves out are left out, and so are sentences that quote back the words of her latest remarks. A remark that repeats her, or that only acknowledges ("OK.", "嗯。") when nobody said anything, is asked again, and after three attempts she stays quiet. `statement_only=True` leaves out questions as well, for a host whose user stayed quiet through her last questions. What she said stays in the conversation, the instruction does not; `keep=False` for a host that keeps what she said itself |
 | `remember_remark(conversation_id, text)` | Keep a remark she made on her own when the turn that made it was kept out of memory (a long instruction the host does not want kept): what she said stays in the conversation after a short event, so she neither repeats it nor says it again when the user answers |
 | `aside(make_call)` | A model call of the host's own on the same local model (a memory of its own to tidy, a translation): it waits while she replies, gives way once to a reply that starts, and takes its turn after her workers |
 
 ## Conversations
 
-`conversation_id` selects the history and the memory scope. State, goals and
-reflections belong to the character and are shared by all conversations.
+`conversation_id` selects the history and the memory scope: what she
+remembers of the user belongs to the conversation it was said in.
 
-So does what she said about herself. The `self_memory` worker reads her own
-lines, never the user's, and keeps what she stated about herself: her tastes,
-habits, history, what she is working on. Each item needs an exact quote of
-hers. Said again, in the same words whatever the punctuation, it replaces the
-one she held; anything said differently is a fact of its own, since nearly the
-same words can say the opposite ("likes" and "dislikes"). What the user never
-heard, the rest of a reply cut short by `interrupt()` or a reply taken back
-before the worker's result came in, is not kept; where the conversation no
-longer reaches back that far, nothing says it was not heard, and it is kept.
-The newest
-`self_memories_shown` stand in every conversation as `- you said about
-yourself: ...` lines of the note, and the system prompt asks her to stay
-consistent with them. One she no longer holds, edited away or pushed out by
-newer ones, is taken out of the notes again.
+Who she is belongs to the character and is the same in every conversation: her
+state and mood, her long-term goals and beliefs, and what she said about her
+tastes, traits, habits, history, relationships and opinions. What she is doing
+stays in the conversation it is done in (`plans_stay_in_conversation`, on by
+default): what she said she is working on or plans to do there, what she
+thinks of the user there, her short-term goals and her thoughts. Each record
+the memory, self-memory, goal and reflection workers keep is marked with the
+conversation it came from (`metadata["conversation_id"]`); what she is doing
+is not in her mind in another conversation, and back in its own it is again,
+also after a restart. A short-term goal also leaves her mind after
+`short_term_goal_max_age_hours` (24) untouched, in its own conversation too; a
+long-term goal after `goal_max_age_days`. A host that names no conversation
+has one, `None`; for it, what was kept before 1.2.0 is the difference (below).
+
+The `self_memory` worker reads her own lines, never the user's, and keeps what
+she stated about herself, each with a kind: `identity`, `trait`, `taste`,
+`habit`, `history`, `relationship`, `opinion` are hers in every conversation;
+`working_on`, `plan` and `view_of_user` (what she thinks of the user, "Mei
+thinks the user ...") only in the conversation they were said in.
+`SELF_MEMORY_KINDS` and `CONVERSATION_SELF_MEMORY_KINDS` in
+`ai_character_engine.companion` list them. A kind the model names otherwise is
+brought onto the list (`habits` is `habit`, `physical_trait` is `trait`,
+`feeling` is `view_of_user`); one still off the list is hers in every
+conversation. An `opinion`, `trait`, `habit`, `history` or `relationship`
+whose summary names the user ("the user", "you", 用戶, 你, 對方, あなた,
+사용자 …) is kept as `view_of_user` whatever the model called it: a small
+model files its judgements of the user under those kinds however it is told,
+and they would otherwise follow her into every conversation. Each item needs
+an exact quote of hers. Said again, in the same words whatever the
+punctuation, it replaces the one she held, also one held in another
+conversation; anything said differently is a fact of its own, since
+nearly the same words can say the opposite ("likes" and "dislikes"). What the
+user never heard, the rest of a reply cut short by `interrupt()` or a reply
+taken back before the worker's result came in, is not kept; where the
+conversation no longer reaches back that far, nothing says it was not heard,
+and it is kept. The newest `self_memories_shown` of those in her mind stand in
+the conversation as `- you said about yourself: ...` lines of the note, and
+the system prompt asks her to stay consistent with them. One she no longer
+holds, edited away or pushed out by newer ones, is taken out of the notes
+again. `self_memories_kept` is counted apart for what is hers everywhere and
+for each conversation.
+
+`self_memories()` lists all of them, wherever they were said, for a host's
+memory page; `self_memories(in_conversation=...)` lists those in her mind in
+that conversation. A line `rewrite_self_memories` gets in place of one that is
+gone keeps the kind and the conversation of the line it replaced.
+`snapshot().goals` and `.thoughts` are those of the conversation at hand.
+
+What was kept before 1.2.0 names no conversation: a short-term goal, a thought
+or a `working_on`/`plan`/`view_of_user` self memory of before counts as one of
+another conversation and is no longer in her mind; `self_memories()` still
+lists it. A self memory of before whose kind says it is hers everywhere
+(`habit`, say) stays in mind whatever it says; the user removes it on the
+memory page. `plans_stay_in_conversation=False` keeps everything in every
+conversation, as before 1.2.0 (the `short_term_goal_max_age_hours` window still
+applies).
+
+What the workers keep about the user is the user's own words. A memory needs
+an exact quote of the user; an item without one is dropped, and so is one
+whose quote repeats words of hers in the transcript or in her reply (four
+letters or digits or more, spacing and punctuation aside): a sentence she is
+teaching, said after her, is no fact about the user. A thought's evidence
+keeps only exact quotes of the user, each typed by the line it came from
+(`CognitionEvidenceRef.evidence_type`); her own lines and retellings are
+dropped, and a thought left with none is not proposed. The emotion worker is
+given the user's earlier lines apart from the latest one and judges the latest
+one only.
+
+Known limits: `self_memories_kept` holds for each conversation, so what she
+keeps in all of them together grows with the number of
+conversations. A goal proposed again in another conversation is merged into
+the one she has and moves to that conversation, out of the first. The
+`short_term_goal_max_age_hours` window is wall time, not the companion's
+`clock`: hours the host was not running count too. The check for her words
+also reads her reply, so a fact the user states and she says back
+(「今天很累」, then 「今天很累嗎？」), or an answer that repeats the words of
+her question, can be dropped.
 
 A host that keeps its own transcripts hands them over with
 `load_conversation(conversation_id, messages)` before the first reply. A
@@ -275,6 +338,8 @@ model can run every worker on every turn.
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
 | `goal_max_age_days` | 7 | Goals untouched for this long leave the context |
+| `plans_stay_in_conversation` | true | What she is doing, short-term goals and thoughts are in mind only in the conversation they came from; false keeps them in every conversation, as before 1.2.0 (the `short_term_goal_max_age_hours` window still applies) |
+| `short_term_goal_max_age_hours` | 24 | A short-term goal untouched for this long leaves the context; 0 leaves it to `goal_max_age_days` |
 | `goals_shown`, `thoughts_shown` | 3, 2 | How many goals (the most pressing) and thoughts (the newest) she keeps in mind; the rest stay stored |
 | `conversations_kept` | 8 | Conversations whose history is kept in memory |
 | `max_history_messages` | 40 | Messages of the conversation sent to the model |
@@ -295,7 +360,10 @@ a question. `ai_character_engine.companion` exports `SELF_MEMORY_LINE`, the
 start of her self memories in the note, and `ASSISTANT_SPEAK` and
 `ACKNOWLEDGEMENTS`, what the checks on what she says look for. From 1.1.0 it also
 exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`;
-from 1.1.1 it also has `mood_floor`.
+from 1.1.1 it also has `mood_floor`. From 1.2.0 it exports `SELF_MEMORY_KINDS`
+and `CONVERSATION_SELF_MEMORY_KINDS`, `CompanionSettings` has
+`plans_stay_in_conversation` and `short_term_goal_max_age_hours`, and
+`self_memories()` takes `in_conversation`.
 
 ## Lifecycle
 

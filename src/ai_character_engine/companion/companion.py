@@ -47,7 +47,7 @@ from ai_character_engine.commit.models import StalePolicy
 from ai_character_engine.context.builder import SELF_MEMORY_LINE, ContextBuilder, one_line
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals import GoalManager
-from ai_character_engine.goals.models import GoalRecord
+from ai_character_engine.goals.models import GoalHorizon, GoalRecord
 from ai_character_engine.goals.store import InMemoryGoalStore, JsonlGoalStore
 from ai_character_engine.host import CharacterHostBridge, HostBridgeConfig, HostBridgeError
 from ai_character_engine.llm import ModelEndpoint
@@ -59,6 +59,11 @@ from ai_character_engine.long_term_cognition.store import (
 )
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
 from ai_character_engine.memory.models import MemoryRecord, RetrievedMemory
+from ai_character_engine.memory.self_kinds import (
+    CONVERSATION_KEY,
+    self_memory_kind,
+    stays_in_conversation,
+)
 from ai_character_engine.memory.retriever import MemoryRetriever
 from ai_character_engine.memory.trace import RetrievalResult
 from ai_character_engine.memory.store import JsonlMemoryStore
@@ -631,22 +636,66 @@ class _RecentEvents:
         return [entry for entry in self._entries if entry.character_id == character_id]
 
 
+def _edited_lines(shown: Sequence[str], wanted: Sequence[str]) -> dict[str, str]:
+    """Each line of ``wanted`` that took the place of a line of ``shown``,
+    with the line it replaced: where the edited text has other lines than
+    the shown one, they are paired in order."""
+    before = [one_line(line) for line in shown if line.strip()]
+    pairs: dict[str, str] = {}
+    for op, i1, i2, j1, j2 in SequenceMatcher(a=before, b=list(wanted), autojunk=False).get_opcodes():
+        if op == "replace":
+            pairs.update(zip(wanted[j1:j2], before[i1:i2]))
+    return pairs
+
+
+def _came_from(metadata: Mapping[str, Any], conversation_id: str | None) -> bool:
+    """Whether a record came from that conversation. One written before 1.2.0
+    names none: it came from another."""
+    return CONVERSATION_KEY in metadata and metadata[CONVERSATION_KEY] == conversation_id
+
+
 class _GoalsInMind(GoalManager):
     """The goals she still has: none left untouched for too long. The store
     keeps them all; the goal worker reads the store. How many of them she
     keeps in mind is the context builder's ``goals_shown``: a goal pushed out
-    by a more pressing one is not given up, only not in mind."""
+    by a more pressing one is not given up, only not in mind.
 
-    def __init__(self, *, store, max_age_days: int) -> None:
+    A short-term goal is something to do in the conversation it came from:
+    with ``conversation`` (the conversation at hand) it is in mind there only,
+    and it leaves her mind sooner, after ``short_term_max_age_hours``."""
+
+    def __init__(
+        self,
+        *,
+        store,
+        max_age_days: int,
+        short_term_max_age_hours: float = 0.0,
+        conversation: Callable[[], str | None] | None = None,
+    ) -> None:
         super().__init__(store=store)
         self._max_age = timedelta(days=max_age_days)
+        self._short_term_max_age = (
+            timedelta(hours=short_term_max_age_hours) if short_term_max_age_hours > 0 else None
+        )
+        self._conversation = conversation
 
     def active_goals(self, *, character_id: str) -> tuple[GoalRecord, ...]:
-        cutoff = datetime.now(UTC) - self._max_age
+        now = datetime.now(UTC)
+        cutoff = now - self._max_age
+        short_cutoff = None if self._short_term_max_age is None else now - self._short_term_max_age
+        here = _ANY if self._conversation is None else self._conversation()
+
+        def in_mind(goal: GoalRecord) -> bool:
+            if goal.updated_at < cutoff:
+                return False
+            if goal.horizon is not GoalHorizon.SHORT_TERM:
+                return True
+            if short_cutoff is not None and goal.updated_at < short_cutoff:
+                return False
+            return here is _ANY or _came_from(goal.metadata, here)
+
         return tuple(
-            goal
-            for goal in super().active_goals(character_id=character_id)
-            if goal.updated_at >= cutoff
+            goal for goal in super().active_goals(character_id=character_id) if in_mind(goal)
         )
 
 
@@ -830,6 +879,12 @@ class CharacterCompanion:
             goal_manager=_GoalsInMind(
                 store=self._store(JsonlGoalStore, InMemoryGoalStore, "goals.jsonl"),
                 max_age_days=self.settings.goal_max_age_days,
+                short_term_max_age_hours=self.settings.short_term_goal_max_age_hours,
+                conversation=(
+                    (lambda: self._active)
+                    if self.settings.plans_stay_in_conversation
+                    else None
+                ),
             ),
             long_term_cognition=LongTermCognitionManager(
                 store=self._store(
@@ -984,7 +1039,7 @@ class CharacterCompanion:
 
     def _self_memories_for_context(self) -> list[str]:
         shown = self.settings.self_memories_shown
-        said = self.self_memories()[-shown:] if shown else []
+        said = self.self_memories(in_conversation=self._active)[-shown:] if shown else []
         return ["\n".join(f"{SELF_MEMORY_LINE}{line}" for line in said)] * bool(said)
 
     @property
@@ -1289,8 +1344,9 @@ class CharacterCompanion:
     def _take_back_what_she_no_longer_holds(self) -> None:
         """What she said about herself and has since forgotten: edited away by
         the host's user, or pushed out by newer ones. It was written into this
-        conversation while she held it."""
-        held = set(self.self_memories())
+        conversation while she held it. What she said in another conversation
+        about what she is doing there is not held here."""
+        held = set(self.self_memories(in_conversation=self._active))
         self.runtime.withdraw_from_notes(
             lambda line: line.startswith(SELF_MEMORY_LINE)
             and line.removeprefix(SELF_MEMORY_LINE) not in held
@@ -1769,14 +1825,21 @@ class CharacterCompanion:
         return outcome
 
     def _keep_the_newest_self_memories(self) -> None:
-        """The oldest beyond ``self_memories_kept`` are forgotten."""
+        """The oldest beyond ``self_memories_kept`` are forgotten: counted
+        apart for what is hers in every conversation and for what she holds
+        in each conversation, so that one long conversation does not push out
+        who she is."""
         scope = self._self_scope()
         records = self._memory_store.list_for_character(scope)
         active = sorted(
             (record for record in records if record.is_active),
             key=lambda record: record.created_at,
         )
-        over = {record.id for record in active[: -self.settings.self_memories_kept]}
+        shelves: dict[tuple, list[MemoryRecord]] = {}
+        for record in active:
+            shelves.setdefault(self._shelf(record), []).append(record)
+        kept = self.settings.self_memories_kept
+        over = {record.id for shelf in shelves.values() for record in shelf[:-kept]}
         if not over:
             return
         now = datetime.now(UTC)
@@ -1789,6 +1852,26 @@ class CharacterCompanion:
                 for record in records
             ],
         )
+
+    def _shelf(self, record: MemoryRecord) -> tuple:
+        """Which count of self memories a record is in; see
+        _keep_the_newest_self_memories."""
+        if not self.settings.plans_stay_in_conversation or not stays_in_conversation(
+            record.kind
+        ):
+            return ("every conversation",)
+        if CONVERSATION_KEY not in record.metadata:
+            return ("before 1.2.0",)
+        return ("conversation", record.metadata[CONVERSATION_KEY])
+
+    def _in_mind(self, record: MemoryRecord, conversation_id: str | None) -> bool:
+        """Whether what she said about herself is in her mind in that
+        conversation: hers in every conversation, or said there."""
+        if not self.settings.plans_stay_in_conversation or not stays_in_conversation(
+            record.kind
+        ):
+            return True
+        return _came_from(record.metadata, conversation_id)
 
     async def _react_to_observation(self) -> None:
         policy = self.runtime.state_policy
@@ -1806,7 +1889,13 @@ class CharacterCompanion:
         commits. A result that arrives after the user moved to another
         conversation would land there, so the scope is set back to the
         conversation the job came from for the duration of the commit.
+
+        The proposal is marked with that conversation: what she holds only
+        there (see plans_stay_in_conversation) is told apart by it.
         """
+        proposal = replace(
+            proposal, provenance={**proposal.provenance, CONVERSATION_KEY: conversation_id}
+        )
         current_scope = self.runtime.memory_scope_id
         if proposal.target in CONVERSATION_SCOPED_TARGETS:
             self.runtime.memory_scope_id = self._scope(conversation_id)
@@ -1953,12 +2042,14 @@ class CharacterCompanion:
         )
 
     def snapshot(self) -> CompanionSnapshot:
+        """Goals and thoughts are those in mind in the conversation at hand."""
         state = self.runtime.state
-        newest_first = sorted(
-            self.runtime.long_term_cognition.reflections(character_id=self.character.id),
-            key=lambda record: record.created_at,
-            reverse=True,
-        )
+        reflections = self.runtime.long_term_cognition.reflections(character_id=self.character.id)
+        if self.settings.plans_stay_in_conversation:
+            reflections = [
+                record for record in reflections if _came_from(record.metadata, self._active)
+            ]
+        newest_first = sorted(reflections, key=lambda record: record.created_at, reverse=True)
         goals = [
             goal.objective
             for goal in self.runtime.goal_manager.active_goals(character_id=self.character.id)
@@ -2028,17 +2119,35 @@ class CharacterCompanion:
                 (record.created_at for record in self._memory_store.list_for_character(scope)),
                 default=datetime.now(UTC),
             )
-        self._rewrite(scope, summaries, edited_from, "character_statement", dated_before)
+        self._rewrite(
+            scope, summaries, edited_from, "character_statement", dated_before, carry_over=True
+        )
         self._keep_the_newest_self_memories()
 
-    def self_memories(self) -> list[str]:
-        """What she said about herself that she holds, oldest first. It is
-        hers in every conversation."""
+    def self_memories(self, *, in_conversation: Any = _ANY) -> list[str]:
+        """What she said about herself that she holds, oldest first.
+
+        Without ``in_conversation``, all of it, wherever it was said: what a
+        host's memory page shows. With it (None is the conversation of a host
+        that names none), what is in her mind in that conversation: what is
+        hers in every conversation, and what she said there about what she is
+        doing, plans to do and thinks of the user."""
         records = self._memory_store.list_for_character(self._self_scope())
         active = sorted(
-            (record for record in records if record.is_active),
+            (
+                record
+                for record in records
+                if record.is_active
+                and (in_conversation is _ANY or self._in_mind(record, in_conversation))
+            ),
             key=lambda record: record.created_at,
         )
+        return [one_line(record.summary) for record in active]
+
+    def _shown(self, scope: str) -> list[str]:
+        """The lines a memory page shows of ``scope``, oldest first."""
+        records = self._memory_store.list_for_character(scope)
+        active = sorted((r for r in records if r.is_active), key=lambda r: r.created_at)
         return [one_line(record.summary) for record in active]
 
     def _rewrite(
@@ -2048,25 +2157,46 @@ class CharacterCompanion:
         edited_from: Sequence[str] | None,
         evidence_type: str,
         dated_before: datetime | None = None,
+        *,
+        carry_over: bool = False,
     ) -> None:
+        """``carry_over``: a new line that took the place of a line that is
+        gone keeps that line's kind and conversation."""
         store = self._memory_store
         wanted = list(dict.fromkeys(one_line(line) for line in summaries if line.strip()))
         removable = None if edited_from is None else {one_line(line) for line in edited_from}
         records = []
+        forgotten: dict[str, MemoryRecord] = {}
         for record in store.list_for_character(scope):
             shown = one_line(record.summary)
             if record.is_active and shown not in wanted and (removable is None or shown in removable):
+                forgotten.setdefault(shown, record)
                 record = replace(record, status="forgotten", forgotten_at=datetime.now(UTC))
             records.append(record)
         remembered = {one_line(record.summary) for record in records if record.is_active}
         new = [summary for summary in wanted if summary not in remembered]
+        edited = (
+            _edited_lines(self._shown(scope) if edited_from is None else edited_from, wanted)
+            if carry_over
+            else {}
+        )
         for number, summary in enumerate(new):
+            kind = "fact"
+            metadata: dict[str, Any] = {"evidence_type": evidence_type, "source": "host"}
+            was = forgotten.get(edited.get(summary, ""))
+            if was is not None:
+                # An edited line is still the kind of thing it was and holds
+                # where it did: an edited plan for one conversation written
+                # back as a fact was in every conversation.
+                kind = self_memory_kind(was.kind)
+                if CONVERSATION_KEY in was.metadata:
+                    metadata[CONVERSATION_KEY] = was.metadata[CONVERSATION_KEY]
             record = MemoryRecord(
                 character_id=scope,
                 summary=summary,
-                kind="fact",
+                kind=kind,
                 importance=0.7,
-                metadata={"evidence_type": evidence_type, "source": "host"},
+                metadata=metadata,
             )
             if dated_before is not None:
                 earlier = timedelta(seconds=len(new) - number)

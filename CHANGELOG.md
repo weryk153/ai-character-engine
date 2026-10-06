@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0
+
+- What she is doing stays in the conversation it is done in (`CompanionSettings.plans_stay_in_conversation`, on by default). Every background result a `CharacterCompanion` commits is marked with its conversation (`conversation_id` in the proposal's provenance, and in the `metadata` of the memory, self-memory, goal and reflection records it makes). What she said she is working on or plans to do there and what she thinks of the user there (self-memory kinds `working_on`, `plan`, `view_of_user`), her short-term goals and her thoughts are in her mind only in that conversation; her other self memories, long-term goals and beliefs are in every conversation. `snapshot().goals` and `.thoughts` are those of the conversation at hand. `self_memories()` still lists everything; `self_memories(in_conversation=...)` lists what is in her mind there. `self_memories_kept` is counted apart for what is hers everywhere and for each conversation.
+- Self-memory kinds are one of `SELF_MEMORY_KINDS` (`ai_character_engine.companion`): identity, trait, taste, habit, history, relationship, opinion, working_on, plan, view_of_user. A kind named otherwise is brought onto the list (`habits` → `habit`, `physical_trait` → `trait`, `feeling` → `view_of_user`); one still off the list is hers in every conversation. An `opinion`, `trait`, `habit`, `history` or `relationship` whose summary names the user is kept as `view_of_user`: her judgements of the user stay in their conversation whatever kind the model filed them under.
+- A short-term goal untouched for `short_term_goal_max_age_hours` (24) leaves her mind, also in its own conversation (0: only `goal_max_age_days`).
+- What was kept before 1.2.0 names no conversation: short-term goals, thoughts and `working_on`/`plan`/`view_of_user` self memories of before count as another conversation's and are no longer in her mind (still listed by `self_memories()`). A host that names no conversation therefore no longer sees its old thoughts and short-term goals.
+- A line `rewrite_self_memories` gets in place of one that is gone keeps that line's kind and conversation; before, it became a `fact`, hers in every conversation.
+- Behaviour change: a memory item without an `evidence` quote is dropped (it was kept whole), and so is one whose quote repeats four or more letters of hers in the transcript or her reply, such as a sentence she is teaching said after her.
+- Behaviour change: a reflection keeps only evidence that quotes the user's own words, and is not proposed when none is left. Each quote's evidence type is that of the line it came from (`evidence_types` in the proposal's provenance), so the user's question no longer counts as an asserted fact towards a belief; a proposal without `evidence_types` is typed as before.
+- The emotion worker gets the user's earlier lines under `Earlier user lines (background only)`, without the latest one, which stands alone under `Latest event/user content`.
+- The memory, self-memory, reflection and emotion prompts have a few sentences added at their end: a practised sentence is not a fact about the user; the self-memory kinds and which of them stay in a conversation; evidence about the user is the user's own words and her judgement of the user is no belief; judge the user's emotion on the latest line only.
+
+Known limitations:
+
+- `self_memories_kept` holds for each conversation, so what she keeps in all of them together grows with the number of conversations.
+- A goal proposed again in another conversation is merged into the one she has and moves to that conversation, out of the first.
+- The `short_term_goal_max_age_hours` window is wall time, not the companion's `clock`: hours the host was not running count too.
+- The check for her words also reads her reply, so a fact the user states and she says back (「今天很累」, then 「今天很累嗎？」), or an answer that repeats the words of her question, can be dropped.
+
 ## 1.1.1
 
 - `ContextBuilder` fades her mood by default (`mood_half_life_seconds` 300, `mood_floor` 0.15), so a bare `CharacterRuntime` tells the model the same faded mood the live face shows; before, the `- emotion:` line gave the mood as stored unless a companion set the builder. A host that builds `CharacterState(emotion=...)` directly must give it a `mood_intensity`, or the line reads neutral. The same holds for the other ways a bare runtime gets a mood: one set through a `StatePatch` without an intensity (0.5 by default) fades to neutral after about 8.7 minutes, and a snapshot saved before 1.1.0 restored into a bare runtime, or `state.emotion = ...` assigned directly, reads neutral. Setting `mood_half_life_seconds = None` still shows the mood as stored.

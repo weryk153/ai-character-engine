@@ -568,3 +568,41 @@ def test_public_api_and_version():
     assert ace.__version__ == VERSION
     assert ace.LongTermCognitionManager is LongTermCognitionManager
     assert ace.BeliefClaim is BeliefClaim
+
+
+def _thought_proposal(**provenance):
+    return TaskProposal(
+        target="cognition.reflection_candidate",
+        payload={"insight": "I think they are worn out", "belief_candidate": None},
+        base_revision=0,
+        source_task_id="task-1",
+        confidence=0.9,
+        provenance={
+            "worker_kind": "reflection",
+            "foreground_event_id": "event-1",
+            "evidence_type": "asserted_fact",
+            "evidence": ["why do you never listen?", "I am exhausted today"],
+            **provenance,
+        },
+    )
+
+
+def test_each_quote_of_a_thought_keeps_the_type_of_its_own_line():
+    """A question of the user's went in as an asserted fact because the latest
+    line was one, and asserted facts can become beliefs."""
+    from ai_character_engine.commit.coordinator import _reflection_evidence
+
+    refs = _reflection_evidence(
+        _thought_proposal(evidence_types=["user_question", "asserted_fact"])
+    )
+    assert [(ref.excerpt, ref.evidence_type) for ref in refs] == [
+        ("why do you never listen?", "user_question"),
+        ("I am exhausted today", "asserted_fact"),
+    ]
+
+
+def test_a_thought_proposed_without_types_per_quote_takes_the_latest_lines_type():
+    from ai_character_engine.commit.coordinator import _reflection_evidence
+
+    refs = _reflection_evidence(_thought_proposal())
+    assert [ref.evidence_type for ref in refs] == ["asserted_fact", "asserted_fact"]

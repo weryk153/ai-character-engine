@@ -407,8 +407,8 @@ async def test_real_background_memory_proposal_stays_non_authoritative_until_coo
     engine = runtime()
     tasks = MultiTaskRuntime(engine)
     client = JSONClient(
-        '{"items":[{"summary":"User prefers tea","kind":"preference","importance":0.8,"confidence":0.93}],'
-        '"confidence":0.93,"evidence":["I prefer tea"]}'
+        '{"items":[{"summary":"User prefers tea","kind":"preference","importance":0.8,"confidence":0.93,'
+        '"evidence":"I prefer tea"}],"confidence":0.93,"evidence":["I prefer tea"]}'
     )
     models = CognitiveModelRuntime(
         endpoints=(ModelEndpoint(endpoint_id="memory", client=client),),

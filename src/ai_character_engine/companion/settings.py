@@ -75,6 +75,16 @@ class CompanionSettings:
     # and below mood_floor she is neutral again.
     mood_half_life_seconds: float = DEFAULT_MOOD_HALF_LIFE_SECONDS
     mood_floor: float = DEFAULT_MOOD_FLOOR
+    # What she is doing in a conversation stays in it: what she said she is
+    # working on or plans to do there and what she thinks of the user there,
+    # her short-term goals and her thoughts are in mind only in the
+    # conversation they came from. Her tastes, habits, history and long-term
+    # goals are hers in every conversation. False: everything in every
+    # conversation, as before 1.2.0.
+    plans_stay_in_conversation: bool = True
+    # A short-term goal left untouched this long leaves her mind, also in its
+    # own conversation; 0: only goal_max_age_days.
+    short_term_goal_max_age_hours: float = 24.0
 
     def __post_init__(self) -> None:
         for name in (
@@ -109,3 +119,5 @@ class CompanionSettings:
             raise ValueError("mood_half_life_seconds must be > 0")
         if not 0 <= self.mood_floor <= 1:
             raise ValueError("mood_floor must be between 0 and 1")
+        if self.short_term_goal_max_age_hours < 0:
+            raise ValueError("short_term_goal_max_age_hours must be >= 0")
