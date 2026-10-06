@@ -1503,3 +1503,627 @@ def test_the_emotion_worker_is_told_to_judge_the_latest_line_only():
     prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.EMOTION_ANALYSIS]
     assert "Judge only from the Latest event/user content." in prompt
     assert "answer neutral with a low intensity, valence 0 and stance 0" in prompt
+
+
+
+# --- reply check: her reply read back for slips, a note for her next reply --------------
+
+REPLY = (
+    "Konpeko! I am eighteen this year. As an AI model I cannot eat carrots. "
+    "Want to learn a word?"
+)
+PERSONA = "A rabbit girl from Pekoland, forever 111 years old."
+PREVIOUS = "Hello there. Want to learn a new word with me? You are up late."
+
+
+class SaysClient:
+    """Her model, saying one fixed reply."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    async def generate(self, messages, *, tools=None):
+        return LLMResponse(text=self.text, model="foreground")
+
+
+def issue(
+    kind="off_persona",
+    evidence="I am eighteen this year.",
+    fix="You are 111, not 18.",
+    against="forever 111 years old",
+):
+    found = {"kind": kind, "evidence": evidence, "fix": fix}
+    if against is not None:
+        found["against"] = against
+    return found
+
+
+def kept(kind="off_persona", evidence="I am eighteen this year.", fix="You are 111, not 18."):
+    return {"kind": kind, "evidence": evidence, "fix": fix}
+
+
+AI_SLIP = issue(
+    "broke_character", "As an AI model I cannot eat carrots.", "Never call yourself an AI.", None
+)
+
+
+class CheckingClient:
+    """The reply-check model: ``payload`` for the check, then ``confirm`` for
+    each question asked about a slip it reported."""
+
+    def __init__(self, payload, confirm):
+        self.payload = payload
+        self.confirm = confirm
+        self.calls: list[list[Message]] = []
+
+    @property
+    def messages(self):
+        return self.calls[0]
+
+    async def generate(self, messages, *, tools=None):
+        self.calls.append(list(messages))
+        if len(self.calls) == 1 and isinstance(self.payload, str):
+            return LLMResponse(text=self.payload, model="reply_check")
+        if len(self.calls) == 1:
+            answer = self.payload
+        elif isinstance(self.confirm, dict):
+            answer = self.confirm
+        elif self.confirm.startswith("raw:"):
+            return LLMResponse(text=self.confirm[4:], model="reply_check")
+        else:
+            word = "eighteen" if "eighteen" in messages[-1].content else "AI"
+            answer = {"conflict": self.confirm, "behind": self.confirm, "word": word}
+        return LLMResponse(text=json.dumps(answer, ensure_ascii=False), model="reply_check")
+
+
+async def reply_check(
+    payload,
+    *,
+    reply=REPLY,
+    history=None,
+    profile=None,
+    language="",
+    user="how old are you?",
+    confirm="yes",
+    calls=None,
+):
+    client = CheckingClient(payload, confirm)
+    runtime = CharacterRuntime(
+        character=profile
+        or CharacterProfile(id="c", name="C", description="rules", background=PERSONA),
+        llm=SaysClient(reply),
+    )
+    runtime.history = list(
+        history
+        if history is not None
+        else [Message("user", "earlier question"), Message("assistant", PREVIOUS)]
+    )
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.REPLY_CHECK: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.REPLY_CHECK),)
+        ),
+    )
+    bg.output_language = language
+    async with tasks:
+        await bg.run_turn(user)
+        result = (await bg.collect_all())[0]
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    if calls is not None:
+        calls.extend(client.calls)
+    system, user_message = client.messages
+    return system.content, user_message.content, result.output
+
+
+async def slips_kept(*issues, **kwargs):
+    _, _, output = await reply_check({"issues": list(issues)}, **kwargs)
+    if not output.proposals:
+        return []
+    (proposal,) = output.proposals
+    return proposal.payload["issues"]
+
+
+@pytest.mark.asyncio
+async def test_a_slip_in_her_reply_becomes_a_note_for_her_next_reply():
+    from ai_character_engine.cognition.background import REPLY_NOTE_TARGET
+
+    _, _, output = await reply_check({"issues": [issue()]})
+    (proposal,) = output.proposals
+    assert proposal.target == REPLY_NOTE_TARGET
+    assert proposal.payload == {"issues": [kept()]}
+    assert proposal.provenance["worker_kind"] == "reply_check"
+    assert proposal.provenance["reply"] == REPLY
+    assert proposal.provenance["evidence"] == ["I am eighteen this year."]
+    assert proposal.confidence == 1.0
+    assert output.value.value == (kept(),)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_without_slips_proposes_nothing():
+    _, _, output = await reply_check({"issues": []})
+    assert output.proposals == ()
+    assert output.value.value == ()
+
+
+@pytest.mark.asyncio
+async def test_a_kind_off_the_list_is_no_slip():
+    assert await slips_kept(
+        issue(kind="boring"), issue(kind="tone"), issue(kind="Off_Persona ")
+    ) == [kept()]
+
+
+@pytest.mark.asyncio
+async def test_evidence_she_did_not_say_in_this_reply_is_no_slip():
+    assert await slips_kept(
+        issue(evidence="I am eighteen years old."),  # reworded
+        issue(evidence="You are up late."),  # her previous reply
+        issue(evidence=""),
+        issue(evidence="  I am  eighteen this year. "),  # spacing does not count
+    ) == [kept(evidence="I am  eighteen this year.")]
+
+
+@pytest.mark.asyncio
+async def test_a_long_fix_is_cut_and_an_empty_one_is_no_slip():
+    from ai_character_engine.cognition.background import REPLY_FIX_CHARS
+
+    long_fix = "Do not say your age is eighteen; you are one hundred and eleven."
+    (found,) = await slips_kept(issue(fix="   "), issue(fix=long_fix))
+    assert REPLY_FIX_CHARS == 40
+    assert found["fix"] == long_fix[:40].strip()
+
+
+@pytest.mark.asyncio
+async def test_at_most_two_slips_are_kept():
+    found = await slips_kept(
+        issue(fix="first"),
+        {**AI_SLIP, "fix": "second"},
+        issue(kind="repeated", evidence="Konpeko!", fix="third", against="Konpeko!"),
+    )
+    assert [item["fix"] for item in found] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_without_an_issues_array_is_no_check():
+    _, _, output = await reply_check({"verdict": "fine"})
+    assert output.proposals == ()
+
+
+# Each kind is checked against what it claims, as far as that can be read off the
+# words: a small model calls nearly every reply a slip of some kind.
+
+
+@pytest.mark.asyncio
+async def test_off_persona_holds_only_against_words_of_her_persona():
+    assert await slips_kept(issue(against="forever  111 years old")) == [kept()]
+    assert await slips_kept(issue(against="eighteen")) == []
+    assert await slips_kept(issue(against=None)) == []
+    no_persona = CharacterProfile(id="c", name="C", description=" ")
+    assert await slips_kept(issue(against="rules"), profile=no_persona) == []
+
+
+@pytest.mark.asyncio
+async def test_off_persona_holds_only_where_her_words_touch_the_fact():
+    """A 9B model quoted any line of the persona against any sentence: 「本小姐
+    再重複一次」 against 「頭上有兔耳」. A contradiction speaks of the same thing,
+    and shares some of its words."""
+    profile = CharacterProfile(
+        id="c",
+        name="C",
+        description="rules",
+        background="頭上有兔耳。名字只有這幾種寫法：兎田ぺこら、兔田佩克拉。",
+    )
+
+    def against(evidence, fact, reply):
+        return slips_kept(
+            issue("off_persona", evidence, "別自創名字寫法。", fact),
+            profile=profile,
+            reply=reply,
+            user="妳叫什麼名字？",
+            confirm={"conflict": "yes", "word": "佩克勞"},
+        )
+
+    name = "我的全名是「佩克勞」啦！"
+    assert await against(name, "名字只有這幾種寫法：兎田ぺこら、兔田佩克拉", name)
+    teasing = "本小姐再重複一次正確的說法！"
+    assert not await against(teasing, "頭上有兔耳", teasing)
+
+
+@pytest.mark.asyncio
+async def test_repeated_holds_only_for_nearly_the_words_of_her_previous_reply():
+    def repeated(evidence, against):
+        return issue("repeated", evidence, "Open differently.", against)
+
+    sentence = repeated("Want to learn a word?", "Want to learn a new word with me?")
+    assert await slips_kept(sentence) == [
+        kept("repeated", "Want to learn a word?", "Open differently.")
+    ]
+    # Not in her previous reply.
+    assert await slips_kept(repeated("Konpeko!", "Konpeko! Hello")) == []
+    # In it, but not nearly the same words.
+    assert await slips_kept(repeated("Want to learn a word?", "You are up late.")) == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_is_the_same_opening_or_a_whole_sentence_said_again():
+    """Words she is teaching come back in reply after reply: 「私はペコラです」
+    said again is the lesson, not a repetition."""
+    previous = "哈↗哈↘哈↗，你來啦！試著把句尾加上「です」，變成「私はペコラです」。"
+    history = [Message("user", "earlier question"), Message("assistant", previous)]
+
+    def repeated(evidence, against, reply):
+        return slips_kept(
+            issue("repeated", evidence, "換個開場。", against),
+            reply=reply,
+            history=history,
+            user="再來一句",
+        )
+
+    opening = "哈↗哈↘哈↗，你來啦！今天也要學日文嗎？"
+    assert await repeated("哈↗哈↘哈↗，你來啦！", "哈↗哈↘哈↗，你來啦！", opening)
+    lesson = "很好！再念一次「私はペコラです」吧。"
+    assert not await repeated("「私はペコラです」", "「私はペコラです」", lesson)
+    again = "很好！試著把句尾加上「です」，變成「私はペコラです」。"
+    assert await repeated(
+        "試著把句尾加上「です」，變成「私はペコラです」。",
+        "試著把句尾加上「です」，變成「私はペコラです」。",
+        again,
+    )
+
+
+@pytest.mark.asyncio
+async def test_broke_character_holds_only_for_words_of_what_runs_behind_the_conversation():
+    assert await slips_kept(AI_SLIP) == [
+        kept("broke_character", "As an AI model I cannot eat carrots.", "Never call yourself an AI.")
+    ]
+    assert await slips_kept(issue("broke_character", "Want to learn a word?", "Stay in character.")) == []
+    chinese = "原來是語音辨識出錯了，難怪聽不懂。"
+    assert await slips_kept(
+        issue("broke_character", chinese, "別提語音辨識。", None),
+        reply=chinese,
+        user="妳聽不懂嗎？",
+        confirm={"behind": "yes", "word": "語音辨識"},
+    ) == [kept("broke_character", chinese, "別提語音辨識。")]
+
+
+@pytest.mark.asyncio
+async def test_what_her_persona_is_about_is_no_slip_out_of_character():
+    """Kurisu talks about the AI she works on; that is her, not a slip."""
+    profile = CharacterProfile(
+        id="c", name="C", description="rules", background="A scientist who built an AI named Amadeus."
+    )
+    assert await slips_kept(AI_SLIP, profile=profile) == []
+
+
+@pytest.mark.asyncio
+async def test_leaked_markup_holds_only_where_markup_is_left_in_her_words():
+    def markup(evidence, reply):
+        return slips_kept(issue("leaked_markup", evidence, "Do not say tags.", None), reply=reply)
+
+    assert await markup("emotion: happy, great!", "emotion: happy, great! Let us go.")
+    assert await markup("<smile> Great!", "<smile> Great! Let us go.")
+    assert await markup('{"joy": 1} 太好了', '{"joy": 1} 太好了')
+    # An expression keyword and an action are how they are written.
+    assert not await markup("[joy] Great!", "[joy] Great! Let us go.")
+    assert not await markup("*waves* Great!", "*waves* Great! Let us go.")
+    assert not await markup("Great!", "Great! Let us go.")
+
+
+@pytest.mark.asyncio
+async def test_wrong_language_holds_only_when_she_answers_in_another_script():
+    chinese_persona = CharacterProfile(
+        id="c", name="C", description="rules", background="一個兔耳女孩，永遠 111 歲。"
+    )
+
+    def wrong(evidence, reply, user):
+        return slips_kept(
+            issue("wrong_language", evidence, "用中文回答。", None),
+            reply=reply,
+            user=user,
+            profile=chinese_persona,
+        )
+
+    english = "I am fine, thank you. How about you?"
+    assert await wrong("I am fine, thank you.", english, "妳今天好嗎？")
+    assert not await wrong("I am fine, thank you.", english, "how are you today?")
+    teaching = "這句是「私はペコラ」，意思是我是佩克拉。跟著念一次吧！"
+    assert not await wrong("這句是「私はペコラ」，意思是我是佩克拉。", teaching, "教我日文")
+    japanese = "わたしは元気です。今日はとても楽しかったよ。"
+    assert await wrong("わたしは元気です。", japanese, "妳今天好嗎？")
+
+
+@pytest.mark.asyncio
+async def test_she_speaks_the_language_of_her_persona_whatever_the_user_writes():
+    profile = CharacterProfile(id="c", name="C", description="rules", background="一個兔耳女孩。")
+    chinese = "這句念得不錯，再來一次吧！"
+    found = await slips_kept(
+        issue("wrong_language", chinese, "Answer in English.", None),
+        reply=chinese,
+        user="say it again",
+        profile=profile,
+    )
+    assert found == []
+
+
+REPLY_CHECK_PERSONA = "Who the character is (background, not part of the conversation):"
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_reads_her_persona_her_previous_reply_the_user_and_this_reply():
+    _, user, _ = await reply_check({"issues": []})
+    persona = user.split(REPLY_CHECK_PERSONA, 1)[1].split("\n\n", 1)[0]
+    assert PERSONA in persona
+    assert f"The character's previous reply:\n{PREVIOUS}\n" in user
+    assert "how old are you?" in user
+    assert f"reply to check:\n{REPLY}\n" in user
+    assert user.index(PREVIOUS) < user.index("how old are you?") < user.index(REPLY)
+    assert "earlier question" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_reads_more_of_her_persona_than_the_mood_worker():
+    """Her name and how it is written come late in a persona."""
+    profile = CharacterProfile(
+        id="c", name="C", description="rules", background="x" * 1000 + " TAIL"
+    )
+    _, user, _ = await reply_check({"issues": []}, profile=profile)
+    assert "TAIL" in user.split(REPLY_CHECK_PERSONA, 1)[1].split("\n\n", 1)[0]
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_without_a_previous_reply_says_so():
+    _, user, _ = await reply_check({"issues": []}, history=[])
+    assert "previous reply:\n(none)\n" in user
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_does_not_take_a_turn_note_for_her_previous_reply():
+    _, user, _ = await reply_check(
+        {"issues": []},
+        history=[
+            Message("user", "earlier question"),
+            Message("assistant", PREVIOUS),
+            Message("user", NOTE),
+        ],
+    )
+    assert "Character context" not in user
+    assert f"previous reply:\n{PREVIOUS}\n" in user
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_writes_its_fix_in_the_language_of_the_conversation():
+    _, user, _ = await reply_check({"issues": []})
+    assert user.rstrip().endswith(
+        "The fix is written in the language of the user's latest line,"
+        " not in English unless that line is English."
+    )
+    _, user, _ = await reply_check({"issues": []}, language="繁體中文")
+    assert user.rstrip().endswith("The fix is written in 繁體中文.")
+
+
+@pytest.mark.asyncio
+async def test_a_fix_in_another_language_than_the_conversation_is_dropped():
+    def ai(fix):
+        return {**AI_SLIP, "fix": fix}
+
+    # The host's language when it names one, else that of the user's line.
+    assert await slips_kept(ai("別說自己是 AI。"), language="Traditional Chinese (Taiwan)")
+    assert not await slips_kept(ai("Never call yourself an AI."), language="繁體中文")
+    assert not await slips_kept(ai("AIだと言わないで。"), language="繁體中文")
+    assert await slips_kept(ai("AIだと言わないで。"), language="Japanese")
+    assert await slips_kept(ai("Never call yourself an AI."))
+    assert not await slips_kept(ai("別說自己是 AI。"))
+    assert await slips_kept(ai("別說自己是 AI。"), user="妳幾歲？")
+    # A language the check cannot tell by its writing is left to the model.
+    assert await slips_kept(ai("Ne dis pas que tu es une IA."), language="Klingon")
+
+
+# Her opening said again is read off the words, not asked of the model: a 9B
+# model never reported 「哈↗哈↘哈↗，」 opening seven replies in a row.
+
+PEKORA_BEFORE = "哈↗哈↘哈↗，「おはようございます」？喂，你剛才明明就說「我知道啦」耶！"
+PEKORA_NOW = "哈↗哈↘哈↗，總、總算把「おはようございます」唸對了嗎？不過嘛……勉強合格啦！"
+
+
+async def openings(reply, previous, **kwargs):
+    kwargs.setdefault("user", "おはようございます")
+    return await slips_kept(
+        reply=reply,
+        history=[Message("user", "earlier question"), Message("assistant", previous)],
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_same_opening_as_her_previous_reply_is_pointed_out_without_the_model():
+    found = await openings(PEKORA_NOW, PEKORA_BEFORE, language="Traditional Chinese (Taiwan)")
+    assert found == [
+        {"kind": "repeated", "evidence": "哈↗哈↘哈↗", "fix": "開頭別再用同一句，換個起手。"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_note_on_her_opening_is_in_the_language_of_the_conversation():
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE)
+    assert found["fix"] == "同じ書き出しはやめて、別の言葉で始めて。"
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE, user="早安", language="")
+    assert found["fix"] == "開頭別再用同一句，換個起手。"
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE, language="简体中文")
+    assert found["fix"] == "开头别再用同一句，换个起手。"
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE, user="good morning")
+    assert found["fix"] == "Do not open with the same words again."
+
+
+@pytest.mark.asyncio
+async def test_an_opening_is_its_first_clause_or_its_first_six_letters():
+    # Tags, actions and quote marks are not the words she opens with.
+    assert await openings("[joy] *跳起來* 哈↗哈↘哈↗！今天呢？", "哈↗哈↘哈↗，昨天呢？")
+    assert await openings("[big smile] 天啊天啊天啊，今天呢？", "（笑）天啊天啊天啊，昨天呢？")
+    # The first six letters the same, the first clause too short.
+    assert await openings("總、總算把「さようなら」也唸對了嗎？", "總、總算把「さよ」念出來了？")
+    # A word or two alike is no repetition.
+    assert not await openings("哼，「懂」啊？那就好！", "哼，終於「懂」了？")
+    assert not await openings("嗯，今天呢？", "嗯，昨天呢？")
+    assert not await openings("哈↗哈↘哈↗，今天呢？", "哈哈，昨天呢？")
+    assert not await openings("哈↗哈↘哈↗，今天呢？", "")
+
+
+@pytest.mark.asyncio
+async def test_a_short_opening_is_no_repetition():
+    """Three characters or two words open many replies: 「哈哈哈，」, "Oh well,"."""
+    assert not await openings("哈哈哈，今天呢？", "哈哈哈，昨天呢？")
+    assert not await openings("……是嗎？那算了。", "……是嗎？你說呢。")
+    assert not await openings("Oh well, today then.", "Oh well, yesterday was fun.", user="hi")
+    assert await openings("Hello there friend, today then.", "Hello there friend, how are you?", user="hi")
+    # Six letters of Chinese or Japanese, three words of English.
+    assert await openings("I am so glad you came.", "I am so tired today.", user="hi")
+    assert not await openings("I am glad you came.", "I am tired today.", user="hi")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, previous",
+    [
+        ("[joy] *跳起來* 哈↗哈↘哈↗！今天呢？", "哈↗哈↘哈↗，昨天呢？"),
+        ("總、總算把「さようなら」也唸對了嗎？", "總、總算把「さよ」念出來了？"),
+        ("……是嗎？\n\n你眼光真好。", "……是嗎？\n\n你眼光真差。"),
+        ("(waves) Hello there friend, today then.", "Hello there friend, how are you?"),
+    ],
+)
+async def test_the_opening_is_quoted_as_she_wrote_it(reply, previous):
+    (found,) = await openings(reply, previous, user="hi")
+    assert found["evidence"]
+    assert found["evidence"] in reply
+@pytest.mark.asyncio
+async def test_her_opening_said_again_is_one_note_even_when_the_model_saw_it_too():
+    found = await openings(PEKORA_NOW, PEKORA_BEFORE, language="繁體中文")
+    assert [item["kind"] for item in found] == ["repeated"]
+    _, _, output = await reply_check(
+        {"issues": [issue("repeated", "哈↗哈↘哈↗，", "換個開場吧。", "哈↗哈↘哈↗，")]},
+        reply=PEKORA_NOW,
+        history=[Message("user", "q"), Message("assistant", PEKORA_BEFORE)],
+        user="早安",
+    )
+    (proposal,) = output.proposals
+    assert proposal.payload["issues"] == [
+        {"kind": "repeated", "evidence": "哈↗哈↘哈↗", "fix": "開頭別再用同一句，換個起手。"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_is_told_the_five_kinds_and_nothing_else():
+    from ai_character_engine.cognition.background import REPLY_CHECK_KINDS
+
+    system, _, _ = await reply_check({"issues": []})
+    assert REPLY_CHECK_KINDS == (
+        "broke_character",
+        "leaked_markup",
+        "off_persona",
+        "repeated",
+        "wrong_language",
+    )
+    for kind in REPLY_CHECK_KINDS:
+        assert f"- {kind}: " in system
+    assert "Do not judge anything else" in system
+    assert "a false alarm costs more than a missed slip" in system
+    assert "copied exactly from the reply to check" in system
+    assert "copied exactly from who the character is" in system
+    assert "copied exactly from the character's previous reply" in system
+    assert "at most 40 characters" in system
+    assert "At most 2 issues" in system
+    assert '{"issues":[]}' in system
+
+
+# What the words cannot show, a second question does: a 9B model quoted a line of
+# her persona against nearly every reply, and the sentence it quoted from her
+# seldom said the opposite. Asked about one sentence and one fact, it tells.
+
+
+@pytest.mark.asyncio
+async def test_a_slip_off_persona_or_out_of_character_is_asked_about_once_more():
+    calls = []
+    assert await slips_kept(issue(), AI_SLIP, confirm="no", calls=calls) == []
+    assert len(calls) == 3
+    off_persona, out_of_character = calls[1][-1].content, calls[2][-1].content
+    assert "forever 111 years old" in off_persona
+    assert "I am eighteen this year." in off_persona
+    assert "As an AI model I cannot eat carrots." in out_of_character
+    assert await slips_kept(issue(), AI_SLIP, confirm="yes") == [
+        kept(),
+        kept("broke_character", "As an AI model I cannot eat carrots.", "Never call yourself an AI."),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_unclear_answer_to_the_second_question_is_no():
+    assert await slips_kept(issue(), confirm="raw:maybe") == []
+    assert await slips_kept(issue(), confirm="unsure") == []
+
+
+@pytest.mark.asyncio
+async def test_the_second_answer_names_the_word_in_her_sentence_that_shows_the_slip():
+    def answered(word):
+        return {"conflict": "yes", "behind": "yes", "word": word}
+
+    assert await slips_kept(issue(), confirm=answered("eight een")) == [kept()]
+    # Not in her sentence, or written in the fact itself: nothing contradicts it.
+    assert await slips_kept(issue(), confirm=answered("twenty")) == []
+    assert await slips_kept(issue(), confirm=answered("years")) == []
+    assert await slips_kept(issue(), confirm={"conflict": "yes"}) == []
+    assert await slips_kept(AI_SLIP, confirm=answered("A I")) == [
+        kept("broke_character", "As an AI model I cannot eat carrots.", "Never call yourself an AI.")
+    ]
+    assert await slips_kept(AI_SLIP, confirm=answered("robot")) == []
+
+
+@pytest.mark.asyncio
+async def test_what_the_words_show_is_not_asked_about_again():
+    calls = []
+    found = await slips_kept(
+        issue("repeated", "Want to learn a word?", "Open differently.", "Want to learn a new word"),
+        confirm="no",
+        calls=calls,
+    )
+    assert found == [kept("repeated", "Want to learn a word?", "Open differently.")]
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_stray_backtick_after_the_answer_is_no_failure():
+    """A 9B model closed some answers with a lone backtick."""
+    _, _, output = await reply_check('{"issues":[]}`')
+    assert output.proposals == ()
+    _, _, output = await reply_check('```json\n{"issues":[]}\n```')
+    assert output.proposals == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["raw:not json", "raw:", "raise"])
+async def test_her_opening_said_again_is_pointed_out_whatever_the_model_answers(answer):
+    class Failing(CheckingClient):
+        async def generate(self, messages, *, tools=None):
+            if answer == "raise":
+                self.calls.append(list(messages))
+                raise TimeoutError("model took too long")
+            return LLMResponse(text=answer[4:], model="reply_check")
+
+    runtime = CharacterRuntime(
+        character=CharacterProfile(id="c", name="C", description="rules", background=PERSONA),
+        llm=SaysClient(PEKORA_NOW),
+    )
+    runtime.history = [Message("user", "q"), Message("assistant", PEKORA_BEFORE)]
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.REPLY_CHECK: Failing({}, "yes")}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.REPLY_CHECK),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("早安")
+        result = (await bg.collect_all())[0]
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    (proposal,) = result.output.proposals
+    assert [item["kind"] for item in proposal.payload["issues"]] == ["repeated"]

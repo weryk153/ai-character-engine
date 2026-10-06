@@ -740,3 +740,57 @@ async def test_an_observation_on_its_own_turn_is_of_that_turn():
     await commits.commit(proposal("state.emotion_candidate", {"emotion": "glad", "intensity": 0.6}))
     value = engine.state.custom["observed_user_emotion"]
     assert value["turn_revision"] == value["base_revision"] == 0
+
+
+# --- reply check ----------------------------------------------------------------------
+
+
+def reply_note(issues=None, *, revision=0):
+    return TaskProposal(
+        target="context.reply_note_candidate",
+        payload={
+            "issues": issues
+            if issues is not None
+            else [{"kind": "repeated", "evidence": "Hello.", "fix": "Open differently."}]
+        },
+        base_revision=revision,
+        source_task_id="task-reply",
+        confidence=1.0,
+        provenance={"worker_kind": "reply_check", "reply": "Hello. How are you?"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_note_on_her_reply_is_committed_without_writing_anything():
+    engine = runtime()
+    before = engine.state.snapshot()
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
+    result = await commits.commit(reply_note())
+    assert result.status is CommitStatus.COMMITTED
+    assert engine.state.snapshot() == before
+    assert engine.memory_manager.store.list_for_character(engine.memory_scope_id) == []
+
+
+@pytest.mark.asyncio
+async def test_a_note_on_a_reply_before_the_last_turn_is_stale_and_not_moved_on():
+    engine = runtime()
+    tasks = MultiTaskRuntime(engine)
+    commits = CognitiveCommitCoordinator(tasks)
+    async with tasks:
+        await tasks.run_foreground_turn(lambda: engine.run_turn("hi"))
+    result = await commits.commit(reply_note(revision=0))
+    assert (result.status, result.reason) == (CommitStatus.STALE, "foreground_revision_changed")
+    with pytest.raises(ValueError):
+        commits.rebase(reply_note(revision=0), reason="late")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "issues",
+    [[], [{"kind": "tone", "evidence": "Hello.", "fix": "Be nicer."}], [{"kind": "repeated", "fix": " "}]],
+    ids=["none", "off the list", "no fix"],
+)
+async def test_a_note_without_a_slip_on_the_list_is_refused(issues):
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(runtime()))
+    result = await commits.commit(reply_note(issues))
+    assert (result.status, result.reason) == (CommitStatus.REJECTED, "reply_note_without_issue")

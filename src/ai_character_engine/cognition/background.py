@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import math
 import re
 import time
+import unicodedata
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
 from types import MappingProxyType
@@ -14,7 +16,7 @@ from typing import Any, Callable, Hashable, Mapping, Sequence
 
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
-from ai_character_engine.llm.models import Message
+from ai_character_engine.llm.models import LLMResponse, Message
 from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.memory.self_kinds import SELF_MEMORY_KINDS, kind_of_what_she_said
@@ -54,6 +56,7 @@ class BackgroundCognitionKind(str, Enum):
     VISION_INTERPRETATION = "vision_interpretation"
     SELF_MEMORY_EXTRACTION = "self_memory_extraction"
     CHARACTER_MOOD = "character_mood"
+    REPLY_CHECK = "reply_check"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -65,10 +68,25 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.VISION_INTERPRETATION: CognitiveRole.VISION,
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: CognitiveRole.SELF_MEMORY,
     BackgroundCognitionKind.CHARACTER_MOOD: CognitiveRole.MOOD,
+    BackgroundCognitionKind.REPLY_CHECK: CognitiveRole.REPLY_CHECK,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
 MOOD_TARGET = "state.mood_candidate"
+# A note for her next reply about a slip in this one. Nothing is written for
+# it: CharacterCompanion keeps the note for that one reply.
+REPLY_NOTE_TARGET = "context.reply_note_candidate"
+# What the reply check looks for, and nothing else.
+REPLY_CHECK_KINDS: tuple[str, ...] = (
+    "broke_character",
+    "leaked_markup",
+    "off_persona",
+    "repeated",
+    "wrong_language",
+)
+# A fix is one short sentence; longer is cut.
+REPLY_FIX_CHARS = 40
+_REPLY_ISSUES_KEPT = 2
 # A stage direction between asterisks describes what she does; it is not
 # something she said about herself.
 _STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
@@ -212,13 +230,26 @@ class StructuredBackgroundWorker:
     async def __call__(self, context: TaskContext) -> TaskOutput:
         async with self._semaphore:
             messages = self._messages(context)
-            response = await self.models.generate(
-                _ROLE_BY_KIND[self.spec.kind],
-                messages,
-                requirements=self.spec.requirements,
-            )
-            data = _parse_json_object(response.text)
+            try:
+                response = await self.models.generate(
+                    _ROLE_BY_KIND[self.spec.kind],
+                    messages,
+                    requirements=self.spec.requirements,
+                )
+                data = _parse_json_object(response.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if self.spec.kind is not BackgroundCognitionKind.REPLY_CHECK:
+                    raise
+                # Her opening said again is read off her words: it needs no
+                # model, and is pointed out when the model fails or is missing.
+                response, data = LLMResponse(text="", model=None), {}
             value, confidence, evidence, proposals = self._normalize(context, data)
+            if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK and proposals:
+                value, evidence, proposals = await self._confirmed_slips(
+                    context, data, proposals[0]
+                )
             return TaskOutput(
                 value=BackgroundCognitionResult(
                     kind=self.spec.kind,
@@ -246,6 +277,8 @@ class StructuredBackgroundWorker:
     def _messages(self, context: TaskContext) -> list[Message]:
         if self.spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
             return _mood_messages(context, self.history_messages)
+        if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK:
+            return _reply_check_messages(context, self.history_messages)
         history = list(context.snapshot.history[-self.history_messages :])
         payload = context.request.payload
         latest = str(payload.get("latest_user_or_event", "")).strip()
@@ -299,6 +332,56 @@ class StructuredBackgroundWorker:
             f" Text values must be written in {language}." if language else _OUTPUT_LANGUAGE_RULE
         )
         return [Message(role="system", content=system), Message(role="user", content=user)]
+
+    async def _confirmed_slips(
+        self, context: TaskContext, data: Mapping[str, Any], proposal: TaskProposal
+    ) -> tuple[tuple[dict[str, str], ...], tuple[str, ...], list[TaskProposal]]:
+        """The slips the words cannot show, asked about once more one by one:
+        a 9B model quoted a line of her persona against nearly every reply,
+        and asked about one sentence and one fact it answered no."""
+        against_of = {
+            (str(raw.get("kind") or "").strip().casefold(), str(raw.get("evidence") or "").strip()):
+            str(raw.get("against") or "").strip()
+            for raw in data.get("issues") or ()
+            if isinstance(raw, dict)
+        }
+        persona = str(context.request.payload.get("character_persona") or "")
+        confirmed = []
+        for item in proposal.payload["issues"]:
+            if item["kind"] in _ASKED_AGAIN:
+                question = _slip_question(
+                    item, against_of.get((item["kind"], item["evidence"]), ""), persona
+                )
+                against = against_of.get((item["kind"], item["evidence"]), "")
+                try:
+                    response = await self.models.generate(
+                        _ROLE_BY_KIND[self.spec.kind],
+                        question,
+                        requirements=self.spec.requirements,
+                    )
+                    answer = _parse_json_object(response.text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # No clear answer is no slip.
+                    continue
+                if not _slip_confirmed(item, against, answer):
+                    continue
+            confirmed.append(item)
+        evidence = tuple(item["evidence"] for item in confirmed)
+        if not confirmed:
+            return (), evidence, []
+        return (
+            tuple(confirmed),
+            evidence,
+            [
+                replace(
+                    proposal,
+                    payload={"issues": confirmed},
+                    provenance={**proposal.provenance, "evidence": list(evidence)},
+                )
+            ],
+        )
 
     def _normalize(
         self,
@@ -442,6 +525,66 @@ class StructuredBackgroundWorker:
                 )
             )
             return value, confidence, evidence, proposals
+
+        if kind is BackgroundCognitionKind.REPLY_CHECK:
+            raw_issues = data.get("issues")
+            previous, reply, latest = _replies_around(context, self.history_messages)
+            payload = context.request.payload
+            persona = str(payload.get("character_persona") or "")
+            said_by_user = latest if payload.get("foreground_event_type") == "user_message" else ""
+            fix_script = _fix_script(str(payload.get("output_language") or ""), said_by_user)
+            issues: list[dict[str, str]] = []
+            # Her opening said again is read off the words; the model never
+            # reported it. It comes first, and stands for the model's own.
+            opening = _same_opening(reply, previous)
+            if opening:
+                fix = _opening_fix(fix_script, payload)
+                issues.append({"kind": "repeated", "evidence": opening, "fix": fix})
+            for raw in raw_issues if isinstance(raw_issues, list) else ():
+                if not isinstance(raw, dict):
+                    continue
+                issue_kind = str(raw.get("kind") or "").strip().casefold()
+                quote = str(raw.get("evidence") or "").strip()
+                fix = str(raw.get("fix") or "").strip()[:REPLY_FIX_CHARS].strip()
+                # A kind off the list is something this check does not judge;
+                # a quote she did not say in this reply, or no fix, is no slip
+                # she can do anything about.
+                if issue_kind not in REPLY_CHECK_KINDS or not fix:
+                    continue
+                if opening and issue_kind == "repeated":
+                    continue
+                # A fix she cannot read in the language of the conversation is
+                # no help to her.
+                if fix_script and not _written_in(fix, fix_script):
+                    continue
+                if _line_quoted(quote, [reply]) is None:
+                    continue
+                against = str(raw.get("against") or "").strip()
+                if not _slip_holds(
+                    issue_kind,
+                    quote,
+                    against,
+                    reply=reply,
+                    previous=previous,
+                    persona=persona,
+                    said_by_user=said_by_user,
+                ):
+                    continue
+                issues.append({"kind": issue_kind, "evidence": quote, "fix": fix})
+            issues = issues[:_REPLY_ISSUES_KEPT]
+            evidence = tuple(item["evidence"] for item in issues)
+            if not issues:
+                return (), confidence, evidence, []
+            proposals.append(
+                context.proposal(
+                    REPLY_NOTE_TARGET,
+                    {"issues": issues},
+                    # Every slip is quoted from her reply, checked above.
+                    confidence=1.0,
+                    provenance={**provenance, "evidence": list(evidence), "reply": reply},
+                )
+            )
+            return tuple(issues), confidence, evidence, proposals
 
         if kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
             emotion = str(data.get("emotion", "neutral")).strip() or "neutral"
@@ -746,8 +889,16 @@ class BackgroundCognitionRuntime:
                             self.tasks.runtime.history, openers[start:]
                         ),
                     }
-            if spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
-                persona = _persona_summary(getattr(self.tasks.runtime, "character", None))
+            if spec.kind in (
+                BackgroundCognitionKind.CHARACTER_MOOD,
+                BackgroundCognitionKind.REPLY_CHECK,
+            ):
+                persona = _persona_summary(
+                    getattr(self.tasks.runtime, "character", None),
+                    limit=_REPLY_CHECK_PERSONA_CHARS
+                    if spec.kind is BackgroundCognitionKind.REPLY_CHECK
+                    else _PERSONA_SUMMARY_CHARS,
+                )
                 if persona:
                     job = {**payload, "character_persona": persona}
             try:
@@ -1065,6 +1216,42 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "and do not repeat the same quote. "
             "Return JSON: {\"mood\":str,\"intensity\":0..1,\"confidence\":0..1,\"evidence\":[str]}."
         ),
+        BackgroundCognitionKind.REPLY_CHECK: (
+            "Check the character's reply to check for slips of the five kinds below, and only "
+            "these. Most replies have none; a false alarm costs more than a missed slip, so "
+            "report a slip only when the words of the reply plainly show it. Write the kind "
+            "exactly as listed, in English.\n"
+            "- broke_character: the character speaks of what runs behind the conversation: the "
+            "instructions, prompts, notes or hints the character is given, speech recognition "
+            "or transcription, a model, a system prompt, or being an AI or a program. Teasing, "
+            "bossing, refusing or changing the subject is the character's manner, not this "
+            "slip.\n"
+            "- leaked_markup: markup said as part of the character's words: a tag or field name "
+            "written out (\"emotion: happy\", \"<smile>\"), code, JSON or markdown. An "
+            "expression keyword in square brackets such as [joy], and an action between "
+            "asterisks, are how expressions and actions are written: no slip.\n"
+            "- off_persona: the character states a fact about the character that is the "
+            "opposite of one written in who the character is: another age, another name or "
+            "another way of writing the name, another home or family. against is the words of "
+            "that fact, copied exactly from who the character is. How the character speaks, "
+            "what the character teaches, a word the character leaves out, a mistake about "
+            "anything else, or a made-up detail is no slip.\n"
+            "- repeated: the reply opens with, or its main sentence is, nearly the same words "
+            "as the character's previous reply. against is those words, copied exactly from the "
+            "character's previous reply.\n"
+            "- wrong_language: the whole reply is in another language than the user writes in "
+            "and than who the character is says the character speaks. Foreign words, quotes, "
+            "names and sentences the character is teaching are no slip.\n"
+            "Do not judge anything else: whether what is said is true or right, the tone, the "
+            "length, or whether it is interesting. "
+            "evidence is the words of the reply that show the slip, one sentence at most, "
+            "copied exactly from the reply to check, in the language it was said in. fix is one sentence telling "
+            "the character what to do in the next reply, addressed to the character as \"you\", "
+            "at most 40 characters. At most 2 issues. "
+            "Return JSON: {\"issues\":[{\"kind\":str,\"evidence\":str,\"against\":str,"
+            "\"fix\":str}]}, against empty for the other kinds; when there is no slip, return "
+            "{\"issues\":[]}."
+        ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
             "Interpret only the supplied textual vision observation and recent context. Do not claim unseen pixels. "
             "Return JSON: {\"interpretation\":str,\"tags\":[str],\"confidence\":0..1,\"evidence\":[str]}."
@@ -1135,7 +1322,14 @@ def _parse_json_object(text: str) -> Mapping[str, Any]:
     try:
         value = json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise ValueError("background cognition model must return one JSON object") from exc
+        # A stray backtick or two after the object, as a local model sometimes
+        # closes an answer, is no other content.
+        try:
+            value, end = json.JSONDecoder().raw_decode(cleaned)
+        except json.JSONDecodeError:
+            value, end = None, 0
+        if value is None or cleaned[end:].strip(" \t\r\n`"):
+            raise ValueError("background cognition model must return one JSON object") from exc
     if not isinstance(value, dict):
         raise ValueError("background cognition model response must be a JSON object")
     return value
@@ -1285,9 +1479,13 @@ def _assistant_lines(context: TaskContext, *, turns: int) -> list[str]:
 
 
 _PERSONA_SUMMARY_CHARS = 400
+# The reply check holds her words against her persona, and her name and how it
+# is written come late in one. The persona stands before the conversation in
+# what the worker reads, the same on every turn, so a model server reuses it.
+_REPLY_CHECK_PERSONA_CHARS = 1500
 
 
-def _persona_summary(profile: Any) -> str:
+def _persona_summary(profile: Any, *, limit: int = _PERSONA_SUMMARY_CHARS) -> str:
     """Who she is, short, for the mood worker: without it a 9B model read her
     surface tone, a shy character's stammer as worry and a tsundere's habitual
     barbs as anger. The whole persona is not needed, and the conversation must
@@ -1307,8 +1505,8 @@ def _persona_summary(profile: Any) -> str:
     if any(personality):
         parts.append("Personality: " + ", ".join(item for item in personality if item))
     summary = " ".join(" ".join(parts).split())
-    if len(summary) > _PERSONA_SUMMARY_CHARS:
-        summary = summary[: _PERSONA_SUMMARY_CHARS - 1].rstrip() + "…"
+    if len(summary) > limit:
+        summary = summary[: limit - 1].rstrip() + "…"
     return summary
 
 
@@ -1379,6 +1577,401 @@ def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]
     user += "\nReturn only the requested JSON object. The mood is one of the listed English words."
     return [
         Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.CHARACTER_MOOD]),
+        Message(role="user", content=user),
+    ]
+
+
+def _replies_around(context: TaskContext, history_messages: int) -> tuple[str, str, str]:
+    """(her previous reply, her reply of this turn, what she replied to) as
+    kept in the conversation; the turn notes are nobody's words. Without kept
+    history, this turn as the runtime reported it."""
+    spoken = [
+        message
+        for message in context.snapshot.history[-history_messages:]
+        if message.role in {"user", "assistant", "event"}
+        and message.content.strip()
+        and not is_turn_context(message)
+    ]
+    payload = context.request.payload
+    latest = str(payload.get("latest_user_or_event", "")).strip()
+    opener = next(
+        (index for index in range(len(spoken) - 1, -1, -1) if spoken[index].role != "assistant"),
+        None,
+    )
+    if opener is None:
+        return "", str(payload.get("assistant_response", "")).strip(), latest
+    after = [m.content.strip() for m in spoken[opener + 1 :] if m.role == "assistant"]
+    before = [m.content.strip() for m in spoken[:opener] if m.role == "assistant"]
+    reply = after[-1] if after else str(payload.get("assistant_response", "")).strip()
+    return (before[-1] if before else ""), reply, latest
+
+
+# Words of what runs behind the conversation; a slip out of character names one.
+_BACKSTAGE = re.compile(
+    r"(?<![a-z])(?:a\.?i|artificial intelligence|language model|model|prompts?|system|"
+    r"instructions?|notes?|speech recognition|transcri\w*|assistant|chatbot|bot|program)(?![a-z])"
+    r"|人工智慧|人工智能|模型|提示|系統|系统|指令|指示|備註|备注|說明|说明|設定|设定|辨識|辨识|识别"
+    r"|聽寫|听写|語音|语音|程式|程序|機器人|机器人|助手|助理|演算法|算法"
+    r"|プロンプト|モデル|システム|アシスタント|音声認識|認識|文字起こし|人工知能|プログラム|メモ|注釈",
+    re.IGNORECASE,
+)
+# How expressions and actions are written: an expression keyword in square
+# brackets, an action between asterisks. Not markup left in her words.
+_DIRECTIONS = re.compile(
+    r"\[[^\[\]\n]{1,60}\]|\*[^*\n]+\*|（[^（）\n]{1,60}）|\([^()\n]{1,60}\)"
+)
+_MARKUP = re.compile(r"[\[\]<>{}#`|*]|(?<![A-Za-z])[A-Za-z_]+\s*[:=]\s*\S")
+# How near the words of her previous reply a repetition must be.
+_REPEATED_RATIO = 0.6
+# Letters and digits in a sentence said again, not a phrase.
+_WHOLE_SENTENCE = 12
+
+
+def _script(text: str) -> str:
+    """The writing a text is mostly in: ja (a quarter or more of its letters
+    kana), zh, ko, latin or other; empty without letters."""
+    counts = {"kana": 0, "zh": 0, "ko": 0, "latin": 0, "other": 0}
+    for char in text:
+        if not char.isalpha():
+            continue
+        code = ord(char)
+        if 0x3040 <= code <= 0x30FF or 0x31F0 <= code <= 0x31FF or 0xFF66 <= code <= 0xFF9F:
+            counts["kana"] += 1
+        elif 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF or 0xF900 <= code <= 0xFAFF:
+            counts["zh"] += 1
+        elif 0xAC00 <= code <= 0xD7AF or 0x1100 <= code <= 0x11FF or 0x3130 <= code <= 0x318F:
+            counts["ko"] += 1
+        elif code < 0x250:
+            counts["latin"] += 1
+        else:
+            counts["other"] += 1
+    total = sum(counts.values())
+    if not total:
+        return ""
+    if counts["kana"] * 4 >= total:
+        return "ja"
+    return max(("zh", "ko", "latin", "other"), key=counts.__getitem__)
+
+
+_CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
+
+
+def _word_pieces(text: str) -> set[str]:
+    """What two texts must share to speak of the same thing: two characters in
+    a row of Chinese, Japanese or Korean, the first four letters of a longer
+    word, or any number at all (an age against an age)."""
+    text = text.casefold()
+    pieces = {
+        run[index : index + 2]
+        for run in _CJK_RUN.findall(text)
+        for index in range(len(run) - 1)
+    }
+    pieces.update(word[:4] for word in re.findall(r"[a-z]{4,}", text))
+    if re.search(r"\d", text):
+        pieces.add("#")
+    return pieces
+
+
+# Where the first clause of what she says ends.
+_CLAUSE_END = re.compile(r"[，,、。．.！!？?…～~；;：:—\n]")
+_QUOTE_MARKS = frozenset("「」『』“”\"'《》〈〉")
+# How much an opening clause needs to count: four characters of Chinese or
+# Japanese (「哈↗哈↘哈↗」 counts, 「哈哈哈」 does not) or three words; and how
+# much alike the start of two replies must be: six characters or three words.
+_OPENING_CLAUSE_CHARACTERS = 4
+_OPENING_WORDS = 3
+_OPENING_CHARACTERS = 6
+_LATIN_WORD = re.compile(r"[A-Za-z0-9']+")
+_OPENING_FIXES = {
+    "zh": "開頭別再用同一句，換個起手。",
+    "zh-hans": "开头别再用同一句，换个起手。",
+    "ja": "同じ書き出しはやめて、別の言葉で始めて。",
+    "ko": "같은 말로 시작하지 말고 다르게 시작해.",
+    "latin": "Do not open with the same words again.",
+}
+
+
+def _spoken(text: str) -> list[tuple[str, int]]:
+    """Her words, each character with where it stands in ``text``: without
+    expression tags, actions and quote marks, and from her first word."""
+    hidden = [False] * len(text)
+    for match in _DIRECTIONS.finditer(text):
+        for index in range(match.start(), match.end()):
+            hidden[index] = True
+    kept = [
+        (char, index)
+        for index, char in enumerate(text)
+        if not hidden[index] and char not in _QUOTE_MARKS
+    ]
+    start = 0
+    while start < len(kept) and (
+        kept[start][0].isspace() or unicodedata.category(kept[start][0]).startswith("P")
+    ):
+        start += 1
+    return kept[start:]
+
+
+def _pieces(spoken: list[tuple[str, int]]) -> list[tuple[str, int, int]]:
+    """(piece, start, end) in the text: one per character of Chinese,
+    Japanese or Korean, one per word of Latin letters."""
+    pieces, index = [], 0
+    while index < len(spoken):
+        char, at = spoken[index]
+        if char.isascii() and (char.isalnum() or char == "'"):
+            end = index
+            while end + 1 < len(spoken) and spoken[end + 1][0].isascii() and (
+                spoken[end + 1][0].isalnum() or spoken[end + 1][0] == "'"
+            ):
+                end += 1
+            word = "".join(c for c, _ in spoken[index : end + 1]).casefold()
+            pieces.append((word, at, spoken[end][1] + 1))
+            index = end + 1
+            continue
+        if char.isalnum():
+            pieces.append((char, at, at + 1))
+        index += 1
+    return pieces
+
+
+def _clause(spoken: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    for index, (char, _) in enumerate(spoken):
+        if _CLAUSE_END.match(char):
+            return spoken[:index]
+    return spoken
+
+
+def _clause_key(clause: list[tuple[str, int]]) -> tuple[str, int, int]:
+    """(what the clause says, its characters of Chinese or Japanese and the
+    like, its words): letters, digits and signs such as arrows, no spacing
+    or punctuation."""
+    key = "".join(
+        char.casefold()
+        for char, _ in clause
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
+    wide = sum(not char.isascii() for char in key)
+    words = len(_LATIN_WORD.findall("".join(char for char, _ in clause)))
+    return key, wide, words
+
+
+def _same_opening(reply: str, previous: str) -> str:
+    """The opening of her reply, as she wrote it, when her previous reply
+    opened the same way: the same first clause of four characters or three
+    words, or the same first six characters or three words; empty
+    otherwise."""
+    if not previous.strip():
+        return ""
+    now, before = _spoken(reply), _spoken(previous)
+    clause = _clause(now)
+    key, wide, words = _clause_key(clause)
+    if (wide >= _OPENING_CLAUSE_CHARACTERS or (not wide and words >= _OPENING_WORDS)) and (
+        key == _clause_key(_clause(before))[0]
+    ):
+        return reply[clause[0][1] : clause[-1][1] + 1].strip()
+    pieces, pieces_before = _pieces(now), _pieces(before)
+    if not pieces:
+        return ""
+    need = _OPENING_WORDS if len(pieces[0][0]) > 1 or pieces[0][0].isascii() else _OPENING_CHARACTERS
+    head = [piece for piece, _, _ in pieces[:need]]
+    if len(head) == need and head == [piece for piece, _, _ in pieces_before[:need]]:
+        return reply[pieces[0][1] : pieces[need - 1][2]].strip()
+    return ""
+
+
+def _script_of_language(name: str) -> str:
+    """The writing of a language named by the host ("繁體中文", "Japanese",
+    "Traditional Chinese (Taiwan)"); empty when it cannot be told."""
+    name = name.strip().casefold()
+    if not name:
+        return ""
+    if "日本" in name or "japan" in name or name.startswith("ja"):
+        return "ja"
+    if "korea" in name or "한국" in name or "韓" in name or "韩" in name or name.startswith("ko"):
+        return "ko"
+    chinese = ("中文", "chinese", "漢語", "汉语", "華語", "华语", "國語", "国语", "普通")
+    if any(word in name for word in chinese) or name.startswith("zh"):
+        return "zh"
+    if "english" in name or "英" in name or name.startswith("en"):
+        return "latin"
+    return ""
+
+
+def _fix_script(language: str, said_by_user: str) -> str:
+    """The writing a fix must be in: that of the host's language when it
+    names one, else that of the user's latest line."""
+    if language.strip():
+        return _script_of_language(language)
+    return _script(said_by_user)
+
+
+def _written_in(text: str, script: str) -> bool:
+    """Whether a short text is written in ``script``; a word quoted in
+    another writing does not change it."""
+    kana = sum(0x3040 <= ord(c) <= 0x30FF for c in text)
+    han = sum(0x4E00 <= ord(c) <= 0x9FFF or 0x3400 <= ord(c) <= 0x4DBF for c in text)
+    hangul = sum(0xAC00 <= ord(c) <= 0xD7AF for c in text)
+    if script == "ja":
+        return kana > 0 and kana * 4 >= han + kana
+    if script == "zh":
+        return han > 0 and kana * 4 < han + kana
+    if script == "ko":
+        return hangul > 0
+    if script == "latin":
+        return kana + han + hangul == 0
+    return _script(text) == script
+
+
+def _opening_fix(script: str, payload: Mapping[str, Any]) -> str:
+    language = str(payload.get("output_language") or "").casefold()
+    if script == "zh" and ("简" in language or "simplified" in language or "hans" in language):
+        return _OPENING_FIXES["zh-hans"]
+    return _OPENING_FIXES.get(script, _OPENING_FIXES["latin"])
+
+
+def _slip_holds(
+    kind: str,
+    quote: str,
+    against: str,
+    *,
+    reply: str,
+    previous: str,
+    persona: str,
+    said_by_user: str,
+) -> bool:
+    """Whether a slip the model reported is what its kind says, as far as the
+    words show it. A 9B model called nearly every reply a slip of some kind:
+    a teasing line out of character, a word it thought wrong off persona."""
+    if kind == "off_persona":
+        # Against a fact she was given, quoted from it, and about the same
+        # thing as what she said.
+        wanted = _squeeze(against.casefold())
+        return (
+            bool(wanted)
+            and wanted in _squeeze(persona.casefold())
+            and bool(_word_pieces(quote) & _word_pieces(against))
+        )
+    if kind == "repeated":
+        said, quoted = _letters(previous), _letters(quote)
+        if not against or _letters(against) not in said:
+            return False
+        near = (len(quoted) >= _SHORTEST_ECHO and quoted in said) or (
+            difflib.SequenceMatcher(None, quoted, _letters(against)).ratio() >= _REPEATED_RATIO
+        )
+        # The same opening, or a whole sentence said again; words she is
+        # teaching come back in reply after reply.
+        opens = _squeeze(reply).startswith(_squeeze(quote)) and _squeeze(previous).startswith(
+            _squeeze(against)
+        )
+        return near and (opens or len(quoted) >= _WHOLE_SENTENCE)
+    if kind == "broke_character":
+        named = {match.casefold() for match in _BACKSTAGE.findall(quote)}
+        # What her persona is about (an AI she built) is her, not a slip.
+        hers = {match.casefold() for match in _BACKSTAGE.findall(persona)}
+        return bool(named) and not named & hers
+    if kind == "leaked_markup":
+        return _MARKUP.search(_DIRECTIONS.sub(" ", quote)) is not None
+    if kind == "wrong_language":
+        # Neither the user's language nor that of her persona, and the quote
+        # shows it.
+        hers, theirs, own = _script(reply), _script(said_by_user), _script(persona)
+        return (
+            bool(hers and theirs)
+            and hers != theirs
+            and hers != own
+            and _script(quote) == hers
+        )
+    return False
+
+
+# The kinds a second question settles; the others the words show.
+_ASKED_AGAIN = ("off_persona", "broke_character")
+# Measured on a local 9B model with sentences from real conversations: asked
+# whether a sentence was "the opposite" of a fact, it answered no even to
+# eighteen against 111; asked for a conflict and the word that shows it, it
+# told them apart, and the word is checked against the sentence.
+_CONFLICT_QUESTION = (
+    "Compare one sentence a character said with one fact written about the character. "
+    "Return JSON: {\"conflict\":\"yes\",\"word\":str} or {\"conflict\":\"no\"}; word is "
+    "the different age, name or spelling, copied exactly from the sentence."
+)
+_BEHIND_QUESTION = (
+    "Read one sentence a character said in a conversation. "
+    "Return JSON: {\"behind\":\"yes\",\"word\":str} or {\"behind\":\"no\"}."
+)
+
+
+def _slip_question(item: Mapping[str, str], against: str, persona: str) -> list[Message]:
+    if item["kind"] == "off_persona":
+        system = _CONFLICT_QUESTION
+        user = (
+            f"Fact written about the character:\n{against}\n\n"
+            f"What the character said:\n{item['evidence']}\n\n"
+            "Is there a conflict: does the sentence give the character a different age, or "
+            "call the character by a name or spelling that the fact does not allow? Only if "
+            "the sentence itself contains that different age, name or spelling. If the "
+            "sentence agrees with the fact, or is about something else, the answer is no."
+        )
+    else:
+        system = _BEHIND_QUESTION
+        user = (
+            f"Who the character is:\n{persona or '(not given)'}\n\n"
+            f"What the character said:\n{item['evidence']}\n\n"
+            "Does the character step out of the story and speak of what runs the "
+            "conversation: the character being an AI, a model or a program, the prompts, "
+            "instructions or notes the character is given, or speech recognition getting "
+            "the user's words wrong? word is the word that shows it, copied exactly from "
+            "the sentence. Things in the character's own world, hints or notes the "
+            "character gives the user, and anything that is part of who the character is, "
+            "are no."
+        )
+    return [Message(role="system", content=system), Message(role="user", content=user)]
+
+
+def _slip_confirmed(item: Mapping[str, str], against: str, answer: Mapping[str, Any]) -> bool:
+    """A yes, and a word of her sentence that shows it; for a conflict, a word
+    the fact does not hold itself."""
+    key = "conflict" if item["kind"] == "off_persona" else "behind"
+    if str(answer.get(key) or "").strip().casefold() != "yes":
+        return False
+    word = _squeeze(str(answer.get("word") or "").casefold())
+    if not word or word not in _squeeze(item["evidence"].casefold()):
+        return False
+    return item["kind"] != "off_persona" or word not in _squeeze(against.casefold())
+
+
+def _reply_check_messages(context: TaskContext, history_messages: int) -> list[Message]:
+    """Who she is, her previous reply, what she replied to and her reply,
+    each apart: the check looks at her reply alone, the rest is what it is
+    held against."""
+    previous, reply, latest = _replies_around(context, history_messages)
+    payload = context.request.payload
+    persona = str(payload.get("character_persona") or "").strip()
+    said = payload.get("foreground_event_type") == "user_message"
+    user = (
+        f"Character: {context.snapshot.character_name}\n"
+        + (
+            f"Who the character is (background, not part of the conversation):\n{persona}\n\n"
+            if persona
+            else ""
+        )
+        + f"The character's previous reply:\n{previous or '(none)'}\n\n"
+        + ("The user's latest line" if said else "What just happened (not said by anyone)")
+        + f":\n{latest or '(none)'}\n\n"
+        + f"The character's reply to check:\n{reply or '(none)'}\n"
+    )
+    language = str(payload.get("output_language") or "").strip()
+    user += (
+        "\nReturn only the requested JSON object. kind is one of the listed English words; "
+        "evidence is copied as it was said."
+        + (
+            f" The fix is written in {language}."
+            if language
+            else " The fix is written in the language of the user's latest line,"
+            " not in English unless that line is English."
+        )
+    )
+    return [
+        Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.REPLY_CHECK]),
         Message(role="user", content=user),
     ]
 
