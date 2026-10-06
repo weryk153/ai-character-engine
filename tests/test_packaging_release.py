@@ -432,4 +432,4 @@ def test_release_manifest_contract_versions_are_independent_from_engine_semver(t
 
 def test_the_version_being_released_is_named_once():
     # The one test that names the version; every other test reads VERSION.
-    assert VERSION == "1.1.1"
+    assert VERSION == "1.2.0"

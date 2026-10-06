@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - What she is doing stays in the conversation it is done in (`CompanionSettings.plans_stay_in_conversation`, on by default). Every background result a `CharacterCompanion` commits is marked with its conversation (`conversation_id` in the proposal's provenance, and in the `metadata` of the memory, self-memory, goal and reflection records it makes). What she said she is working on or plans to do there and what she thinks of the user there (self-memory kinds `working_on`, `plan`, `view_of_user`), her short-term goals and her thoughts are in her mind only in that conversation; her other self memories, long-term goals and beliefs are in every conversation. `snapshot().goals` and `.thoughts` are those of the conversation at hand. `self_memories()` still lists everything; `self_memories(in_conversation=...)` lists what is in her mind there. `self_memories_kept` is counted apart for what is hers everywhere and for each conversation.
 - Self-memory kinds are one of `SELF_MEMORY_KINDS` (`ai_character_engine.companion`): identity, trait, taste, habit, history, relationship, opinion, working_on, plan, view_of_user. A kind named otherwise is brought onto the list (`habits` → `habit`, `physical_trait` → `trait`, `feeling` → `view_of_user`); one still off the list is hers in every conversation. An `opinion`, `trait`, `habit`, `history` or `relationship` whose summary names the user is kept as `view_of_user`: her judgements of the user stay in their conversation whatever kind the model filed them under.
