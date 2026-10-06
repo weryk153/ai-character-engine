@@ -4120,12 +4120,20 @@ def test_an_async_listener_without_a_running_loop_is_dropped_with_a_warning(tmp_
 
 # --- reply check: a slip in her reply is pointed out on her next reply ----------------
 
-SLIP = {"issues": [{"kind": "repeated", "evidence": "How are you?", "fix": "Open differently."}]}
+SLIPPING = ("As an AI, hello. ", "How are you?")
+SLIP = {
+    "issues": [
+        {"kind": "broke_character", "evidence": "As an AI, hello.", "fix": "Open differently."}
+    ]
+}
 REPLY_NOTE = "About your last reply: Open differently."
 
 
 def slip_once(messages):
-    """Finds the slip in the first reply it reads, none after."""
+    """Finds the slip in the first reply it reads, none after; says yes when
+    asked about it again."""
+    if '"behind"' in messages[0].content:
+        return {"behind": "yes", "word": "AI"}
     slip_once.calls += 1
     return SLIP if slip_once.calls == 1 else {"issues": []}
 
@@ -4137,7 +4145,7 @@ def new_in(llm, turn):
 
 
 async def three_turns(tmp_path, worker, between=None, **settings):
-    llm = Foreground()
+    llm = Foreground(SLIPPING)
     current = companion(tmp_path, {"reply_check": worker}, llm=llm, **settings)
     for number, text in enumerate(("hi", "what are you doing", "and then")):
         await current.reply(text, conversation_id="a")
@@ -4201,7 +4209,7 @@ def test_a_note_on_a_reply_the_host_rewrote_is_dropped(tmp_path):
 def test_a_note_is_for_the_conversation_of_the_reply(tmp_path):
     async def scenario():
         slip_once.calls = 0
-        llm = Foreground()
+        llm = Foreground(SLIPPING)
         current = companion(
             tmp_path, {"reply_check": Worker(slip_once)}, llm=llm, reply_check_every=1
         )
@@ -4220,7 +4228,7 @@ def test_a_late_note_is_not_given_to_a_later_reply(tmp_path):
     async def scenario():
         slip_once.calls = 0
         gate = asyncio.Event()
-        llm = Foreground()
+        llm = Foreground(SLIPPING)
         current = companion(
             tmp_path, {"reply_check": Worker(slip_once, gate=gate)}, llm=llm, reply_check_every=2
         )

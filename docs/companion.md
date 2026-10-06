@@ -116,7 +116,18 @@ as her previous reply) and `wrong_language` (the whole reply in another
 language). Each slip quotes the sentence of her reply it is in, and comes with
 a fix of at most 40 characters in the language of the conversation; a kind off
 the list, or a quote she did not say in that reply, is dropped, and at most two
-are kept. What she said is never changed and her reply waits for nothing:
+are kept. A small model calls nearly every reply a slip of some kind, so each
+is held to what its words can show: `off_persona` quotes the fact of her
+persona it contradicts and shares words with it; `repeated` quotes her previous
+reply and is its opening again or a whole sentence again; `broke_character`
+names a word of what runs behind the conversation (AI, model, prompt, 語音辨識,
+システム and the like) that her persona does not; `leaked_markup` has markup
+left once `[keyword]` and `*action*` are taken out; `wrong_language` is written
+in another script than both the user's line and her persona. `off_persona` and
+`broke_character` are then asked about once more, one sentence and one
+question, and kept only on a yes that names a word of her sentence (for
+`off_persona`, one the fact does not hold). This is one more call for each
+such slip; most turns make none. What she said is never changed and her reply waits for nothing:
 the fixes go into the note of her next turn, one line each
 (`About your last reply: ...`), and only that turn. They are dropped when
 another turn came first, when the next turn is in another conversation, or when
