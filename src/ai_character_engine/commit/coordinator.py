@@ -11,9 +11,14 @@ from typing import Callable, Iterable
 from uuid import uuid4
 
 from ai_character_engine.cognition.background import (
+    DIARY_TARGET,
     MEMORY_CONFLICT_TARGET,
     REPLY_CHECK_KINDS,
     REPLY_NOTE_TARGET,
+    USER_CONCERNS_KEPT,
+    USER_ENERGY_LEVELS,
+    USER_MOOD_TRENDS,
+    USER_STATE_TARGET,
 )
 from ai_character_engine.memory.conflicts import apply_conflicts, conflict_candidates
 from ai_character_engine.memory.models import MemoryRecord
@@ -101,6 +106,20 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
         expected_worker_kind="memory_conflict",
         max_age_s=300.0,
+    ),
+    # How the user has been lately, written over what was there before.
+    USER_STATE_TARGET: CommitTargetPolicy(
+        min_confidence=0.50,
+        stale_policy=StalePolicy.RERUN,
+        expected_worker_kind="user_state",
+        max_age_s=300.0,
+    ),
+    # Her diary entry for a day: true of that day however late it is written.
+    # The host that asked for it (CharacterCompanion) keeps her diary.
+    DIARY_TARGET: CommitTargetPolicy(
+        min_confidence=0.50,
+        stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
+        expected_worker_kind="diary",
     ),
     "memory.conversation_summary_candidate": CommitTargetPolicy(
         min_confidence=0.70,
@@ -478,6 +497,36 @@ class CognitiveCommitCoordinator:
                     "memory_conflict_without_relation",
                     current_revision,
                 )
+        if proposal.target == USER_STATE_TARGET:
+            payload = proposal.payload
+            concerns, evidence = payload.get("concerns"), payload.get("evidence")
+            if (
+                str(payload.get("energy", "")) not in USER_ENERGY_LEVELS
+                or str(payload.get("mood_trend", "")) not in USER_MOOD_TRENDS
+                or not isinstance(concerns, list)
+                or len(concerns) > USER_CONCERNS_KEPT
+                or not isinstance(evidence, list)
+                or len(evidence) > 3
+            ):
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "user_state_off_vocabulary",
+                    current_revision,
+                )
+        if proposal.target == DIARY_TARGET:
+            evidence = proposal.payload.get("evidence")
+            if (
+                not str(proposal.payload.get("text", "")).strip()
+                or not isinstance(evidence, list)
+                or not evidence
+            ):
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "diary_without_evidence",
+                    current_revision,
+                )
         if proposal.target == "cognition.reflection_candidate":
             insight = str(proposal.payload.get("insight", "")).strip()
             if not insight:
@@ -835,6 +884,35 @@ class CognitiveCommitCoordinator:
             # only, and the host that asked for it (CharacterCompanion) keeps it.
             return None
 
+        if proposal.target == DIARY_TARGET:
+            # Her diary is kept by the host that asked for it.
+            return None
+
+        if proposal.target == USER_STATE_TARGET:
+            # Written over what was there: it is how the user has been lately.
+            before = runtime.state.snapshot()
+            value = {
+                "energy": str(proposal.payload["energy"]),
+                "mood_trend": str(proposal.payload["mood_trend"]),
+                "concerns": [str(item) for item in proposal.payload["concerns"]],
+                "evidence": [str(item) for item in proposal.payload["evidence"]],
+                # Dated by the clock that ages it (CompanionSettings.user_state_ttl_hours).
+                "updated_at": self.clock(),
+                "base_revision": proposal.base_revision,
+                "proposal_id": proposal.id,
+            }
+            try:
+                runtime.state.apply(
+                    StatePatch(
+                        custom_updates={"user_state": value},
+                        reason="background user state accepted by commit coordinator",
+                    )
+                )
+            except Exception:
+                runtime.state.restore(before)
+                raise
+            return None
+
         if proposal.target == "cognition.reflection_candidate":
             manager = getattr(runtime, "long_term_cognition", None)
             if manager is None:
@@ -1138,6 +1216,12 @@ class CognitiveCommitCoordinator:
             semantic = hashlib.sha256(
                 f"memory_conflict|{new_id}|{fingerprint}".encode("utf-8")
             ).hexdigest()
+            return semantic, None, fingerprint
+        if proposal.target == USER_STATE_TARGET:
+            return None, f"user_state:{proposal.base_revision}", fingerprint
+        if proposal.target == DIARY_TARGET:
+            day = f"{proposal.payload.get('date')}|{proposal.payload.get('until')}"
+            semantic = hashlib.sha256(f"diary|{day}".encode("utf-8")).hexdigest()
             return semantic, None, fingerprint
         if proposal.target == "cognition.reflection_candidate":
             insight = _normalize_text(str(proposal.payload.get("insight", "")))

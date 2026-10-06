@@ -54,6 +54,9 @@ _NOTES_GUIDE = (
 )
 # The commit coordinator writes what it observed of the user here.
 _OBSERVED_USER_EMOTION = "observed_user_emotion"
+# And how the user has been lately (the user state worker) here.
+_USER_STATE = "user_state"
+USER_LATELY_LINE = "- user lately: "
 # An instruction is repeated when its last mention is further back than this
 # many messages; what the character knows is said once per conversation kept.
 _INSTRUCTION_REACH = 12
@@ -81,6 +84,21 @@ def _without_bookkeeping(custom: dict) -> dict:
             value = {k: v for k, v in value.items() if k not in _BOOKKEEPING_FIELDS}
         shown[key] = value
     return shown
+
+
+def user_lately(value: object) -> str:
+    """How the user has been lately, as her state says it ("energy low, mood
+    down; concerns: work, sleep"); empty when ``value`` is no user state."""
+    if not isinstance(value, dict):
+        return ""
+    energy = str(value.get("energy") or "").strip()
+    trend = str(value.get("mood_trend") or "").strip()
+    if not energy or not trend:
+        return ""
+    concerns = [one_line(str(item)) for item in value.get("concerns") or () if str(item).strip()]
+    return f"energy {energy}, mood {trend}" + (
+        f"; concerns: {', '.join(concerns)}" if concerns else ""
+    )
 
 
 def is_turn_context(message: Message) -> bool:
@@ -201,6 +219,10 @@ class ContextBuilder:
         self.mood_half_life_seconds: float | None = DEFAULT_MOOD_HALF_LIFE_SECONDS
         self.mood_floor: float = DEFAULT_MOOD_FLOOR
         self.clock: Callable[[], float] = time.time
+        # (date, text): her last diary entry, or the start of it, written
+        # after who she is. It changes once a day, and the system prompt with
+        # it; CharacterCompanion sets it.
+        self.diary: tuple[str, str] | None = None
 
     def build_system_prompt(
         self,
@@ -225,6 +247,9 @@ class ContextBuilder:
             # background: printing both would show it twice in her own
             # conversation prompt.
             sections.append(f"Background:\n{character.background}")
+        if self.diary is not None and self.diary[1].strip():
+            date, text = self.diary
+            sections.append(f"From your diary ({date}), in your own words:\n{text.strip()}")
         if character.rules:
             sections.append("Rules:\n" + "\n".join(f"- {x}" for x in character.rules))
         if state is not None:
@@ -250,8 +275,11 @@ class ContextBuilder:
             f"- relationship_stage: {state.relationship_stage}",
         ]
         custom = _without_bookkeeping(state.custom)
+        lately = user_lately(custom.pop(_USER_STATE, None))
         if custom:
             lines.append("- custom: " + json.dumps(custom, ensure_ascii=False, sort_keys=True))
+        if lately:
+            lines.append(f"{USER_LATELY_LINE}{lately}")
         return "\n".join(lines)
 
     def build(
@@ -664,6 +692,11 @@ class ContextBuilder:
                 if isinstance(value, dict) and str(value.get("emotion") or "").strip():
                     about = USER_SEEMS_LINE.removeprefix("- ").removesuffix(": ")
                     lines.append((about, str(value["emotion"]).strip()))
+                continue
+            if key == _USER_STATE:
+                lately = user_lately(value)
+                if lately:
+                    lines.append((USER_LATELY_LINE.removeprefix("- ").removesuffix(": "), lately))
                 continue
             lines.append((str(key), json.dumps(value, ensure_ascii=False, sort_keys=True)))
         return [(about, f"- {about}: {value}") for about, value in lines]

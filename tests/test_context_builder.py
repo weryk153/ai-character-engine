@@ -322,3 +322,65 @@ def test_the_turn_revision_of_an_observation_never_reaches_the_model():
 
     assert '"emotion": "tired"' in context
     assert "turn_revision" not in context
+
+
+# --- how the user has been lately, and her diary ----------------------------------------
+
+USER_STATE = {
+    "energy": "low",
+    "mood_trend": "down",
+    "concerns": ["工作太累", "睡不好"],
+    "evidence": ["我工作太累了", "又沒睡好"],
+    "updated_at": 5000.0,
+    "base_revision": 3,
+    "proposal_id": "d4e869422238499ea1e82ad78525d734",
+}
+
+
+def transcript_note(state):
+    messages = ContextBuilder().build_for_event(
+        character=CHARACTER, history=HISTORY, event=CharacterEvent.user_message("Hi"), state=state
+    )
+    return messages[-2].content
+
+
+def test_how_the_user_has_been_is_one_line_of_her_state():
+    note = transcript_note(CharacterState(custom={"user_state": USER_STATE}))
+    assert "- user lately: energy low, mood down; concerns: 工作太累, 睡不好" in note.splitlines()
+    for leaked in ("我工作太累了", "5000", "updated_at", "d4e869422238499ea1e82ad78525d734"):
+        assert leaked not in note
+
+
+def test_an_ordinary_user_state_has_no_concerns_part():
+    state = {**USER_STATE, "energy": "normal", "mood_trend": "flat", "concerns": []}
+    note = transcript_note(CharacterState(custom={"user_state": state}))
+    assert "- user lately: energy normal, mood flat" in note.splitlines()
+
+
+def test_how_the_user_has_been_is_the_same_line_wherever_the_context_goes():
+    context = built(state=CharacterState(custom={"user_state": USER_STATE, "location": "lab"}))[-2]
+    assert "- user lately: energy low, mood down; concerns: 工作太累, 睡不好" in context.content
+    assert "我工作太累了" not in context.content
+    assert '"location": "lab"' in context.content
+
+
+def test_her_last_diary_entry_follows_who_she_is_in_the_system_prompt():
+    builder = ContextBuilder()
+    builder.diary = ("2026-10-06", "Dawn came by after work. The printer broke again.")
+    character = CharacterProfile(
+        id="mei", name="Mei", description="A researcher.", background="Grew up by the sea.",
+        rules=["Stay in character."],
+    )
+    prompt = builder.build_system_prompt(character)
+    section = (
+        "From your diary (2026-10-06), in your own words:\n"
+        "Dawn came by after work. The printer broke again."
+    )
+    assert section in prompt
+    assert prompt.index("Background:") < prompt.index(section) < prompt.index("Rules:")
+
+
+def test_without_a_diary_entry_the_system_prompt_is_as_before():
+    builder = ContextBuilder()
+    assert builder.diary is None
+    assert "diary" not in builder.build_system_prompt(CHARACTER)
