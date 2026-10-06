@@ -1473,7 +1473,8 @@ def test_the_self_memory_worker_is_told_the_kinds_and_what_stays_in_a_conversati
     prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.SELF_MEMORY_EXTRACTION]
     assert "kind is one of: " + ", ".join(SELF_MEMORY_KINDS) + "." in prompt
     assert "is working_on or plan, not habit or history" in prompt
-    assert "Its kind is view_of_user, never opinion, trait or history" in prompt
+    assert "Its kind is view_of_user, never opinion, relationship, trait or history" in prompt
+    assert "keeps its own kind even when it is told to the user" in prompt
     assert "never in English unless the quote is English" in prompt
 
 
@@ -1493,7 +1494,7 @@ def test_the_reflection_worker_is_told_evidence_is_the_users_own_words():
     assert "exact quote of the user's own words" in prompt
     assert "the character's own lines are not evidence about the user" in prompt
     assert "belief_candidate is null" in prompt
-    assert "never in English unless the user writes English" in prompt
+    assert "never written in English unless the conversation" in prompt
 
 
 def test_the_emotion_worker_is_told_to_judge_the_latest_line_only():

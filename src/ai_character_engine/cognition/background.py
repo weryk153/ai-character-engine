@@ -991,8 +991,8 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "character's own lines are not evidence about the user. A mistake the user made while the "
             "character was teaching or correcting them is not evidence, unless the user admitted it. "
             "When the insight rests only on the character's judgement of the user, belief_candidate "
-            "is null. The insight is written in the language the user writes in, never in English "
-            "unless the user writes English."
+            "is null. The insight is never written in English unless the conversation, or the "
+            "language asked for at the end of the user message, is English."
         ),
         BackgroundCognitionKind.GOAL_MOTIVATION: (
             "Propose zero or more durable character goals only when supported by the supplied authoritative source ids. "
@@ -1029,12 +1029,14 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             " kind is one of: " + ", ".join(SELF_MEMORY_KINDS) + ". What the character is doing in "
             "this conversation or plans to do next in it (teaching the user, a game, a task under "
             "way) is working_on or plan, not habit or history; habit is only what the character does "
-            "in every conversation. Anything about this user is not a fact about the character: "
-            "what the user understands, did, typed or got wrong, how they are doing, whether the "
-            "character is pleased or annoyed with them, a reproach, a threat or a judgement aimed at "
-            "them. Its kind is view_of_user, never opinion, trait or history; opinion is only what "
-            "the character thinks about things other than this user. The summary is written in the "
-            "language of its quote, never in English unless the quote is English."
+            "in every conversation. Anything the character says about this user is not a fact about "
+            "the character: what the user understands, did, typed or got wrong, how they are doing, "
+            "whether the character likes them or is pleased or annoyed with them, a reproach, a "
+            "threat or a judgement aimed at them. Its kind is view_of_user, never opinion, "
+            "relationship, trait or history; opinion and relationship are only about things and "
+            "people other than this user. A fact about the character keeps its own kind even when it "
+            "is told to the user. The summary is written in the language of its quote, never in "
+            "English unless the quote is English."
         ),
         BackgroundCognitionKind.CHARACTER_MOOD: (
             "Judge how the character feels at the moment of the character's latest line, the "
