@@ -155,7 +155,11 @@ thinks the user ...") only in the conversation they were said in.
 `ai_character_engine.companion` list them. A kind the model names otherwise is
 brought onto the list (`habits` is `habit`, `physical_trait` is `trait`,
 `feeling` is `view_of_user`); one still off the list is hers in every
-conversation. Each item needs an exact quote of hers. Said again, in the same
+conversation. An `opinion`, `trait`, `habit` or `history` whose summary names
+the user ("the user", "you", 用戶, 對方, あなた, 사용자 …) is kept as
+`view_of_user` whatever the model called it: a small model files its
+judgements of the user under those kinds however it is told, and they would
+otherwise follow her into every conversation. Each item needs an exact quote of hers. Said again, in the same
 words whatever the punctuation, it replaces the one she held, also one held in
 another conversation; anything said differently is a fact of its own, since
 nearly the same words can say the opposite ("likes" and "dislikes"). What the

@@ -10,6 +10,8 @@ brought onto one list here.
 
 from __future__ import annotations
 
+import re
+
 # Hers in every conversation.
 DURABLE_SELF_MEMORY_KINDS: tuple[str, ...] = (
     "identity",
@@ -52,3 +54,36 @@ def self_memory_kind(value: object) -> str:
 def stays_in_conversation(kind: object) -> bool:
     """Whether what she said, of this kind, holds only where it was said."""
     return self_memory_kind(kind) in CONVERSATION_SELF_MEMORY_KINDS
+
+
+# Durable kinds a model files its judgements of the user under. relationship
+# and taste are left out: "I like you" is hers to keep.
+_KINDS_MISTAKEN_FOR_A_VIEW = frozenset({"opinion", "trait", "habit", "history"})
+
+# How a summary names the user, by language. Whole words for Latin script;
+# the CJK and Korean words need no boundary.
+_USER_WORDS = re.compile(
+    r"(?:\b(?:the\s+user|user|you|your|yours)\b"
+    r"|用戶|用户|使用者|對方|对方|ユーザー|あなた|君|사용자|당신)",
+    re.IGNORECASE,
+)
+
+
+def about_the_user(summary: object) -> bool:
+    """Whether a summary of what she said is about the user: it names them."""
+    return bool(_USER_WORDS.search(str(summary or "")))
+
+
+def kind_of_what_she_said(kind: object, summary: object) -> str:
+    """The kind a self-memory item is kept under.
+
+    A small model files what she thinks of the user under opinion, trait or
+    habit — told to use view_of_user it still does, on the comparison pages
+    10 times out of 10. Those are hers in every conversation, so her
+    reproaches from one lesson followed her into the next. The summary tells:
+    one that names the user, under one of those kinds, is a view of the user.
+    """
+    normalized = self_memory_kind(kind)
+    if normalized in _KINDS_MISTAKEN_FOR_A_VIEW and about_the_user(summary):
+        return "view_of_user"
+    return normalized

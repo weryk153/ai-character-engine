@@ -35,7 +35,11 @@ from ai_character_engine.goals.models import (
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk
 from ai_character_engine.long_term_cognition.models import ReflectionRecord
 from ai_character_engine.memory.models import MemoryRecord
-from ai_character_engine.memory.self_kinds import self_memory_kind
+from ai_character_engine.memory.self_kinds import (
+    about_the_user,
+    kind_of_what_she_said,
+    self_memory_kind,
+)
 
 SELF_LINE = "- you said about yourself: "
 TEACHING = ("Mei is teaching the user Japanese", "I am teaching you Japanese", "working_on")
@@ -225,6 +229,57 @@ def test_a_kind_named_freely_is_one_on_the_list(named, kind):
     assert self_memory_kind(named) == kind
 
 
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "佩克拉認為用戶聽不懂日語發音",
+        "佩克拉覺得对方亂打一通",
+        "Mei thinks the user is a fool",
+        "Mei is annoyed with you",
+        "ペコラはあなたの発音が下手だと思っている",
+        "메이는 사용자가 바보라고 생각한다",
+    ],
+)
+def test_a_summary_that_names_the_user_is_about_the_user(summary):
+    assert about_the_user(summary)
+
+
+@pytest.mark.parametrize(
+    "summary",
+    ["佩克拉威脅要把紅蘿蔔丟出去", "Mei grows carrots", "Mei is a youtuber", ""],
+)
+def test_a_summary_that_does_not_name_the_user_is_not(summary):
+    # "youtuber" holds "user" inside a word: not the user.
+    assert not about_the_user(summary)
+
+
+@pytest.mark.parametrize(
+    ("kind", "summary", "kept_as"),
+    [
+        # The comparison pages: a 9B model files its judgements of the user
+        # under opinion/trait/habit whatever the prompt says.
+        ("opinion", "佩克拉認為用戶聽不懂日語發音", "view_of_user"),
+        ("trait", "佩克拉會用中文諧音梗嘲笑用戶的日語發音", "view_of_user"),
+        ("habit", "Mei keeps correcting the user's typing", "view_of_user"),
+        ("history", "Mei taught the user kana today", "view_of_user"),
+        # Not about the user: kept as filed.
+        ("trait", "佩克拉威脅要把紅蘿蔔丟出去", "trait"),
+        ("opinion", "Mei thinks horror films are boring", "opinion"),
+        # "I like you" is hers to keep; a taste is hers too.
+        ("relationship", "Mei likes the user", "relationship"),
+        ("taste", "Mei likes the same tea as the user", "taste"),
+        ("identity", "Mei is the user's tutor", "identity"),
+        # Names a model uses still come onto the list first.
+        ("Opinions", "Mei thinks the user is a fool", "view_of_user"),
+        ("feeling", "Mei feels tired", "view_of_user"),
+    ],
+)
+def test_what_she_thinks_of_the_user_is_a_view_of_the_user_whatever_the_model_filed(
+    kind, summary, kept_as
+):
+    assert kind_of_what_she_said(kind, summary) == kept_as
+
+
 # --- marking -----------------------------------------------------------------------
 
 
@@ -240,6 +295,30 @@ def test_what_she_said_is_marked_with_its_conversation_and_kind(tmp_path):
         return [(r.kind, r.metadata.get("conversation_id")) for r in records]
 
     assert asyncio.run(scenario()) == [("working_on", "a")]
+
+
+def test_her_judgement_of_the_user_filed_as_an_opinion_stays_in_its_conversation(tmp_path):
+    async def scenario():
+        her = Her("You still cannot hear the difference, can you.")
+        judgement = (
+            "Mei thinks the user cannot hear the difference",
+            "You still cannot hear the difference, can you.",
+            "opinion",
+        )
+        worker = Worker(about_herself(judgement))
+        current = make(tmp_path, her=her, workers={"self_memory": worker}, self_memory_every=1)
+        await current.reply("is it ka or ga?", conversation_id="a")
+        await current.settle()
+        records = current.runtime.memory_manager.store.list_for_character("mei#self")
+        in_a = current.self_memories(in_conversation="a")
+        in_b = current.self_memories(in_conversation="b")
+        await current.close()
+        return [(r.kind, r.metadata.get("conversation_id")) for r in records], in_a, in_b
+
+    kinds, in_a, in_b = asyncio.run(scenario())
+    assert kinds == [("view_of_user", "a")]
+    assert in_a == ["Mei thinks the user cannot hear the difference"]
+    assert in_b == []
 
 
 def test_goals_and_thoughts_are_marked_with_their_conversation(tmp_path):
