@@ -325,7 +325,8 @@ def test_the_snapshot_gives_the_floor_below_which_her_mood_is_gone(tmp_path):
     from ai_character_engine.state.mood import DEFAULT_MOOD_FLOOR
 
     assert CompanionSnapshot("calm", 50.0, 50.0, "stranger").mood_floor == DEFAULT_MOOD_FLOOR
-    assert list(CompanionSnapshot.__dataclass_fields__)[-1] == "mood_floor"
+    # Added after the fields before it; only user_state (1.2.0) came after.
+    assert list(CompanionSnapshot.__dataclass_fields__)[-2:] == ["mood_floor", "user_state"]
 
     async def scenario():
         current = make(tmp_path, mood_floor=0.3)

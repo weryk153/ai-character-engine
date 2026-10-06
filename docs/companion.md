@@ -71,7 +71,7 @@ asyncio.run(main())
 
 `background_llm` may be one client for every worker or a mapping from worker
 name (`emotion`, `reply_check`, `mood`, `memory`, `self_memory`, `goal`,
-`reflection`, `summary`) to a client. A worker without a client does not run,
+`reflection`, `summary`, `user_state`, `diary`) to a client. A worker without a client does not run,
 except `reply_check`: in a mapping that names other workers but no
 `reply_check` client it still reads her opening (see below), which needs no
 model. `background_llm={}` turns background cognition off, the reply check
@@ -161,6 +161,72 @@ she speaks. An expression keyword in square brackets (`[joy]`) is never a
 `leaked_markup` slip, even said as words: a host that keeps such keywords in
 her reply on purpose, for her to read the face she made, would otherwise get a
 note on every reply that has one.
+
+### How the user has been lately
+
+Every `user_state_every` turns (6; 0 turns it off) the `user_state` worker
+(`BackgroundCognitionKind.USER_STATE`, role `CognitiveRole.USER_STATE`, commit
+target `state.user_state_candidate`) reads the user's lines since its last run,
+and how the user seemed on each of those turns (the emotion worker's emotion,
+valence and stance), never what she said. It answers with `energy` (`low`,
+`normal`, `high`), `mood_trend` (`down`, `flat`, `up`), at most three
+`concerns` of at most 30 characters, and at most three `evidence` quotes. Each
+concern carries the user's sentence that shows it, copied from the user's lines;
+one without it, one that repeats words of hers, one that names an illness or a
+disorder, and one not written in `CompanionSettings.language` (else the
+language of the user's lines) is dropped. With no quote of the user's left,
+the answer is `normal` and `flat`: nothing the user said shows otherwise. A
+word off the vocabulary is no reading, and what was there stays.
+
+It is written over what was there in `state.custom["user_state"]`, dated by the
+companion's clock, and is the user's in every conversation, also after a
+restart, until `user_state_ttl_hours` (48; 0 keeps it) have passed since it was
+read; then it is forgotten, and taken out of the notes of the conversation at
+hand. Her note says it in one line, `- user lately: energy low, mood down;
+concerns: work, sleep`, for when she speaks up or asks after the user, and
+`snapshot().user_state` gives it as a `UserState` (`None` once forgotten).
+
+### Her diary
+
+Once a day she writes her day in her words. After a turn, when
+`diary_every_hours` (24, by the companion's clock; 0: only when the host asks)
+have passed since the end of her last entry, or since she first talked when
+she has none, and she talked to someone in that time, the `diary` worker
+(`BackgroundCognitionKind.DIARY`, role `CognitiveRole.DIARY`, commit target
+`memory.diary_candidate`) is given what that time was made of: the summaries of
+its conversations (`summary_every`; off by default, so a host that wants them
+turns it on), what the user told her (memory), what she said about herself and
+what she thought of the user (self memory), her mood as it changed, with the
+time, and the goals she took up or settled. The turn that finds the day over
+belongs to the next one. She writes 3 to 6 sentences, in the first person, in
+`CompanionSettings.language` (else the language of what happened), and at most
+three lines of what happened the entry rests on most (`evidence`). Her persona
+is given for her voice only, and the diary is for her alone: the user is not
+spoken to as "you". A small model wrote one entry in three from her persona or
+as a reply to the user, so a sentence that shares less than a fifth of its
+words (two characters of Chinese or Japanese, the start of a word) with what
+happened, or an entry that speaks to the user, is pointed out and the entry
+asked for once more; sentences still not of the day are then left out. An
+entry with fewer than two sentences of the day or no line of evidence, one
+written as a list or in another language is no entry, and one longer than six
+sentences is cut; an entry not kept is tried again an hour later at the
+soonest.
+
+`write_diary(date=None)` asks for one now, for a host that reads her diary
+before a stream: about the time since her last entry, or about a given day
+(local time). It returns the `DiaryEntry` (`date`, `text`, `evidence`,
+`conversation_ids`, `until`), or `None` when she talked to nobody then, there
+is no diary worker, or the entry rested on nothing. `diary(limit=7)` gives her
+newest entries, oldest first. They are kept in `diary.jsonl` under
+`storage_dir`, and what her days were made of in `diary_log.jsonl` (when she
+talked, her mood as it changed) for eight days.
+
+The first two sentences of her last entry are in her system prompt, after who
+she is (`From your diary (<date>), in your own words:`), unless
+`diary_in_context` is false. The system prompt changes with it, once a day, and
+the inference server reads the conversation again that once. Her diary tells of
+every conversation of the day: a host whose conversations are with different
+people turns `diary_in_context` off.
 
 What the character knows, wants and thinks is written into the conversation as
 notes that say only what is new, never into the system prompt, so that each
@@ -393,6 +459,8 @@ model can run every worker on every turn.
 |---|---|---|
 | `emotion_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
 | `reply_check_every` | 1 | Check her reply every N turns; 0 turns it off. A run reads only that reply, her reply before it and the user's line it answers |
+| `user_state_every`, `user_state_ttl_hours` | 6, 48 | Read how the user has been every N turns (0: off), from the user's lines since the last run; forgotten this many hours after it was read (0: kept) |
+| `diary_every_hours`, `diary_in_context` | 24, true | Her diary entry once this many hours have passed since her last and she talked since (0: only `write_diary()`); the start of her last entry in her system prompt |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
@@ -421,8 +489,11 @@ start of her self memories in the note, and `ASSISTANT_SPEAK` and
 exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`;
 from 1.1.1 it also has `mood_floor`. From 1.2.0 it exports `SELF_MEMORY_KINDS`
 and `CONVERSATION_SELF_MEMORY_KINDS`, `CompanionSettings` has
-`plans_stay_in_conversation`, `short_term_goal_max_age_hours` and
-`reply_check_every`, and `self_memories()` takes `in_conversation`.
+`plans_stay_in_conversation`, `short_term_goal_max_age_hours`,
+`reply_check_every`, `user_state_every`, `user_state_ttl_hours`,
+`diary_every_hours` and `diary_in_context`, `self_memories()` takes
+`in_conversation`, it exports `UserState` and `DiaryEntry`, `CompanionSnapshot`
+has `user_state`, and `CharacterCompanion` has `write_diary()` and `diary()`.
 
 ## Lifecycle
 

@@ -4361,3 +4361,373 @@ def test_an_empty_mapping_still_turns_all_background_work_off(tmp_path):
     llm, background = run(scenario())
     assert background is None
     assert "About your last reply" not in new_in(llm, 2)
+
+
+# --- how the user has been lately -------------------------------------------------------
+
+from datetime import datetime  # noqa: E402
+
+from ai_character_engine.companion import DiaryEntry, UserState  # noqa: E402
+
+TIRED = "I am so tired, work never ends"
+TIRED_STATE = {
+    "energy": "low",
+    "mood_trend": "down",
+    "concerns": [{"concern": "work never ends", "evidence": TIRED}],
+    "evidence": [TIRED],
+}
+LATELY = "- user lately: energy low, mood down; concerns: work never ends"
+
+
+class Clock:
+    """The system clock, moved on at will: what the background writes is
+    dated by the system clock, her diary and the user state by hers."""
+
+    def __init__(self):
+        self.ahead = 0.0
+
+    def __call__(self):
+        import time
+
+        return time.time() + self.ahead
+
+
+def test_how_the_user_has_been_is_read_every_sixth_turn_and_not_at_zero(tmp_path):
+    assert CompanionSettings().user_state_every == 6
+    assert CompanionSettings().user_state_ttl_hours == 48.0
+
+    async def scenario(every):
+        worker = Worker(TIRED_STATE)
+        current = companion(tmp_path, {"user_state": worker}, user_state_every=every)
+        for text in ("one", "two", "three", "four"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
+        return worker.calls
+
+    assert run(scenario(2)) == 2
+    assert run(scenario(0)) == 0
+
+
+async def tired_user(tmp_path, clock=None, *, llm=None, then=(), **settings):
+    llm = llm or Foreground()
+    def once(messages):
+        # How the user was, read from the turn that showed it; nothing after.
+        return TIRED_STATE if TIRED in messages[1].content else {"energy": "unknown"}
+
+    current = companion(
+        tmp_path, {"user_state": Worker(once)}, llm=llm, clock=clock,
+        user_state_every=1, **settings
+    )
+    await current.reply(TIRED, conversation_id="a")
+    await current.settle()
+    for step in then:
+        step(current)
+        await current.reply("and now?", conversation_id="a")
+        await current.settle()
+    snapshot = current.snapshot()
+    await current.close()
+    return llm, snapshot
+
+
+def test_how_the_user_has_been_reaches_her_next_reply_and_the_snapshot(tmp_path):
+    llm, snapshot = run(tired_user(tmp_path, then=[lambda current: None]))
+    assert LATELY in new_in(llm, 1).splitlines()
+    assert snapshot.user_state == UserState(
+        energy="low",
+        mood_trend="down",
+        concerns=("work never ends",),
+        evidence=(TIRED,),
+        updated_at=snapshot.user_state.updated_at,
+    )
+
+
+def test_how_the_user_has_been_holds_across_conversations_and_a_restart(tmp_path):
+    run(tired_user(tmp_path))
+
+    async def later():
+        llm = Foreground()
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hello", conversation_id="b")
+        snapshot = current.snapshot()
+        await current.close()
+        return llm, snapshot
+
+    llm, snapshot = run(later())
+    assert snapshot.user_state.concerns == ("work never ends",)
+    assert LATELY in new_in(llm, 0).splitlines()
+
+
+def test_how_the_user_has_been_is_forgotten_after_its_time(tmp_path):
+    clock = Clock()
+
+    def hours_later(hours):
+        def step(current):
+            clock.ahead = hours * 3600
+
+        return step
+
+    llm, snapshot = run(tired_user(tmp_path, clock, then=[hours_later(47), hours_later(49)]))
+    assert LATELY in "\n".join(message.content for message in llm.calls[1])
+    assert snapshot.user_state is None
+    assert LATELY not in "\n".join(message.content for message in llm.calls[2])
+
+
+def test_how_the_user_seemed_on_each_turn_is_read_into_the_user_state(tmp_path):
+    async def scenario():
+        prompts = []
+
+        def state(messages):
+            prompts.append(messages[1].content)
+            return TIRED_STATE
+
+        current = companion(
+            tmp_path,
+            {"emotion": Worker(WARM), "user_state": Worker(state)},
+            emotion_every=1,
+            user_state_every=2,
+        )
+        for text in ("thank you", TIRED):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
+        return prompts
+
+    (prompt,) = run(scenario())
+    assert "- glad (valence 0.9, stance 1.0)" in prompt
+
+
+# --- her diary ----------------------------------------------------------------------
+
+BLACK_TEA = "I like strong black tea. "
+DAWN = "I am Dawn and I work at a print shop"
+
+
+def her_tea(messages):
+    if BLACK_TEA.strip() not in messages[1].content.split("Character lines to extract from:")[1]:
+        return {"items": [], "confidence": 0.5, "evidence": []}
+    return {
+        "items": [
+            {"summary": "Mei likes strong black tea.", "kind": "taste", "importance": 0.6,
+             "confidence": 0.9, "evidence": BLACK_TEA.strip()}
+        ],
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+
+def dawns_work(messages):
+    if DAWN not in messages[1].content.split("User lines to extract from:")[1]:
+        return {"items": [], "confidence": 0.5, "evidence": []}
+    return {
+        "items": [
+            {"summary": "Dawn works at a print shop.", "kind": "fact", "importance": 0.8,
+             "confidence": 0.9, "evidence": DAWN}
+        ],
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+
+ENTRY = (
+    "Dawn told me she works at a print shop. I told her about my strong black tea. "
+    "It was a quiet day."
+)
+
+
+class DiaryWorker(Worker):
+    def __init__(self, text=ENTRY, evidence=("Dawn works at a print shop.",)):
+        self.prompts = []
+        super().__init__(self.answer, name="diary")
+        self.text, self.evidence = text, list(evidence)
+
+    def answer(self, messages):
+        self.prompts.append(messages[1].content)
+        return {"text": self.text, "evidence": self.evidence}
+
+
+async def a_day(tmp_path, diary, clock=None, *, llm=None, texts=(DAWN, "nice"), **settings):
+    current = companion(
+        tmp_path,
+        {"memory": Worker(dawns_work), "self_memory": Worker(her_tea), "diary": diary},
+        llm=llm or Foreground((BLACK_TEA, "How are you?")),
+        clock=clock,
+        memory_every=1,
+        self_memory_every=1,
+        **settings,
+    )
+    for text in texts:
+        await current.reply(text, conversation_id="a")
+        await current.settle()
+    return current
+
+
+def test_her_diary_is_written_when_the_host_asks_and_kept(tmp_path):
+    clock = Clock()
+
+    async def scenario():
+        diary = DiaryWorker()
+        current = await a_day(tmp_path, diary, clock)
+        entry = await current.write_diary()
+        kept = current.diary()
+        await current.close()
+        return diary, entry, kept
+
+    diary, entry, kept = run(scenario())
+    (prompt,) = diary.prompts
+    assert "- Dawn works at a print shop." in prompt
+    assert "- Mei likes strong black tea." in prompt
+    assert entry == DiaryEntry(
+        date=datetime.fromtimestamp(clock()).date().isoformat(),
+        text=ENTRY,
+        evidence=("Dawn works at a print shop.",),
+        conversation_ids=("a",),
+        until=entry.until,
+    )
+    assert kept == (entry,)
+    assert (tmp_path / "engine" / "diary.jsonl").is_file()
+
+    async def after_a_restart():
+        current = companion(tmp_path)
+        kept = current.diary()
+        await current.close()
+        return kept
+
+    assert run(after_a_restart()) == (entry,)
+
+
+def test_without_a_conversation_there_is_no_diary(tmp_path):
+    async def scenario():
+        diary = DiaryWorker()
+        current = companion(tmp_path, {"diary": diary})
+        entry = await current.write_diary()
+        await current.close()
+        return diary, entry
+
+    diary, entry = run(scenario())
+    assert entry is None
+    assert diary.calls == 0
+
+
+def test_an_entry_resting_on_nothing_of_the_day_is_not_kept(tmp_path):
+    async def scenario():
+        current = await a_day(tmp_path, DiaryWorker(evidence=["We went to the sea."]))
+        entry = await current.write_diary()
+        kept = current.diary()
+        await current.close()
+        return entry, kept
+
+    assert run(scenario()) == (None, ())
+
+
+def test_her_diary_is_written_on_its_own_once_a_day(tmp_path):
+    assert CompanionSettings().diary_every_hours == 24.0
+    clock = Clock()
+
+    async def scenario():
+        diary = DiaryWorker()
+        current = await a_day(tmp_path, diary, clock)
+        written = [len(current.diary())]
+        clock.ahead = 23 * 3600
+        await current.reply("still here", conversation_id="a")
+        await current.settle()
+        written.append(len(current.diary()))
+        clock.ahead = 25 * 3600
+        await current.reply("good morning", conversation_id="a")
+        await current.settle()
+        written.append(len(current.diary()))
+        await current.reply("and again", conversation_id="a")
+        await current.settle()
+        written.append(len(current.diary()))
+        await current.close()
+        return diary, written
+
+    diary, written = run(scenario())
+    assert written == [0, 0, 1, 1]
+    assert diary.calls == 1
+
+
+def test_no_day_without_a_conversation_and_none_on_its_own_at_zero(tmp_path):
+    clock = Clock()
+
+    async def scenario(hours):
+        diary = DiaryWorker()
+        current = await a_day(tmp_path / str(hours), diary, clock, diary_every_hours=hours)
+        clock.ahead = 25 * 3600
+        await current.reply("good morning", conversation_id="a")
+        await current.settle()
+        written = len(current.diary())
+        await current.close()
+        clock.ahead = 0
+        return written
+
+    assert run(scenario(0)) == 0
+    assert run(scenario(24.0)) == 1
+
+
+def test_the_start_of_her_last_entry_is_in_her_system_prompt(tmp_path):
+    long_entry = "Dawn came by. She works at a print shop. We had tea. It rained."
+
+    async def scenario(in_context):
+        llm = Foreground((BLACK_TEA, "How are you?"))
+        current = await a_day(
+            tmp_path / str(in_context), DiaryWorker(long_entry), llm=llm,
+            diary_in_context=in_context,
+        )
+        await current.write_diary()
+        await current.reply("hello again", conversation_id="b")
+        await current.close()
+        return llm.calls[-1][0].content
+
+    system = run(scenario(True))
+    assert "in your own words:\nDawn came by. She works at a print shop." in system
+    assert "We had tea" not in system
+    assert "in your own words" not in run(scenario(False))
+
+
+def test_her_mood_through_the_day_is_part_of_what_happened(tmp_path):
+    clock = Clock()
+
+    async def scenario():
+        diary = DiaryWorker()
+        current = companion(
+            tmp_path,
+            {"mood": Worker({"mood": "happy", "intensity": 0.8, "confidence": 0.9,
+                             "evidence": []}), "diary": diary},
+            clock=clock,
+            mood_every=1,
+        )
+        await current.reply(DAWN, conversation_id="a")
+        await current.settle()
+        await current.write_diary()
+        await current.close()
+        return diary.prompts[0]
+
+    prompt = run(scenario())
+    assert f"- {datetime.fromtimestamp(clock()):%H:%M} happy" in prompt
+
+
+@pytest.mark.parametrize(
+    "setting", ["user_state_every", "user_state_ttl_hours", "diary_every_hours"]
+)
+def test_the_diary_and_user_state_settings_are_never_negative(setting):
+    with pytest.raises(ValueError, match=setting):
+        CompanionSettings(**{setting: -1})
+
+
+def test_what_her_days_were_made_of_is_let_go_after_eight_days(tmp_path):
+    clock = Clock()
+
+    async def scenario():
+        current = companion(tmp_path, clock=clock)
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        clock.ahead = 9 * 86400
+        later = companion(tmp_path, clock=clock)
+        await later.reply("hello again", conversation_id="a")
+        await later.close()
+
+    run(scenario())
+    lines = (tmp_path / "engine" / "diary_log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["conversation"] for line in lines] == ["a"]
+    assert json.loads(lines[0])["at"] > clock() - 86400

@@ -90,6 +90,20 @@ class CompanionSettings:
     # A short-term goal left untouched this long leaves her mind, also in its
     # own conversation; 0: only goal_max_age_days.
     short_term_goal_max_age_hours: float = 24.0
+    # How the user has been lately (energy, how their mood moved, what weighs
+    # on them, each from their own words), read every N turns from the user's
+    # lines and how they seemed; 0 turns it off. It is hers in every
+    # conversation, and forgotten user_state_ttl_hours after it was read (0:
+    # kept until read again).
+    user_state_every: int = 6
+    user_state_ttl_hours: float = 48.0
+    # Her diary: once a day, by her clock, she writes her day in her words
+    # from what she remembers of it, when diary_every_hours have passed since
+    # her last entry and she talked to someone since; 0: only when the host
+    # asks (write_diary). The start of her last entry is in her system prompt
+    # unless diary_in_context is False; it changes once a day.
+    diary_every_hours: float = 24.0
+    diary_in_context: bool = True
 
     def __post_init__(self) -> None:
         for name in (
@@ -101,6 +115,7 @@ class CompanionSettings:
             "reflection_every",
             "summary_every",
             "self_memory_every",
+            "user_state_every",
             "max_turns_late",
             "goal_max_age_days",
             "goals_shown",
@@ -127,3 +142,7 @@ class CompanionSettings:
             raise ValueError("mood_floor must be between 0 and 1")
         if self.short_term_goal_max_age_hours < 0:
             raise ValueError("short_term_goal_max_age_hours must be >= 0")
+        if self.user_state_ttl_hours < 0:
+            raise ValueError("user_state_ttl_hours must be >= 0")
+        if self.diary_every_hours < 0:
+            raise ValueError("diary_every_hours must be >= 0")

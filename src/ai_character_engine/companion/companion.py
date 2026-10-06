@@ -27,6 +27,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from datetime import UTC, datetime, timedelta
+from datetime import date as Date
 from pathlib import Path
 from typing import Any
 
@@ -42,14 +43,21 @@ from ai_character_engine.cognition import (
     CognitiveRolePolicy,
 )
 from ai_character_engine.cognition.background import (
+    DIARY_TARGET,
     MOOD_TARGET,
     REPLY_NOTE_TARGET,
     SELF_MEMORY_TARGET,
+    USER_STATE_TARGET,
     said_in,
 )
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
-from ai_character_engine.context.builder import SELF_MEMORY_LINE, ContextBuilder, one_line
+from ai_character_engine.context.builder import (
+    SELF_MEMORY_LINE,
+    USER_LATELY_LINE,
+    ContextBuilder,
+    one_line,
+)
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals import GoalManager
 from ai_character_engine.goals.models import GoalHorizon, GoalRecord
@@ -103,7 +111,7 @@ _READ_ONCE = (
     BackgroundCognitionKind.MEMORY_EXTRACTION,
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION,
 )
-_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET)
+_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET, DIARY_TARGET)
 # Of use only before the next turn: a note about a reply is never moved onto
 # a later one.
 _THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
@@ -143,6 +151,37 @@ class CompanionSnapshot:
     # Below this intensity, faded, she is neutral again: a host that fades
     # the face itself stops where the engine does.
     mood_floor: float = DEFAULT_MOOD_FLOOR
+    # How the user has been lately, while it is not too old; see
+    # CompanionSettings.user_state_ttl_hours.
+    user_state: UserState | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UserState:
+    """How the user has been lately, from the user's own words: energy (low,
+    normal, high), how their mood moved (down, flat, up), at most three
+    things weighing on them, and the user's sentences that show it. Read by
+    the user state worker; ``updated_at`` is when, by the companion's clock."""
+
+    energy: str
+    mood_trend: str
+    concerns: tuple[str, ...] = ()
+    evidence: tuple[str, ...] = ()
+    updated_at: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DiaryEntry:
+    """Her day, in her words. ``date`` is the day (YYYY-MM-DD, local time),
+    ``evidence`` the lines of what she remembered of it that the entry rests
+    on, ``conversation_ids`` the conversations of that day, and ``until`` the
+    end of the time it covers (seconds since the epoch, her clock)."""
+
+    date: str
+    text: str
+    evidence: tuple[str, ...] = ()
+    conversation_ids: tuple[str | None, ...] = ()
+    until: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +258,23 @@ _WORKERS = (
         TaskPriority.LOW,
         "memory.conversation_summary_candidate",
     ),
+    # How the user has been lately: for when she speaks up or asks after them,
+    # never urgent.
+    _Worker(
+        "user_state",
+        BackgroundCognitionKind.USER_STATE,
+        CognitiveRole.USER_STATE,
+        TaskPriority.LOW,
+        USER_STATE_TARGET,
+    ),
+    # Her day, in her words: once a day, last of all.
+    _Worker(
+        "diary",
+        BackgroundCognitionKind.DIARY,
+        CognitiveRole.DIARY,
+        TaskPriority.LOW,
+        DIARY_TARGET,
+    ),
 )
 
 
@@ -293,6 +349,15 @@ LINES_CHECKED = 8
 REMARK_EVENT = "The user had been quiet for a while; you spoke up on your own."
 # After every worker: the workers are ranked by their place in _WORKERS.
 _HOST_RANK = 1_000
+# How the user seemed on the turns of a conversation since its user state was
+# last read: at most this many.
+_EMOTIONS_KEPT = 32
+# A diary entry that could not be written is tried again no sooner than this,
+# not on every turn.
+_DIARY_RETRY_SECONDS = 3600.0
+# What her days were made of is kept this long after her last entry, for an
+# entry the host asks for about an earlier day.
+_DAYS_KEPT_SECONDS = 8 * 86400.0
 
 
 def _plain(text: str) -> str:
@@ -871,12 +936,27 @@ class CharacterCompanion:
         self.on_mood_change: Callable[[CompanionSnapshot], None] | None = None
         # Async listeners under way: held so that they are not collected.
         self._listening: set[asyncio.Future] = set()
+        # Per conversation: how the user seemed on each turn since the user
+        # state was last read.
+        self._emotions: dict[str | None, deque] = {}
+        # Her diary, oldest first, and what her days were made of: when she
+        # talked in which conversation, and when her mood changed.
+        self._diary_entries: list[DiaryEntry] = self._load_diary()
+        self._day_log: list[dict[str, Any]] = self._load_day_log()
+        # Also without a diary: a host runs for months.
+        self._forget_old_days(self._clock())
+        self._turn_started_at: float = self._clock()
+        self._diary_tasks: set[str] = set()
+        self._diary_by_hand: set[str] = set()
+        self._diary_written: dict[str, DiaryEntry] = {}
+        self._diary_tried_at: float | None = None
 
         builder = context_builder or ContextBuilder()
         builder.goals_shown = self.settings.goals_shown
         builder.mood_half_life_seconds = self.settings.mood_half_life_seconds
         builder.mood_floor = self.settings.mood_floor
         builder.clock = self._clock
+        builder.diary = self._diary_in_context()
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -932,6 +1012,7 @@ class CharacterCompanion:
             goal_scope_id=character.id,
         )
         self.runtime.stream_text_with_tools = self.settings.stream_text_with_tools
+        self._forget_how_the_user_was()
         self._bridge = CharacterHostBridge(self.runtime, vision=vision, config=bridge_config)
 
         clients = self._background_clients(llm if background_llm is None else background_llm)
@@ -951,6 +1032,10 @@ class CharacterCompanion:
             self._background.mood_half_life_seconds = self.settings.mood_half_life_seconds
             self._background.mood_floor = self.settings.mood_floor
             self._background.clock = self._clock
+            self._background.job_extras[BackgroundCognitionKind.DIARY] = self._day_if_due
+            self._background.job_extras[BackgroundCognitionKind.USER_STATE] = (
+                self._how_the_user_seemed
+            )
         self._commits = CognitiveCommitCoordinator(
             self._tasks, event_history=self.settings.records_kept
         )
@@ -1021,7 +1106,7 @@ class CharacterCompanion:
     def _background_clients(self, source: Any) -> list[tuple[_Worker, Any]]:
         clients = []
         for worker in _WORKERS:
-            if int(getattr(self.settings, f"{worker.name}_every")) <= 0:
+            if self._every(worker) <= 0:
                 continue
             client = source.get(worker.name) if isinstance(source, Mapping) else source
             if client is None and worker.name == "reply_check" and source:
@@ -1033,12 +1118,19 @@ class CharacterCompanion:
                 clients.append((worker, client))
         return clients
 
+    def _every(self, worker: _Worker) -> int:
+        if worker.name == "diary":
+            # Asked after every turn whether her day is due (_day_if_due), and
+            # written whenever the host asks (write_diary).
+            return 1
+        return int(getattr(self.settings, f"{worker.name}_every"))
+
     def _build_background(self, clients) -> BackgroundCognitionRuntime | None:
         if not clients:
             return None
         specs, endpoints, policies = [], [], {}
         for rank, (worker, client) in enumerate(clients):
-            every = int(getattr(self.settings, f"{worker.name}_every"))
+            every = self._every(worker)
             specs.append(
                 BackgroundWorkerSpec(
                     worker.kind,
@@ -1149,6 +1241,7 @@ class CharacterCompanion:
                 while len(self._kept) > self.settings.conversations_kept:
                     forgotten, _ = self._kept.popitem(last=False)
                     self._told.pop(forgotten, None)
+                    self._emotions.pop(forgotten, None)
                     self._newest_reply.pop(forgotten, None)
                     self._last_turn.pop(forgotten, None)
                     self._newest_turn.pop(forgotten, None)
@@ -1307,12 +1400,14 @@ class CharacterCompanion:
                     self._record_interrupted(conversation_id, text, turn.heard, remark)
                     raise TurnInterrupted("The reply was interrupted.")
                 self._unfinished = None
+                self._turn_started_at = self._clock()
                 if before_turn is not None:
                     before_turn()
                 serial = next(self._serial)
                 self._last_turn[conversation_id] = serial
                 self._take_back_what_the_host_no_longer_knows(conversation_id, notes)
                 self._take_back_what_she_no_longer_holds()
+                self._forget_how_the_user_was()
                 self._notes = tuple(note for note in notes if note.strip())
                 self._reply_fixes = self._take_reply_note(conversation_id)
                 self._access.foreground_started()
@@ -1356,6 +1451,15 @@ class CharacterCompanion:
                         self._background.conversation = ("conversation", conversation_id)
                         handles = await self._background.schedule_after_foreground(result)
                     self._take_on(handles)
+                    if not skip_memory or (remark == "keep" and result.text):
+                        # A day she talked: what her diary is about.
+                        self._log_day(
+                            {
+                                "kind": "turn",
+                                "at": self._turn_started_at,
+                                "conversation": conversation_id,
+                            }
+                        )
                 finally:
                     self._notes = ()
                     self._reply_fixes = ()
@@ -1717,6 +1821,8 @@ class CharacterCompanion:
             self._scheduled_at[_TARGET_OF[kind]] = self._tasks.revision
             if kind is BackgroundCognitionKind.CHARACTER_MOOD:
                 self._mood_read_at.append(self._tasks.revision)
+            if kind is BackgroundCognitionKind.DIARY:
+                self._diary_tasks.add(handle.task_id)
             if kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
                 self._access.hold(handle.task_id, self.settings.call_timeout_seconds)
             live = self._live_by_kind.setdefault(kind, [])
@@ -1768,7 +1874,12 @@ class CharacterCompanion:
                 for proposal, outcome in zip(proposals, outcomes):
                     if outcome.committed and proposal.target == REPLY_NOTE_TARGET:
                         self._keep_reply_note(proposal, conversation_id)
+                    if outcome.committed and proposal.target == DIARY_TARGET:
+                        entry = self._keep_diary(proposal)
+                        if handle.task_id in self._diary_by_hand:
+                            self._diary_written[handle.task_id] = entry
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
+                    self._remember_how_the_user_seemed(conversation_id)
                     await self._react_to_observation()
                 if any(o.committed and o.target == SELF_MEMORY_TARGET for o in outcomes):
                     self._keep_the_newest_self_memories()
@@ -1779,6 +1890,14 @@ class CharacterCompanion:
                     # Her mood changed whether or not it reached the disk:
                     # the host still hears of it.
                     if self._mood_as_stored() != mood_before:
+                        self._log_day(
+                            {
+                                "kind": "mood",
+                                "at": self._clock(),
+                                "mood": self._mood()[0],
+                                "conversation": conversation_id,
+                            }
+                        )
                         self._tell_mood()
         except asyncio.CancelledError:
             raise
@@ -1787,6 +1906,7 @@ class CharacterCompanion:
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
             self._first_by_task.pop(handle.task_id, None)
+            self._diary_tasks.discard(handle.task_id)
 
     def _keep_reply_note(self, proposal, conversation_id: str | None) -> None:
         fixes = tuple(
@@ -2016,6 +2136,278 @@ class CharacterCompanion:
             )
         return outcome
 
+    # --- how the user has been, and her diary ------------------------------------
+
+    def _remember_how_the_user_seemed(self, conversation_id: str | None) -> None:
+        """Call when the user's emotion was committed: one more reading of how
+        the user seemed, for the next user state of that conversation."""
+        observed = self.runtime.state.custom.get("observed_user_emotion")
+        if not isinstance(observed, Mapping):
+            return
+        self._emotions.setdefault(conversation_id, deque(maxlen=_EMOTIONS_KEPT)).append(
+            {key: observed[key] for key in ("emotion", "valence", "stance") if key in observed}
+        )
+
+    def _how_the_user_seemed(self) -> Mapping[str, Any]:
+        """For the user state of the conversation at hand: how the user seemed
+        on each turn since it was last read."""
+        return {"user_emotions": list(self._emotions.pop(self._active, ()))}
+
+    def _user_state_expired(self, stored: Mapping[str, Any]) -> bool:
+        ttl = self.settings.user_state_ttl_hours
+        if ttl <= 0:
+            return False
+        updated = stored.get("updated_at")
+        if isinstance(updated, bool) or not isinstance(updated, (int, float)):
+            return True
+        return self._clock() - float(updated) > ttl * 3600
+
+    def _user_state(self) -> UserState | None:
+        stored = self.runtime.state.custom.get("user_state")
+        if not isinstance(stored, Mapping) or self._user_state_expired(stored):
+            return None
+        updated = stored.get("updated_at")
+        return UserState(
+            energy=str(stored.get("energy") or ""),
+            mood_trend=str(stored.get("mood_trend") or ""),
+            concerns=tuple(str(item) for item in stored.get("concerns") or ()),
+            evidence=tuple(str(item) for item in stored.get("evidence") or ()),
+            updated_at=float(updated) if isinstance(updated, (int, float)) else None,
+        )
+
+    def _forget_how_the_user_was(self) -> None:
+        """How the user was, read too long ago, is forgotten: out of her state
+        and out of the notes of the conversation at hand."""
+        stored = self.runtime.state.custom.get("user_state")
+        if stored is None or (isinstance(stored, Mapping) and not self._user_state_expired(stored)):
+            return
+        del self.runtime.state.custom["user_state"]
+        self.runtime.withdraw_from_notes(lambda line: line.startswith(USER_LATELY_LINE))
+
+    def _diary_file(self) -> Path | None:
+        return self._dir / "diary.jsonl" if self._dir is not None else None
+
+    def _day_log_file(self) -> Path | None:
+        return self._dir / "diary_log.jsonl" if self._dir is not None else None
+
+    def _load_diary(self) -> list[DiaryEntry]:
+        entries: list[DiaryEntry] = []
+        path = self._diary_file()
+        if path is None or not path.is_file():
+            return entries
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+                until = raw.get("until")
+                entries.append(
+                    DiaryEntry(
+                        date=str(raw["date"]),
+                        text=str(raw["text"]),
+                        evidence=tuple(str(item) for item in raw.get("evidence") or ()),
+                        conversation_ids=tuple(raw.get("conversation_ids") or ()),
+                        until=float(until) if isinstance(until, (int, float)) else None,
+                    )
+                )
+            except Exception as exc:
+                # A damaged line must not cost her the rest of her diary.
+                logger.warning("diary entry unreadable, skipped: %s", exc)
+        return entries
+
+    def _load_day_log(self) -> list[dict[str, Any]]:
+        lines: list[dict[str, Any]] = []
+        path = self._day_log_file()
+        if path is None or not path.is_file():
+            return lines
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                raw = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(raw, dict) and isinstance(raw.get("at"), (int, float)):
+                lines.append(raw)
+        return lines
+
+    def _log_day(self, line: dict[str, Any]) -> None:
+        if self._closed:
+            return
+        self._day_log.append(line)
+        path = self._day_log_file()
+        if path is not None:
+            with path.open("a", encoding="utf-8") as file:
+                file.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+    def _forget_old_days(self, until: float | None) -> None:
+        """What her days were made of, kept a while after her last entry."""
+        if until is None:
+            return
+        kept = [line for line in self._day_log if line["at"] >= until - _DAYS_KEPT_SECONDS]
+        if len(kept) == len(self._day_log):
+            return
+        self._day_log = kept
+        path = self._day_log_file()
+        if path is not None:
+            temporary = path.with_suffix(".jsonl.tmp")
+            temporary.write_text(
+                "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in kept),
+                encoding="utf-8",
+            )
+            os.replace(temporary, path)
+
+    def _diary_in_context(self) -> tuple[str, str] | None:
+        """The start of her last entry, for her system prompt: two sentences."""
+        if not self.settings.diary_in_context or not self._diary_entries:
+            return None
+        entry = self._diary_entries[-1]
+        done, rest = _sentences(entry.text)
+        sentences = [sentence for sentence in (*done, rest) if sentence.strip()]
+        return entry.date, "".join(sentences[:2]).strip()
+
+    def _diary_since(self) -> float | None:
+        """Where the day of her next entry begins: where her last one ended,
+        or, before her first, when she first talked."""
+        ends = [entry.until for entry in self._diary_entries if entry.until is not None]
+        if ends:
+            return max(ends)
+        turns = [line["at"] for line in self._day_log if line.get("kind") == "turn"]
+        return min(turns) if turns else None
+
+    def _day_between(
+        self, since: float, until: float, *, date: str | None = None
+    ) -> dict[str, Any] | None:
+        """What her day was made of, from ``since`` to ``until``: what she
+        remembers of it, how she felt and what she set out to do. None when
+        she talked to nobody."""
+        turns = [
+            line
+            for line in self._day_log
+            if line.get("kind") == "turn" and since <= line["at"] < until
+        ]
+        if not turns:
+            return None
+        conversations = list(dict.fromkeys(line.get("conversation") for line in turns))
+
+        def within(moment: datetime) -> bool:
+            return since <= moment.timestamp() < until
+
+        summaries: list[str] = []
+        told: list[str] = []
+        for conversation in conversations:
+            for record in self._memory_store.list_for_character(self._scope(conversation)):
+                if record.is_active and within(record.created_at):
+                    kept = summaries if record.kind == "conversation_summary" else told
+                    kept.append(one_line(record.summary))
+        hers: list[str] = []
+        views: list[str] = []
+        for record in self._memory_store.list_for_character(self._self_scope()):
+            if record.is_active and within(record.created_at):
+                kept = views if self_memory_kind(record.kind) == "view_of_user" else hers
+                kept.append(one_line(record.summary))
+        moods: list[str] = []
+        felt = None
+        for line in self._day_log:
+            if line.get("kind") == "mood" and since <= line["at"] < until and line.get("mood") != felt:
+                felt = line.get("mood")
+                moods.append(f"{datetime.fromtimestamp(line['at']):%H:%M} {felt}")
+        goals = [
+            f"{'new' if within(goal.created_at) else goal.status.value}: {one_line(goal.objective)}"
+            for goal in self.runtime.goal_manager.store.list_goals(self.character.id)
+            if within(goal.updated_at)
+        ]
+        return {
+            "date": date or datetime.fromtimestamp(turns[-1]["at"]).date().isoformat(),
+            "until": until,
+            "conversation_ids": conversations,
+            "summaries": summaries,
+            "user_told": told,
+            "said_about_herself": hers,
+            "views_of_user": views,
+            "moods": moods,
+            "goals": goals[:8],
+        }
+
+    def _day_if_due(self) -> Mapping[str, Any] | None:
+        """Asked after every turn: her day, when diary_every_hours have passed
+        since her last entry and she talked to someone since. The turn that
+        asks belongs to the next day."""
+        hours = self.settings.diary_every_hours
+        if hours <= 0 or self._diary_tasks:
+            return None
+        since, until = self._diary_since(), self._turn_started_at
+        if since is None or until - since < hours * 3600:
+            return None
+        if self._diary_tried_at is not None and until - self._diary_tried_at < _DIARY_RETRY_SECONDS:
+            return None
+        day = self._day_between(since, until)
+        if day is None:
+            return None
+        self._diary_tried_at = until
+        return {"diary": day}
+
+    def _keep_diary(self, proposal) -> DiaryEntry:
+        """Call with the turn lock held: an entry the coordinator accepted."""
+        payload = proposal.payload
+        until = payload.get("until")
+        entry = DiaryEntry(
+            date=str(payload.get("date") or ""),
+            text=str(payload.get("text") or ""),
+            evidence=tuple(str(item) for item in payload.get("evidence") or ()),
+            conversation_ids=tuple(payload.get("conversation_ids") or ()),
+            until=float(until) if isinstance(until, (int, float)) else None,
+        )
+        self._diary_entries.append(entry)
+        path = self._diary_file()
+        if path is not None:
+            line = {
+                "date": entry.date,
+                "text": entry.text,
+                "evidence": list(entry.evidence),
+                "conversation_ids": list(entry.conversation_ids),
+                "until": entry.until,
+            }
+            with path.open("a", encoding="utf-8") as file:
+                file.write(json.dumps(line, ensure_ascii=False) + "\n")
+        self.runtime.context_builder.diary = self._diary_in_context()
+        self._forget_old_days(entry.until)
+        return entry
+
+    async def write_diary(self, date: Date | str | None = None) -> DiaryEntry | None:
+        """Her diary entry, now, for a host that wants one (to read before a
+        stream). Without ``date``, about the time since her last entry; with
+        one (a date or "YYYY-MM-DD"), about that day, local time. None when
+        she talked to nobody then, there is no diary worker, or the entry
+        rested on nothing that happened."""
+        if self._closed:
+            raise CompanionClosed("companion is closed")
+        background = self._background
+        if background is None or background.config.spec_for(BackgroundCognitionKind.DIARY) is None:
+            return None
+        now = self._clock()
+        if date is None:
+            since = self._diary_since()
+            day = None if since is None else self._day_between(since, now)
+        else:
+            day_of = date if isinstance(date, Date) else Date.fromisoformat(str(date))
+            start = datetime.combine(day_of, datetime.min.time()).timestamp()
+            day = self._day_between(start, min(start + 86400.0, now), date=day_of.isoformat())
+        if day is None:
+            return None
+        handle = await background.submit_now(BackgroundCognitionKind.DIARY, {"diary": day})
+        self._diary_tasks.add(handle.task_id)
+        self._diary_by_hand.add(handle.task_id)
+        try:
+            await self._collect(handle)
+        finally:
+            self._diary_by_hand.discard(handle.task_id)
+        return self._diary_written.pop(handle.task_id, None)
+
+    def diary(self, limit: int = 7) -> tuple[DiaryEntry, ...]:
+        """Her newest ``limit`` diary entries, oldest first."""
+        if limit <= 0:
+            return ()
+        return tuple(self._diary_entries[-limit:])
+
     # --- lifecycle -------------------------------------------------------------
 
     async def settle(self) -> None:
@@ -2150,6 +2542,7 @@ class CharacterCompanion:
             mood_updated_at=state.mood_updated_at,
             mood_half_life_seconds=self.settings.mood_half_life_seconds,
             mood_floor=self.settings.mood_floor,
+            user_state=self._user_state(),
         )
 
     def rewrite_memories(

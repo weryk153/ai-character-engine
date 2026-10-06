@@ -2127,3 +2127,489 @@ async def test_her_opening_said_again_is_pointed_out_whatever_the_model_answers(
     assert result.status is TaskStatus.SUCCEEDED, result.error
     (proposal,) = result.output.proposals
     assert [item["kind"] for item in proposal.payload["issues"]] == ["repeated"]
+
+
+# --- diary and user state: the prompts that were there stay as they were ---------------
+
+# (length, sha256) of each prompt as it stood before the diary and the user
+# state were added. Nothing of them changes: a model server keeps their start.
+PROMPTS_BEFORE_DIARY = {
+    BackgroundCognitionKind.MEMORY_EXTRACTION: (
+        1383, "551f13bbfb9cbba7ec135dae315933205ef9e8c1774bab7c186326b189a632ba"
+    ),
+    BackgroundCognitionKind.EMOTION_ANALYSIS: (
+        825, "e649ea9e806653250ccd8ba7023352e41fdff93323a7a98931474ec2c48d323f"
+    ),
+    BackgroundCognitionKind.CONVERSATION_SUMMARY: (
+        155, "49f94e82327cead4d3429ef55bf0de5d883686f176bee92b05d5263f6865d3f5"
+    ),
+    BackgroundCognitionKind.REFLECTION: (
+        1283, "4a2296027b52bb378af083fc6a94fd53793eadac94bd5b11594256bbcedb812c"
+    ),
+    BackgroundCognitionKind.GOAL_MOTIVATION: (
+        1227, "35805251bc7b7db7a77304702d77c4991c6a056e22b60f92da8a6380abf976be"
+    ),
+    BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: (
+        2185, "90301ff751b540b3bd50949370dcefa952aee33a4b9b2613e03d5d450248f9e6"
+    ),
+    BackgroundCognitionKind.CHARACTER_MOOD: (
+        1834, "31e5cd937cafcfbd9966fa73f680fb6ef6a0824a29f55f38b1bf3c2bcd5b40d2"
+    ),
+    BackgroundCognitionKind.REPLY_CHECK: (
+        2317, "1800c77cd5b40bf356c19cc0951cef13509574f8481788fa9846342e280961fd"
+    ),
+    BackgroundCognitionKind.VISION_INTERPRETATION: (
+        187, "4729602b14eaf2cb844f9c569706955bf825a31dd90bbb83b737ec561dbaf952"
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", list(PROMPTS_BEFORE_DIARY), ids=lambda kind: kind.value)
+def test_the_other_prompts_are_unchanged_by_the_diary_and_the_user_state(kind):
+    import hashlib
+
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+
+    length, digest = PROMPTS_BEFORE_DIARY[kind]
+    prompt = _SYSTEM_PROMPTS[kind]
+    assert len(prompt) == length
+    assert hashlib.sha256(prompt.encode("utf-8")).hexdigest() == digest
+
+
+# --- user state: how the user has been lately, from the user's own words ---------------
+
+TIRED = "I am so tired, work never ends"
+SLEPT = "I slept three hours again"
+STATE = {
+    "energy": "low",
+    "mood_trend": "down",
+    "concerns": [
+        {"concern": "work never ends", "evidence": TIRED},
+        {"concern": "not sleeping", "evidence": SLEPT},
+    ],
+    "evidence": [TIRED, SLEPT],
+}
+
+
+async def user_state(
+    payload,
+    *,
+    turns=(TIRED, SLEPT),
+    every=2,
+    reply="Poor you. Rest a bit.",
+    history=None,
+    emotions=None,
+    language="",
+):
+    client = CapturingClient(payload, name="user_state")
+    runtime = CharacterRuntime(
+        character=CharacterProfile(id="c", name="Mei", description="test"), llm=SaysClient(reply)
+    )
+    runtime.history = list(
+        history
+        if history is not None
+        else [Message("user", "earlier question"), Message("assistant", "earlier answer")]
+    )
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.USER_STATE: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(
+                BackgroundWorkerSpec(BackgroundCognitionKind.USER_STATE, every_n_revisions=every),
+            )
+        ),
+    )
+    if emotions is not None:
+        bg.job_extras[BackgroundCognitionKind.USER_STATE] = lambda: {"user_emotions": emotions}
+    bg.output_language = language
+    async with tasks:
+        for turn in turns:
+            await bg.run_turn(turn)
+        results = await bg.collect_all()
+    (result,) = results
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    system, user = client.messages
+    return system.content, user.content, result.output
+
+
+async def state_proposed(payload, **kwargs):
+    _, _, output = await user_state(payload, **kwargs)
+    if not output.proposals:
+        return None
+    (proposal,) = output.proposals
+    return proposal
+
+
+@pytest.mark.asyncio
+async def test_how_the_user_has_been_is_proposed_from_their_own_words():
+    from ai_character_engine.cognition.background import USER_STATE_TARGET
+
+    proposal = await state_proposed(STATE)
+    assert proposal.target == USER_STATE_TARGET
+    assert proposal.payload == {
+        "energy": "low",
+        "mood_trend": "down",
+        "concerns": ["work never ends", "not sleeping"],
+        "evidence": [TIRED, SLEPT],
+    }
+    assert proposal.provenance["worker_kind"] == "user_state"
+    assert proposal.provenance["evidence"] == [TIRED, SLEPT]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", [{"energy": "exhausted"}, {"mood_trend": "sideways"}, {"energy": None}]
+)
+async def test_a_state_off_the_vocabulary_is_no_reading(change):
+    assert await state_proposed({**STATE, **change}) is None
+
+
+@pytest.mark.asyncio
+async def test_the_vocabulary_is_read_whatever_its_case():
+    proposal = await state_proposed({**STATE, "energy": " Low ", "mood_trend": "DOWN"})
+    assert (proposal.payload["energy"], proposal.payload["mood_trend"]) == ("low", "down")
+
+
+@pytest.mark.asyncio
+async def test_a_concern_without_the_users_own_words_is_dropped():
+    proposal = await state_proposed(
+        {
+            **STATE,
+            "concerns": [
+                {"concern": "work never ends", "evidence": TIRED},
+                {"concern": "lonely", "evidence": "I feel so alone"},
+                {"concern": "no quote at all"},
+                {"concern": "her words", "evidence": "Rest a bit."},
+            ],
+        }
+    )
+    assert proposal.payload["concerns"] == ["work never ends"]
+
+
+@pytest.mark.asyncio
+async def test_at_most_three_concerns_each_short():
+    lines = ("my boss yells", "rent is due", "my cat is sick", "exam on monday")
+    proposal = await state_proposed(
+        {
+            **STATE,
+            "concerns": [
+                {"concern": line + " and that is a very long way of saying it", "evidence": line}
+                for line in lines
+            ],
+            "evidence": [],
+        },
+        turns=lines,
+        every=4,
+    )
+    concerns = proposal.payload["concerns"]
+    assert len(concerns) == 3
+    assert all(len(concern) <= 30 for concern in concerns)
+    assert len(proposal.payload["evidence"]) <= 3
+
+
+@pytest.mark.asyncio
+async def test_a_diagnosis_is_no_concern():
+    proposal = await state_proposed(
+        {**STATE, "concerns": [{"concern": "depression", "evidence": TIRED}]}
+    )
+    assert proposal.payload["concerns"] == []
+
+
+@pytest.mark.asyncio
+async def test_without_any_of_the_users_words_the_state_is_ordinary():
+    proposal = await state_proposed(
+        {"energy": "low", "mood_trend": "down", "concerns": [], "evidence": ["they seem tired"]}
+    )
+    assert proposal.payload == {
+        "energy": "normal",
+        "mood_trend": "flat",
+        "concerns": [],
+        "evidence": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_concern_in_another_language_than_asked_is_dropped():
+    proposal = await state_proposed(
+        {**STATE, "concerns": [{"concern": "work never ends", "evidence": TIRED},
+                               {"concern": "睡不好", "evidence": SLEPT}]},
+        language="繁體中文",
+    )
+    assert proposal.payload["concerns"] == ["睡不好"]
+
+
+@pytest.mark.asyncio
+async def test_the_user_state_reads_the_users_lines_since_its_last_run_and_not_hers():
+    system, user, _ = await user_state(STATE, reply="Poor you. Rest a bit.")
+    section = user.split("The user's lines, oldest first:\n", 1)[1].split("\n\n", 1)[0]
+    assert section.splitlines() == [f"- {TIRED}", f"- {SLEPT}"]
+    assert "Rest a bit" not in user
+    assert "earlier question" not in section
+
+
+@pytest.mark.asyncio
+async def test_the_user_state_is_given_how_the_user_seemed_on_each_turn():
+    emotions = [
+        {"emotion": "tired", "valence": -0.4, "stance": 0.1},
+        {"emotion": "sad", "valence": -0.7, "stance": 0.0},
+    ]
+    _, user, _ = await user_state(STATE, emotions=emotions)
+    assert "How the user seemed on each turn, oldest first" in user
+    assert "- tired (valence -0.4, stance 0.1)" in user
+    assert "- sad (valence -0.7, stance 0.0)" in user
+
+
+@pytest.mark.asyncio
+async def test_the_user_state_is_told_its_vocabulary_and_not_to_diagnose():
+    system, user, _ = await user_state(STATE)
+    assert '"energy":"low|normal|high"' in system
+    assert '"mood_trend":"down|flat|up"' in system
+    assert "at most 3" in system
+    assert "copied exactly from the user's lines" in system
+    assert "not a diagnosis" in system
+    assert "not a judgement of the user" in system
+    assert user.rstrip().endswith(
+        "concerns are written in the language of the user's lines, not in English unless "
+        "the user writes English."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_user_state_writes_concerns_in_the_language_the_host_names():
+    _, user, _ = await user_state(STATE, language="繁體中文")
+    assert user.rstrip().endswith("concerns are written in 繁體中文.")
+
+
+# --- diary: her day, in her words ----------------------------------------------------
+
+DIARY_DAY = {
+    "date": "2026-10-06",
+    "until": 1_790_000_000.0,
+    "conversation_ids": ["a", "b"],
+    "summaries": ["The user talked about a long day at work and a broken printer."],
+    "user_told": ["The user's name is Dawn.", "The user works at a print shop."],
+    "said_about_herself": ["Mei likes strong black tea."],
+    "views_of_user": ["Mei thinks Dawn works too hard."],
+    "moods": ["09:10 neutral", "21:30 worried"],
+    "goals": ["new: Ask Dawn how the printer is tomorrow."],
+}
+ENTRY = (
+    "Dawn came by after a long day at work. The printer broke again, poor thing. "
+    "I told her I like strong black tea. I worry she works too hard. "
+    "Tomorrow I will ask about that printer."
+)
+DIARY = {
+    "text": ENTRY,
+    "evidence": [
+        "The user talked about a long day at work and a broken printer.",
+        "Mei thinks Dawn works too hard.",
+    ],
+}
+
+
+async def diary(payload, *, day=DIARY_DAY, language="", persona="A quiet librarian."):
+    client = CapturingClient(payload, name="diary") if isinstance(payload, dict) else payload
+    runtime = CharacterRuntime(
+        character=CharacterProfile(id="c", name="Mei", description="rules", background=persona),
+        llm=SaysClient("Good night."),
+    )
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.DIARY: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.DIARY),)
+        ),
+    )
+    bg.job_extras[BackgroundCognitionKind.DIARY] = lambda: {"diary": day}
+    bg.output_language = language
+    async with tasks:
+        await bg.run_turn("good night")
+        results = await bg.collect_all()
+    (result,) = results
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    # Asked once more, the conversation goes on after these two.
+    system, user = client.messages[:2]
+    return system.content, user.content, result.output
+
+
+async def entry_proposed(payload, **kwargs):
+    _, _, output = await diary(payload, **kwargs)
+    if not output.proposals:
+        return None
+    (proposal,) = output.proposals
+    return proposal
+
+
+@pytest.mark.asyncio
+async def test_her_day_is_proposed_as_a_diary_entry_resting_on_what_happened():
+    from ai_character_engine.cognition.background import DIARY_TARGET
+
+    proposal = await entry_proposed(DIARY)
+    assert proposal.target == DIARY_TARGET
+    assert proposal.payload == {
+        "date": "2026-10-06",
+        "text": ENTRY,
+        "evidence": DIARY["evidence"],
+        "conversation_ids": ["a", "b"],
+        "until": 1_790_000_000.0,
+    }
+    assert proposal.provenance["worker_kind"] == "diary"
+    assert proposal.confidence == 1.0
+
+
+@pytest.mark.asyncio
+async def test_evidence_that_is_not_in_what_happened_is_dropped():
+    proposal = await entry_proposed(
+        {**DIARY, "evidence": ["We went to the sea together.", *DIARY["evidence"]]}
+    )
+    assert proposal.payload["evidence"] == DIARY["evidence"]
+
+
+SEA = "We went to the sea and swam all afternoon."
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_of_what_did_not_happen_is_asked_about_once_more_and_left_out():
+    """Measured on a local 9B model: one entry in three told of things that
+    were not in what happened (a day spent with her magic books, from her
+    persona). A sentence that shares too little with what happened is pointed
+    out once; what is still made up after that is left out."""
+    client = CapturingClient({**DIARY, "text": f"{ENTRY} {SEA}"}, name="diary")
+    calls = []
+    original = client.generate
+
+    async def generate(messages, *, tools=None):
+        calls.append(list(messages))
+        return await original(messages, tools=tools)
+
+    client.generate = generate
+    _, _, output = await diary(client)
+    (proposal,) = output.proposals
+    assert proposal.payload["text"] == ENTRY
+    assert len(calls) == 2
+    again = calls[1][-1].content
+    assert again.startswith("Some sentences of that entry tell what is not in what happened")
+    assert f"- {SEA}" in again
+
+
+@pytest.mark.asyncio
+async def test_an_entry_with_less_than_two_sentences_of_what_happened_is_not_written():
+    text = f"{SEA} The waves were tall and the sand was hot. Dawn came by."
+    assert await entry_proposed({**DIARY, "text": text}) is None
+
+
+@pytest.mark.asyncio
+async def test_an_entry_that_speaks_to_the_user_is_asked_about_once_more():
+    client = CapturingClient(
+        {**DIARY, "text": "You told me the printer broke again after work. " + ENTRY},
+        name="diary",
+    )
+    _, _, output = await diary(client)
+    assert client.calls == 2
+    assert 'never as "you"' in client.messages[-1].content
+
+
+@pytest.mark.asyncio
+async def test_an_entry_resting_on_nothing_that_happened_is_not_written():
+    assert await entry_proposed({**DIARY, "evidence": ["We went to the sea together."]}) is None
+    assert await entry_proposed({"text": ENTRY}) is None
+    assert await entry_proposed({**DIARY, "text": "  "}) is None
+
+
+@pytest.mark.asyncio
+async def test_at_most_three_pieces_of_evidence():
+    evidence = [*DIARY_DAY["summaries"], *DIARY_DAY["user_told"], *DIARY_DAY["views_of_user"]]
+    proposal = await entry_proposed({**DIARY, "evidence": evidence})
+    assert proposal.payload["evidence"] == evidence[:3]
+
+
+@pytest.mark.asyncio
+async def test_a_long_entry_is_cut_to_six_sentences():
+    text = " ".join(f"Dawn talked about the printer {n} times." for n in range(1, 10))
+    proposal = await entry_proposed({**DIARY, "text": text})
+    assert proposal.payload["text"] == " ".join(
+        f"Dawn talked about the printer {n} times." for n in range(1, 7)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_list_of_details_is_no_diary():
+    text = "- Dawn came by.\n- The printer broke.\n- Tea."
+    assert await entry_proposed({**DIARY, "text": text}) is None
+
+
+@pytest.mark.asyncio
+async def test_lines_of_one_entry_are_one_paragraph():
+    proposal = await entry_proposed({**DIARY, "text": "Dawn came by.\nThe printer broke."})
+    assert proposal.payload["text"] == "Dawn came by. The printer broke."
+
+
+@pytest.mark.asyncio
+async def test_an_entry_in_another_language_than_asked_is_not_written():
+    assert await entry_proposed(DIARY, language="繁體中文") is None
+    day = {**DIARY_DAY, "summaries": ["黛安下班後來找梅，說印表機又壞了。"]}
+    chinese = {
+        "text": "黛安下班後來找我。她說印表機又壞了。",
+        "evidence": ["黛安下班後來找梅，說印表機又壞了。"],
+    }
+    proposal = await entry_proposed(chinese, day=day, language="繁體中文")
+    assert proposal.payload["text"] == chinese["text"]
+
+
+@pytest.mark.asyncio
+async def test_the_diary_is_told_to_write_her_day_in_her_voice_from_what_happened_only():
+    system, user, _ = await diary(DIARY)
+    assert "first person" in system
+    assert "3 to 6 sentences" in system
+    assert "not a list" in system
+    assert "Every sentence must rest on something in what happened" in system
+    assert "copied exactly from what happened" in system
+    assert "nothing in it happened on this day" in system
+    assert 'never address the user as "you"' in system
+    assert '"text":str' in system and '"evidence":[str]' in system
+    assert "Who the character is (background, not part of the day):\nA quiet librarian." in user
+    for line in (
+        "The user talked about a long day at work and a broken printer.",
+        "The user's name is Dawn.",
+        "Mei likes strong black tea.",
+        "Mei thinks Dawn works too hard.",
+        "21:30 worried",
+        "new: Ask Dawn how the printer is tomorrow.",
+    ):
+        assert f"- {line}" in user
+    assert user.rstrip().endswith(
+        'the user is he, she or their name in it, never "you". '
+        "The entry is written in the language of what happened, not in English unless "
+        "what happened is in English."
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_diary_is_written_in_the_language_the_host_names():
+    _, user, _ = await diary(DIARY, language="繁體中文")
+    assert user.rstrip().endswith("The entry is written in 繁體中文.")
+
+
+@pytest.mark.asyncio
+async def test_no_diary_is_written_when_the_host_says_none_is_due():
+    client = CapturingClient(DIARY, name="diary")
+    runtime = character()
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.DIARY: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.DIARY),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("hello")
+        assert await bg.collect_all() == ()
+        bg.job_extras[BackgroundCognitionKind.DIARY] = lambda: None
+        await bg.run_turn("hello again")
+        assert await bg.collect_all() == ()
+    assert client.calls == 0
+    actions = [event.action for event in bg.events() if event.kind is BackgroundCognitionKind.DIARY]
+    assert actions == ["not_applicable", "not_due"]

@@ -34,6 +34,10 @@ class CognitiveRole(str, Enum):
     # Her reply read back for slips, for a note on her next reply; a role of
     # its own so that a host can give it a model of its own.
     REPLY_CHECK = "reply_check"
+    # How the user has been lately, from the user's own lines.
+    USER_STATE = "user_state"
+    # Her day, in her words, once a day.
+    DIARY = "diary"
 
 
 class CognitiveOptimization(str, Enum):
