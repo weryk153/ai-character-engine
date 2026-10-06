@@ -70,10 +70,11 @@ asyncio.run(main())
 ```
 
 `background_llm` may be one client for every worker or a mapping from worker
-name (`emotion`, `mood`, `memory`, `self_memory`, `goal`, `reflection`, `summary`)
-to a client. A worker
-without a client does not run; `background_llm={}` turns background cognition
-off. Background workers must return JSON, so give them a low temperature.
+name (`emotion`, `reply_check`, `mood`, `memory`, `self_memory`, `goal`,
+`reflection`, `summary`) to a client. A worker without a client does not run,
+except `reply_check`: without a client it still reads her opening (see below),
+which needs no model. `background_llm={}` with `reply_check_every=0` turns
+background cognition off. Background workers must return JSON, so give them a low temperature.
 
 Without `storage_dir` nothing is written to disk.
 
@@ -121,25 +122,33 @@ else in the language of the user's latest line; a fix in another writing
 (Chinese, Japanese, Korean or Latin letters) is dropped, and so is a kind off
 the list or a quote she did not say in that reply. At most two are kept.
 
-Her opening said again is not left to the model, which never reported it: when
-her reply opens with the same first clause as her previous reply (three
-letters or more) or the same first six letters, once `[keyword]` tags,
-`*actions*` and quote marks are taken out, a `repeated` slip is made with that
-opening as its evidence and a fixed fix in the language above ("Do not open
-with the same words again.", 「開頭別再用同一句，換個起手。」, and so on). It
-comes first and stands for any `repeated` the model reported. A small model calls nearly every reply a slip of some kind, so each
+Her opening said again is not left to the model, which never reported it.
+Once tags in square brackets, actions between asterisks or in parentheses and
+quote marks are taken out, her reply repeats her previous one when it opens
+with the same first clause, of four characters of Chinese, Japanese and the
+like (「哈↗哈↘哈↗」 is one, 「哈哈哈」 is not) or three words, or with the same
+first six such characters or three words. Then a `repeated` slip is made with
+that opening, as she wrote it, as its evidence and a fixed fix in the language
+above ("Do not open with the same words again.", 「開頭別再用同一句，換個起手。」,
+and so on). It comes first and stands for any `repeated` the model reported.
+It is made every turn the worker runs, also when the model call fails or there
+is no model for it.
+
+A small model calls nearly every reply a slip of some kind, so each
 is held to what its words can show: `off_persona` quotes the fact of her
 persona it contradicts and shares words with it; `repeated` quotes her previous
 reply and is its opening again or a whole sentence again; `broke_character`
 names a word of what runs behind the conversation (AI, model, prompt, 語音辨識,
 システム and the like) that her persona does not; `leaked_markup` has markup
-left once `[keyword]` and `*action*` are taken out; `wrong_language` is written
+left once tags in square brackets and actions are taken out; `wrong_language` is written
 in another script than both the user's line and her persona. `off_persona` and
 `broke_character` are then asked about once more, one sentence and one
 question, and kept only on a yes that names a word of her sentence (for
 `off_persona`, one the fact does not hold). This is one more call for each
-such slip; most turns make none. What she said is never changed and her reply waits for nothing:
-the fixes go into the note of her next turn, one line each
+such slip; most turns make none.
+
+What she said is never changed and her reply waits for nothing: the fixes go
+into the note of her next turn, one line each
 (`About your last reply: ...`), and only that turn. They are dropped when
 another turn came first, when the next turn is in another conversation, or when
 the reply was cut short or rewritten (`interrupt`, `replace_reply`, `take_back`)
@@ -381,7 +390,8 @@ model can run every worker on every turn.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `emotion_every`, `reply_check_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
+| `emotion_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
+| `reply_check_every` | 1 | Check her reply every N turns; 0 turns it off. A run reads only that reply, her reply before it and the user's line it answers |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
@@ -410,8 +420,8 @@ start of her self memories in the note, and `ASSISTANT_SPEAK` and
 exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`;
 from 1.1.1 it also has `mood_floor`. From 1.2.0 it exports `SELF_MEMORY_KINDS`
 and `CONVERSATION_SELF_MEMORY_KINDS`, `CompanionSettings` has
-`plans_stay_in_conversation` and `short_term_goal_max_age_hours`, and
-`self_memories()` takes `in_conversation`.
+`plans_stay_in_conversation`, `short_term_goal_max_age_hours` and
+`reply_check_every`, and `self_memories()` takes `in_conversation`.
 
 ## Lifecycle
 

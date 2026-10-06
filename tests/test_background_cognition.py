@@ -1959,7 +1959,8 @@ async def test_the_note_on_her_opening_is_in_the_language_of_the_conversation():
 async def test_an_opening_is_its_first_clause_or_its_first_six_letters():
     # Tags, actions and quote marks are not the words she opens with.
     assert await openings("[joy] *跳起來* 哈↗哈↘哈↗！今天呢？", "哈↗哈↘哈↗，昨天呢？")
-    # The first six letters the same, the first clause shorter than three.
+    assert await openings("[big smile] 天啊天啊天啊，今天呢？", "（笑）天啊天啊天啊，昨天呢？")
+    # The first six letters the same, the first clause too short.
     assert await openings("總、總算把「さようなら」也唸對了嗎？", "總、總算把「さよ」念出來了？")
     # A word or two alike is no repetition.
     assert not await openings("哼，「懂」啊？那就好！", "哼，終於「懂」了？")
@@ -1968,6 +1969,32 @@ async def test_an_opening_is_its_first_clause_or_its_first_six_letters():
     assert not await openings("哈↗哈↘哈↗，今天呢？", "")
 
 
+@pytest.mark.asyncio
+async def test_a_short_opening_is_no_repetition():
+    """Three characters or two words open many replies: 「哈哈哈，」, "Oh well,"."""
+    assert not await openings("哈哈哈，今天呢？", "哈哈哈，昨天呢？")
+    assert not await openings("……是嗎？那算了。", "……是嗎？你說呢。")
+    assert not await openings("Oh well, today then.", "Oh well, yesterday was fun.", user="hi")
+    assert await openings("Hello there friend, today then.", "Hello there friend, how are you?", user="hi")
+    # Six letters of Chinese or Japanese, three words of English.
+    assert await openings("I am so glad you came.", "I am so tired today.", user="hi")
+    assert not await openings("I am glad you came.", "I am tired today.", user="hi")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, previous",
+    [
+        ("[joy] *跳起來* 哈↗哈↘哈↗！今天呢？", "哈↗哈↘哈↗，昨天呢？"),
+        ("總、總算把「さようなら」也唸對了嗎？", "總、總算把「さよ」念出來了？"),
+        ("……是嗎？\n\n你眼光真好。", "……是嗎？\n\n你眼光真差。"),
+        ("(waves) Hello there friend, today then.", "Hello there friend, how are you?"),
+    ],
+)
+async def test_the_opening_is_quoted_as_she_wrote_it(reply, previous):
+    (found,) = await openings(reply, previous, user="hi")
+    assert found["evidence"]
+    assert found["evidence"] in reply
 @pytest.mark.asyncio
 async def test_her_opening_said_again_is_one_note_even_when_the_model_saw_it_too():
     found = await openings(PEKORA_NOW, PEKORA_BEFORE, language="繁體中文")
@@ -2069,3 +2096,34 @@ async def test_a_stray_backtick_after_the_answer_is_no_failure():
     assert output.proposals == ()
     _, _, output = await reply_check('```json\n{"issues":[]}\n```')
     assert output.proposals == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", ["raw:not json", "raw:", "raise"])
+async def test_her_opening_said_again_is_pointed_out_whatever_the_model_answers(answer):
+    class Failing(CheckingClient):
+        async def generate(self, messages, *, tools=None):
+            if answer == "raise":
+                self.calls.append(list(messages))
+                raise TimeoutError("model took too long")
+            return LLMResponse(text=answer[4:], model="reply_check")
+
+    runtime = CharacterRuntime(
+        character=CharacterProfile(id="c", name="C", description="rules", background=PERSONA),
+        llm=SaysClient(PEKORA_NOW),
+    )
+    runtime.history = [Message("user", "q"), Message("assistant", PEKORA_BEFORE)]
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.REPLY_CHECK: Failing({}, "yes")}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.REPLY_CHECK),)
+        ),
+    )
+    async with tasks:
+        await bg.run_turn("早安")
+        result = (await bg.collect_all())[0]
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    (proposal,) = result.output.proposals
+    assert [item["kind"] for item in proposal.payload["issues"]] == ["repeated"]

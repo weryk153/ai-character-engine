@@ -4292,14 +4292,18 @@ class Openings(Foreground):
         self.replies = list(replies)
 
     async def stream_generate(self, messages, *, tools=None):
-        self.parts = (self.replies.pop(0),)
+        self.parts = (self.replies.pop(0) if len(self.replies) > 1 else self.replies[0],)
         async for chunk in super().stream_generate(messages, tools=tools):
             yield chunk
 
 
 def test_her_opening_said_again_is_pointed_out_without_the_model_seeing_it(tmp_path):
     async def scenario():
-        llm = Openings("Well now, hello there.", "Well now, what a day it was.", "Fine.")
+        llm = Openings(
+            "Hello there friend, the sun is out and the weather is lovely today.",
+            "Hello there friend, I finished that long book about old trains.",
+            "Fine.",
+        )
         current = companion(
             tmp_path, {"reply_check": Worker({"issues": []})}, llm=llm, reply_check_every=1
         )
@@ -4311,4 +4315,25 @@ def test_her_opening_said_again_is_pointed_out_without_the_model_seeing_it(tmp_p
 
     llm = run(scenario())
     assert "About your last reply" not in new_in(llm, 1)
+    assert "About your last reply: Do not open with the same words again." in new_in(llm, 2)
+
+
+def test_her_opening_said_again_is_pointed_out_without_a_model_for_the_check(tmp_path):
+    """A host whose mapping names no reply_check client still gets the
+    opening check: it needs no model."""
+
+    async def scenario():
+        llm = Openings(
+            "Hello there friend, the sun is out and the weather is lovely today.",
+            "Hello there friend, I finished that long book about old trains.",
+            "Fine.",
+        )
+        current = companion(tmp_path, {}, llm=llm, reply_check_every=1)
+        for text in ("hi", "how was it", "and then"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
+        return llm
+
+    llm = run(scenario())
     assert "About your last reply: Do not open with the same words again." in new_in(llm, 2)

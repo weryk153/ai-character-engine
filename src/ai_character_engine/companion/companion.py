@@ -225,6 +225,17 @@ _WORKERS = (
 _TARGET_OF = {worker.kind: worker.target for worker in _WORKERS}
 
 
+class _NoModel:
+    """The client of a worker the host gave none: the reply check without a
+    model still reads her opening. Called, it fails at once."""
+
+    async def generate(self, messages, *, tools=None):
+        raise RuntimeError("no model for this worker")
+
+
+_NO_MODEL = _NoModel()
+
+
 @dataclass(slots=True)
 class _Turn:
     """A reply that was asked for and has not ended."""
@@ -1013,6 +1024,10 @@ class CharacterCompanion:
             if int(getattr(self.settings, f"{worker.name}_every")) <= 0:
                 continue
             client = source.get(worker.name) if isinstance(source, Mapping) else source
+            if client is None and worker.name == "reply_check":
+                # Her opening said again needs no model: without a client the
+                # check still reads it.
+                client = _NO_MODEL
             if client is not None:
                 clients.append((worker, client))
         return clients
@@ -1039,7 +1054,9 @@ class CharacterCompanion:
             endpoints.append(
                 ModelEndpoint(
                     endpoint_id=endpoint_id,
-                    client=PoliteClient(
+                    client=client
+                    if client is _NO_MODEL
+                    else PoliteClient(
                         client,
                         self._access,
                         rank=rank,

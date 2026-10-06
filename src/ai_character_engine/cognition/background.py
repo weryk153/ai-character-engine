@@ -6,6 +6,7 @@ import json
 import math
 import re
 import time
+import unicodedata
 from collections import deque
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -15,7 +16,7 @@ from typing import Any, Callable, Hashable, Mapping, Sequence
 
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
-from ai_character_engine.llm.models import Message
+from ai_character_engine.llm.models import LLMResponse, Message
 from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.memory.self_kinds import SELF_MEMORY_KINDS, kind_of_what_she_said
@@ -229,12 +230,21 @@ class StructuredBackgroundWorker:
     async def __call__(self, context: TaskContext) -> TaskOutput:
         async with self._semaphore:
             messages = self._messages(context)
-            response = await self.models.generate(
-                _ROLE_BY_KIND[self.spec.kind],
-                messages,
-                requirements=self.spec.requirements,
-            )
-            data = _parse_json_object(response.text)
+            try:
+                response = await self.models.generate(
+                    _ROLE_BY_KIND[self.spec.kind],
+                    messages,
+                    requirements=self.spec.requirements,
+                )
+                data = _parse_json_object(response.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if self.spec.kind is not BackgroundCognitionKind.REPLY_CHECK:
+                    raise
+                # Her opening said again is read off her words: it needs no
+                # model, and is pointed out when the model fails or is missing.
+                response, data = LLMResponse(text="", model=None), {}
             value, confidence, evidence, proposals = self._normalize(context, data)
             if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK and proposals:
                 value, evidence, proposals = await self._confirmed_slips(
@@ -1607,7 +1617,9 @@ _BACKSTAGE = re.compile(
 )
 # How expressions and actions are written: an expression keyword in square
 # brackets, an action between asterisks. Not markup left in her words.
-_DIRECTIONS = re.compile(r"\[[^\[\]\s]{1,24}\]|\*[^*\n]+\*")
+_DIRECTIONS = re.compile(
+    r"\[[^\[\]\n]{1,60}\]|\*[^*\n]+\*|（[^（）\n]{1,60}）|\([^()\n]{1,60}\)"
+)
 _MARKUP = re.compile(r"[\[\]<>{}#`|*]|(?<![A-Za-z])[A-Za-z_]+\s*[:=]\s*\S")
 # How near the words of her previous reply a repetition must be.
 _REPEATED_RATIO = 0.6
@@ -1662,11 +1674,14 @@ def _word_pieces(text: str) -> set[str]:
 
 # Where the first clause of what she says ends.
 _CLAUSE_END = re.compile(r"[，,、。．.！!？?…～~；;：:—\n]")
-_QUOTE_MARKS = re.compile(r"[「」『』“”\"'《》〈〉]")
-# Letters an opening clause needs to count, and letters alike at the start of
-# two replies that make one opening.
-_OPENING_CLAUSE_LETTERS = 3
-_OPENING_LETTERS = 6
+_QUOTE_MARKS = frozenset("「」『』“”\"'《》〈〉")
+# How much an opening clause needs to count: four characters of Chinese or
+# Japanese (「哈↗哈↘哈↗」 counts, 「哈哈哈」 does not) or three words; and how
+# much alike the start of two replies must be: six characters or three words.
+_OPENING_CLAUSE_CHARACTERS = 4
+_OPENING_WORDS = 3
+_OPENING_CHARACTERS = 6
+_LATIN_WORD = re.compile(r"[A-Za-z0-9']+")
 _OPENING_FIXES = {
     "zh": "開頭別再用同一句，換個起手。",
     "zh-hans": "开头别再用同一句，换个起手。",
@@ -1676,32 +1691,90 @@ _OPENING_FIXES = {
 }
 
 
-def _spoken_start(text: str) -> str:
-    """Her words from the start: without expression tags, actions and quote
-    marks."""
-    return _QUOTE_MARKS.sub("", _DIRECTIONS.sub(" ", text)).strip()
+def _spoken(text: str) -> list[tuple[str, int]]:
+    """Her words, each character with where it stands in ``text``: without
+    expression tags, actions and quote marks, and from her first word."""
+    hidden = [False] * len(text)
+    for match in _DIRECTIONS.finditer(text):
+        for index in range(match.start(), match.end()):
+            hidden[index] = True
+    kept = [
+        (char, index)
+        for index, char in enumerate(text)
+        if not hidden[index] and char not in _QUOTE_MARKS
+    ]
+    start = 0
+    while start < len(kept) and (
+        kept[start][0].isspace() or unicodedata.category(kept[start][0]).startswith("P")
+    ):
+        start += 1
+    return kept[start:]
+
+
+def _pieces(spoken: list[tuple[str, int]]) -> list[tuple[str, int, int]]:
+    """(piece, start, end) in the text: one per character of Chinese,
+    Japanese or Korean, one per word of Latin letters."""
+    pieces, index = [], 0
+    while index < len(spoken):
+        char, at = spoken[index]
+        if char.isascii() and (char.isalnum() or char == "'"):
+            end = index
+            while end + 1 < len(spoken) and spoken[end + 1][0].isascii() and (
+                spoken[end + 1][0].isalnum() or spoken[end + 1][0] == "'"
+            ):
+                end += 1
+            word = "".join(c for c, _ in spoken[index : end + 1]).casefold()
+            pieces.append((word, at, spoken[end][1] + 1))
+            index = end + 1
+            continue
+        if char.isalnum():
+            pieces.append((char, at, at + 1))
+        index += 1
+    return pieces
+
+
+def _clause(spoken: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    for index, (char, _) in enumerate(spoken):
+        if _CLAUSE_END.match(char):
+            return spoken[:index]
+    return spoken
+
+
+def _clause_key(clause: list[tuple[str, int]]) -> tuple[str, int, int]:
+    """(what the clause says, its characters of Chinese or Japanese and the
+    like, its words): letters, digits and signs such as arrows, no spacing
+    or punctuation."""
+    key = "".join(
+        char.casefold()
+        for char, _ in clause
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
+    wide = sum(not char.isascii() for char in key)
+    words = len(_LATIN_WORD.findall("".join(char for char, _ in clause)))
+    return key, wide, words
 
 
 def _same_opening(reply: str, previous: str) -> str:
-    """The opening of her reply when her previous reply opened the same way:
-    the same first clause of three letters or more, or the same first six
-    letters; empty otherwise."""
+    """The opening of her reply, as she wrote it, when her previous reply
+    opened the same way: the same first clause of four characters or three
+    words, or the same first six characters or three words; empty
+    otherwise."""
     if not previous.strip():
         return ""
-    now, before = _spoken_start(reply), _spoken_start(previous)
-    clause = _CLAUSE_END.split(now, 1)[0].strip()
-    clause_before = _CLAUSE_END.split(before, 1)[0].strip()
-    letters = _letters(clause)
-    if len(letters) >= _OPENING_CLAUSE_LETTERS and letters == _letters(clause_before):
-        return clause
-    head, head_before = _letters(now)[:_OPENING_LETTERS], _letters(before)[:_OPENING_LETTERS]
-    if len(head) == _OPENING_LETTERS and head == head_before:
-        seen, end = 0, 0
-        for end, char in enumerate(now, 1):
-            seen += char.isalnum()
-            if seen == _OPENING_LETTERS:
-                break
-        return now[:end]
+    now, before = _spoken(reply), _spoken(previous)
+    clause = _clause(now)
+    key, wide, words = _clause_key(clause)
+    if (wide >= _OPENING_CLAUSE_CHARACTERS or (not wide and words >= _OPENING_WORDS)) and (
+        key == _clause_key(_clause(before))[0]
+    ):
+        return reply[clause[0][1] : clause[-1][1] + 1].strip()
+    pieces, pieces_before = _pieces(now), _pieces(before)
+    if not pieces:
+        return ""
+    need = _OPENING_WORDS if len(pieces[0][0]) > 1 or pieces[0][0].isascii() else _OPENING_CHARACTERS
+    head = [piece for piece, _, _ in pieces[:need]]
+    if len(head) == need and head == [piece for piece, _, _ in pieces_before[:need]]:
+        return reply[pieces[0][1] : pieces[need - 1][2]].strip()
     return ""
 
 
