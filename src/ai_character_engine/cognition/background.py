@@ -263,6 +263,8 @@ class StructuredBackgroundWorker:
                 # Her opening said again is read off her words: it needs no
                 # model, and is pointed out when the model fails or is missing.
                 response, data = LLMResponse(text="", model=None), {}
+            if self.spec.kind is BackgroundCognitionKind.DIARY:
+                data = await self._diary_again(context, messages, response.text, data)
             value, confidence, evidence, proposals = self._normalize(context, data)
             if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK and proposals:
                 value, evidence, proposals = await self._confirmed_slips(
@@ -354,6 +356,57 @@ class StructuredBackgroundWorker:
             f" Text values must be written in {language}." if language else _OUTPUT_LANGUAGE_RULE
         )
         return [Message(role="system", content=system), Message(role="user", content=user)]
+
+    async def _diary_again(
+        self,
+        context: TaskContext,
+        messages: list[Message],
+        answered: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        """Her entry asked for once more when sentences of it tell what is not
+        in what happened, or it speaks to the user: a 9B model wrote one entry
+        in three from her persona or as a reply to the user. The first answer
+        stands when the second is none."""
+        day = context.request.payload.get("diary")
+        happened = [
+            line
+            for _, lines in _diary_sections(day if isinstance(day, Mapping) else {})
+            for line in lines
+        ]
+        text = _diary_text(str(data.get("text") or ""))
+        made_up = _not_of_the_day(text, happened)
+        speaks_to_the_user = _SPEAKS_TO_THE_USER.search(_QUOTED_WORDS.sub(" ", text)) is not None
+        if not text or (not made_up and not speaks_to_the_user):
+            return data
+        ask = []
+        if made_up:
+            ask.append(
+                "Some sentences of that entry tell what is not in what happened:\n"
+                + "\n".join(f"- {sentence}" for sentence in made_up)
+            )
+        ask.append(
+            "Write the entry again: tell only what is in what happened, in the "
+            "character's own voice. The diary is for the character alone: write of the "
+            'user as he, she or by name, never as "you" (你, 您, あなた). Return only the '
+            "JSON object; evidence is copied exactly from what happened."
+        )
+        try:
+            response = await self.models.generate(
+                _ROLE_BY_KIND[self.spec.kind],
+                [
+                    *messages,
+                    Message(role="assistant", content=answered),
+                    Message(role="user", content="\n\n".join(ask)),
+                ],
+                requirements=self.spec.requirements,
+            )
+            again = _parse_json_object(response.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return data
+        return again if str(again.get("text") or "").strip() else data
 
     async def _confirmed_slips(
         self, context: TaskContext, data: Mapping[str, Any], proposal: TaskProposal
@@ -684,6 +737,8 @@ class StructuredBackgroundWorker:
                     and _line_quoted(quote, happened) is not None
                 )
             )[:_EVIDENCE_KEPT]
+            # What is still made up after she was asked once more is left out.
+            text = _told_of_the_day(text, happened)
             # A day told with nothing of the day under it is made up; one in a
             # language she does not speak there is no diary of hers.
             if not text or not evidence or (script and not _written_in(text, script)):
@@ -1464,8 +1519,13 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "told the character, what the character said and thought, how the character felt "
             "and what the character set out to do. Do not add events, people, places, times "
             "or feelings that are not in what happened, and do not guess what anyone did "
-            "beyond it. Call the user by the name what happened gives, if it gives one. Do "
-            "not mention notes, summaries, records, prompts or being an AI. evidence is at "
+            "beyond it. Who the character is tells only how the character speaks and sees "
+            "things: nothing in it happened on this day, and the entry does not tell it as "
+            "part of the day. The diary is for the character alone: never address the user "
+            "as \"you\"; write of the user by the name what happened gives, or as the person "
+            "the character talked with. When little happened, three short sentences are "
+            "enough. Do not mention notes, summaries, records, prompts or being an AI. "
+            "evidence is at "
             "most 3 lines copied exactly from what happened, the ones the entry rests on "
             "most. Return JSON: {\"text\":str,\"evidence\":[str]}."
         ),
@@ -2289,8 +2349,50 @@ def _diary_text(raw: str) -> str:
         return ""
     wide = _script(raw) in ("zh", "ja", "ko")
     text = ("" if wide else " ").join(lines)
-    sentences = [part.strip() for part in _DIARY_SENTENCE_END.split(text) if part.strip()]
-    return ("" if wide else " ").join(sentences[:DIARY_SENTENCES])
+    return ("" if wide else " ").join(_diary_sentences(text)[:DIARY_SENTENCES])
+
+
+# How much of a sentence of her entry must be found in what happened (pieces
+# of _word_pieces: two characters of Chinese or Japanese, the start of a
+# word): measured on entries of a 9B model, sentences of the day shared 0.23
+# to 0.82 of their pieces with it, sentences from her persona or made up 0.00
+# to 0.11. A sentence of fewer pieces ("It rained.") is not judged.
+_OF_THE_DAY = 0.2
+_PIECES_JUDGED = 3
+# At least this many sentences of the day, or there is no entry.
+_DIARY_SENTENCES_KEPT = 2
+# The user spoken to, outside quoted words.
+_SPEAKS_TO_THE_USER = re.compile(
+    r"你|妳|您|あなた|(?<![A-Za-z])(?:you|your|yours)(?![A-Za-z])", re.IGNORECASE
+)
+_QUOTED_WORDS = re.compile(r"「[^」]*」|『[^』]*』|“[^”]*”|\"[^\"]*\"")
+
+
+def _diary_sentences(text: str) -> list[str]:
+    return [part.strip() for part in _DIARY_SENTENCE_END.split(text) if part.strip()]
+
+
+def _of_the_day(sentence: str, day: set[str]) -> bool:
+    pieces = _word_pieces(sentence)
+    if len(pieces) < _PIECES_JUDGED:
+        return True
+    return len(pieces & day) >= _OF_THE_DAY * len(pieces)
+
+
+def _not_of_the_day(text: str, happened: Sequence[str]) -> list[str]:
+    """The sentences of her entry that share too little with what happened."""
+    day = _word_pieces("\n".join(happened))
+    return [sentence for sentence in _diary_sentences(text) if not _of_the_day(sentence, day)]
+
+
+def _told_of_the_day(text: str, happened: Sequence[str]) -> str:
+    """Her entry without the sentences that are not of the day; empty when
+    fewer than _DIARY_SENTENCES_KEPT are left."""
+    day = _word_pieces("\n".join(happened))
+    kept = [sentence for sentence in _diary_sentences(text) if _of_the_day(sentence, day)]
+    if len(kept) < _DIARY_SENTENCES_KEPT:
+        return ""
+    return ("" if _script(text) in ("zh", "ja", "ko") else " ").join(kept)
 
 
 def _diary_messages(context: TaskContext) -> list[Message]:
@@ -2314,7 +2416,12 @@ def _diary_messages(context: TaskContext) -> list[Message]:
         + f"What happened:\n\n{happened or '(nothing)'}\n"
     )
     language = str(payload.get("output_language") or "").strip()
-    user += "\nReturn only the requested JSON object. " + (
+    # Placed last, as the language rule: in the system prompt alone a 9B model
+    # still wrote half its entries to the user.
+    user += (
+        "\nReturn only the requested JSON object. The diary is for the character alone: "
+        'the user is he, she or their name in it, never "you". '
+    ) + (
         f"The entry is written in {language}."
         if language
         else "The entry is written in the language of what happened, not in English unless "

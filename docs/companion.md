@@ -200,10 +200,17 @@ what she thought of the user (self memory), her mood as it changed, with the
 time, and the goals she took up or settled. The turn that finds the day over
 belongs to the next one. She writes 3 to 6 sentences, in the first person, in
 `CompanionSettings.language` (else the language of what happened), and at most
-three lines of what happened the entry rests on most (`evidence`). An entry
-without such a line, one longer than six sentences (cut), one written as a list
-(not kept) or in another language (not kept) is no entry; an entry not kept is
-tried again an hour later at the soonest.
+three lines of what happened the entry rests on most (`evidence`). Her persona
+is given for her voice only, and the diary is for her alone: the user is not
+spoken to as "you". A small model wrote one entry in three from her persona or
+as a reply to the user, so a sentence that shares less than a fifth of its
+words (two characters of Chinese or Japanese, the start of a word) with what
+happened, or an entry that speaks to the user, is pointed out and the entry
+asked for once more; sentences still not of the day are then left out. An
+entry with fewer than two sentences of the day or no line of evidence, one
+written as a list or in another language is no entry, and one longer than six
+sentences is cut; an entry not kept is tried again an hour later at the
+soonest.
 
 `write_diary(date=None)` asks for one now, for a host that reads her diary
 before a stream: about the time since her last entry, or about a given day

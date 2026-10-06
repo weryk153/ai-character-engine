@@ -2429,7 +2429,8 @@ async def diary(payload, *, day=DIARY_DAY, language="", persona="A quiet librari
         results = await bg.collect_all()
     (result,) = results
     assert result.status is TaskStatus.SUCCEEDED, result.error
-    system, user = client.messages
+    # Asked once more, the conversation goes on after these two.
+    system, user = client.messages[:2]
     return system.content, user.content, result.output
 
 
@@ -2466,6 +2467,50 @@ async def test_evidence_that_is_not_in_what_happened_is_dropped():
     assert proposal.payload["evidence"] == DIARY["evidence"]
 
 
+SEA = "We went to the sea and swam all afternoon."
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_of_what_did_not_happen_is_asked_about_once_more_and_left_out():
+    """Measured on a local 9B model: one entry in three told of things that
+    were not in what happened (a day spent with her magic books, from her
+    persona). A sentence that shares too little with what happened is pointed
+    out once; what is still made up after that is left out."""
+    client = CapturingClient({**DIARY, "text": f"{ENTRY} {SEA}"}, name="diary")
+    calls = []
+    original = client.generate
+
+    async def generate(messages, *, tools=None):
+        calls.append(list(messages))
+        return await original(messages, tools=tools)
+
+    client.generate = generate
+    _, _, output = await diary(client)
+    (proposal,) = output.proposals
+    assert proposal.payload["text"] == ENTRY
+    assert len(calls) == 2
+    again = calls[1][-1].content
+    assert again.startswith("Some sentences of that entry tell what is not in what happened")
+    assert f"- {SEA}" in again
+
+
+@pytest.mark.asyncio
+async def test_an_entry_with_less_than_two_sentences_of_what_happened_is_not_written():
+    text = f"{SEA} The waves were tall and the sand was hot. Dawn came by."
+    assert await entry_proposed({**DIARY, "text": text}) is None
+
+
+@pytest.mark.asyncio
+async def test_an_entry_that_speaks_to_the_user_is_asked_about_once_more():
+    client = CapturingClient(
+        {**DIARY, "text": "You told me the printer broke again after work. " + ENTRY},
+        name="diary",
+    )
+    _, _, output = await diary(client)
+    assert client.calls == 2
+    assert 'never as "you"' in client.messages[-1].content
+
+
 @pytest.mark.asyncio
 async def test_an_entry_resting_on_nothing_that_happened_is_not_written():
     assert await entry_proposed({**DIARY, "evidence": ["We went to the sea together."]}) is None
@@ -2482,10 +2527,10 @@ async def test_at_most_three_pieces_of_evidence():
 
 @pytest.mark.asyncio
 async def test_a_long_entry_is_cut_to_six_sentences():
-    text = " ".join(f"Sentence number {n} of the day." for n in range(1, 10))
+    text = " ".join(f"Dawn talked about the printer {n} times." for n in range(1, 10))
     proposal = await entry_proposed({**DIARY, "text": text})
     assert proposal.payload["text"] == " ".join(
-        f"Sentence number {n} of the day." for n in range(1, 7)
+        f"Dawn talked about the printer {n} times." for n in range(1, 7)
     )
 
 
@@ -2504,8 +2549,13 @@ async def test_lines_of_one_entry_are_one_paragraph():
 @pytest.mark.asyncio
 async def test_an_entry_in_another_language_than_asked_is_not_written():
     assert await entry_proposed(DIARY, language="繁體中文") is None
-    chinese = {**DIARY, "text": "今天黛安下班後來找我。印表機又壞了。"}
-    assert (await entry_proposed(chinese, language="繁體中文")).payload["text"] == chinese["text"]
+    day = {**DIARY_DAY, "summaries": ["黛安下班後來找梅，說印表機又壞了。"]}
+    chinese = {
+        "text": "黛安下班後來找我。她說印表機又壞了。",
+        "evidence": ["黛安下班後來找梅，說印表機又壞了。"],
+    }
+    proposal = await entry_proposed(chinese, day=day, language="繁體中文")
+    assert proposal.payload["text"] == chinese["text"]
 
 
 @pytest.mark.asyncio
@@ -2516,6 +2566,8 @@ async def test_the_diary_is_told_to_write_her_day_in_her_voice_from_what_happene
     assert "not a list" in system
     assert "Every sentence must rest on something in what happened" in system
     assert "copied exactly from what happened" in system
+    assert "nothing in it happened on this day" in system
+    assert 'never address the user as "you"' in system
     assert '"text":str' in system and '"evidence":[str]' in system
     assert "Who the character is (background, not part of the day):\nA quiet librarian." in user
     for line in (
@@ -2528,6 +2580,7 @@ async def test_the_diary_is_told_to_write_her_day_in_her_voice_from_what_happene
     ):
         assert f"- {line}" in user
     assert user.rstrip().endswith(
+        'the user is he, she or their name in it, never "you". '
         "The entry is written in the language of what happened, not in English unless "
         "what happened is in English."
     )
