@@ -1024,9 +1024,10 @@ class CharacterCompanion:
             if int(getattr(self.settings, f"{worker.name}_every")) <= 0:
                 continue
             client = source.get(worker.name) if isinstance(source, Mapping) else source
-            if client is None and worker.name == "reply_check":
-                # Her opening said again needs no model: without a client the
-                # check still reads it.
+            if client is None and worker.name == "reply_check" and source:
+                # Her opening said again needs no model: a host that names
+                # other workers but no reply_check client still has it read.
+                # An empty mapping turns all background work off, as in 1.1.
                 client = _NO_MODEL
             if client is not None:
                 clients.append((worker, client))

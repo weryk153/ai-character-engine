@@ -72,9 +72,10 @@ asyncio.run(main())
 `background_llm` may be one client for every worker or a mapping from worker
 name (`emotion`, `reply_check`, `mood`, `memory`, `self_memory`, `goal`,
 `reflection`, `summary`) to a client. A worker without a client does not run,
-except `reply_check`: without a client it still reads her opening (see below),
-which needs no model. `background_llm={}` with `reply_check_every=0` turns
-background cognition off. Background workers must return JSON, so give them a low temperature.
+except `reply_check`: in a mapping that names other workers but no
+`reply_check` client it still reads her opening (see below), which needs no
+model. `background_llm={}` turns background cognition off, the reply check
+included. Background workers must return JSON, so give them a low temperature.
 
 Without `storage_dir` nothing is written to disk.
 
@@ -131,8 +132,8 @@ first six such characters or three words. Then a `repeated` slip is made with
 that opening, as she wrote it, as its evidence and a fixed fix in the language
 above ("Do not open with the same words again.", 「開頭別再用同一句，換個起手。」,
 and so on). It comes first and stands for any `repeated` the model reported.
-It is made every turn the worker runs, also when the model call fails or there
-is no model for it.
+It is made every turn the worker runs, also when the model call fails or a
+mapping that names other workers has no `reply_check` client.
 
 A small model calls nearly every reply a slip of some kind, so each
 is held to what its words can show: `off_persona` quotes the fact of her

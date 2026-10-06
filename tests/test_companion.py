@@ -4319,8 +4319,30 @@ def test_her_opening_said_again_is_pointed_out_without_the_model_seeing_it(tmp_p
 
 
 def test_her_opening_said_again_is_pointed_out_without_a_model_for_the_check(tmp_path):
-    """A host whose mapping names no reply_check client still gets the
-    opening check: it needs no model."""
+    """A host whose mapping names other workers but no reply_check client
+    still gets the opening check: it needs no model."""
+
+    async def scenario():
+        llm = Openings(
+            "Hello there friend, the sun is out and the weather is lovely today.",
+            "Hello there friend, I finished that long book about old trains.",
+            "Fine.",
+        )
+        current = companion(
+            tmp_path, {"emotion": Worker(NEUTRAL)}, llm=llm, reply_check_every=1, emotion_every=1
+        )
+        for text in ("hi", "how was it", "and then"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
+        return llm
+
+    llm = run(scenario())
+    assert "About your last reply: Do not open with the same words again." in new_in(llm, 2)
+
+
+def test_an_empty_mapping_still_turns_all_background_work_off(tmp_path):
+    """As in 1.1: background_llm={} runs nothing, the opening check included."""
 
     async def scenario():
         llm = Openings(
@@ -4332,8 +4354,10 @@ def test_her_opening_said_again_is_pointed_out_without_a_model_for_the_check(tmp
         for text in ("hi", "how was it", "and then"):
             await current.reply(text, conversation_id="a")
             await current.settle()
+        background = current._background
         await current.close()
-        return llm
+        return llm, background
 
-    llm = run(scenario())
-    assert "About your last reply: Do not open with the same words again." in new_in(llm, 2)
+    llm, background = run(scenario())
+    assert background is None
+    assert "About your last reply" not in new_in(llm, 2)
