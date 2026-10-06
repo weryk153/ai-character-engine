@@ -9,7 +9,12 @@ from datetime import UTC, datetime
 from typing import Callable, Iterable
 from uuid import uuid4
 
-from ai_character_engine.cognition.background import REPLY_CHECK_KINDS, REPLY_NOTE_TARGET
+from ai_character_engine.cognition.background import (
+    MEMORY_CONFLICT_TARGET,
+    REPLY_CHECK_KINDS,
+    REPLY_NOTE_TARGET,
+)
+from ai_character_engine.memory.conflicts import apply_conflicts, conflict_candidates
 from ai_character_engine.memory.models import MemoryRecord
 from ai_character_engine.memory.self_kinds import CONVERSATION_KEY
 from ai_character_engine.long_term_cognition import (
@@ -85,6 +90,15 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         stale_policy=StalePolicy.REJECT,
         expected_worker_kind="reply_check",
     ),
+    # How a new fact about the user stands to earlier ones. Checked against
+    # the memories as they are when it is committed, so a turn in between
+    # does not make it wrong.
+    MEMORY_CONFLICT_TARGET: CommitTargetPolicy(
+        min_confidence=0.50,
+        stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
+        expected_worker_kind="memory_conflict",
+        max_age_s=300.0,
+    ),
     "memory.conversation_summary_candidate": CommitTargetPolicy(
         min_confidence=0.70,
         stale_policy=StalePolicy.RERUN,
@@ -145,6 +159,8 @@ class CognitiveCommitCoordinator:
         self._conflicts: dict[str, tuple[str, str]] = {}
         self._commit_sequence = 0
         self._attempts: dict[str, int] = {}
+        # What an apply has to tell beyond the record it wrote, by proposal.
+        self._told: dict[str, dict] = {}
         # Dates her mood when it is written. A host with its own clock
         # (CharacterCompanion) sets it, so that her mood fades by that clock.
         self.clock: Callable[[], float] = time.time
@@ -272,6 +288,7 @@ class CognitiveCommitCoordinator:
             try:
                 applied_record_id = self._apply(proposal)
             except Exception as exc:
+                self._told.pop(proposal.id, None)
                 return self._finalize(
                     proposal,
                     CommitStatus.RETRYABLE_ERROR,
@@ -293,7 +310,10 @@ class CognitiveCommitCoordinator:
                 current_revision,
                 commit_sequence=self._commit_sequence,
                 applied_record_id=applied_record_id,
-                metadata={"attempt": self._attempts[proposal.id]},
+                metadata={
+                    "attempt": self._attempts[proposal.id],
+                    **self._told.pop(proposal.id, {}),
+                },
             )
 
     async def retry(self, proposal: TaskProposal) -> CommitResult:
@@ -447,6 +467,14 @@ class CognitiveCommitCoordinator:
                     "reply_note_without_issue",
                     current_revision,
                 )
+        if proposal.target == MEMORY_CONFLICT_TARGET:
+            if not self._conflicts_to_apply(proposal)[1]:
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "memory_conflict_without_relation",
+                    current_revision,
+                )
         if proposal.target == "cognition.reflection_candidate":
             insight = str(proposal.payload.get("insight", "")).strip()
             if not insight:
@@ -477,6 +505,27 @@ class CognitiveCommitCoordinator:
             if invalid is not None:
                 return invalid
         return None
+
+    def _conflicts_to_apply(self, proposal: TaskProposal):
+        """(the memories of the scope with the relations applied, those
+        applied): only about a fact the model was shown, and only while both
+        facts are held."""
+        manager = getattr(self.tasks.runtime, "memory_manager", None)
+        new_id = str(proposal.payload.get("new_id") or "")
+        conflicts = proposal.payload.get("conflicts")
+        if manager is None or not new_id or not isinstance(conflicts, list):
+            return [], ()
+        shown = {str(item) for item in proposal.provenance.get("candidates") or ()}
+        records = manager.store.list_for_character(self.tasks.runtime.memory_scope_id)
+        return apply_conflicts(
+            records,
+            new_id,
+            [
+                item
+                for item in conflicts
+                if isinstance(item, dict) and str(item.get("old_id") or "") in shown
+            ],
+        )
 
     def _validate_goal_candidate(
         self, proposal: TaskProposal, current_revision: int
@@ -642,7 +691,27 @@ class CognitiveCommitCoordinator:
             except Exception:
                 manager.store.replace_for_character(runtime.memory_scope_id, before)
                 raise
+            if proposal.target == "memory.append_candidate":
+                # The earlier facts this one may change, picked without a
+                # model; a host asks one about them (memory_conflict).
+                self._told[proposal.id] = {
+                    "conflict_candidates": [
+                        candidate.id
+                        for candidate in conflict_candidates(
+                            record, manager.store.list_for_character(runtime.memory_scope_id)
+                        )
+                    ]
+                }
             return record.id
+
+        if proposal.target == MEMORY_CONFLICT_TARGET:
+            manager = runtime.memory_manager
+            records, applied = self._conflicts_to_apply(proposal)
+            if not applied:
+                raise RuntimeError("no memory conflict left to apply")
+            manager.store.replace_for_character(runtime.memory_scope_id, records)
+            self._told[proposal.id] = {"applied": [dict(item) for item in applied]}
+            return str(proposal.payload.get("new_id"))
 
         if proposal.target == "memory.conversation_summary_candidate":
             manager = runtime.memory_manager
@@ -1056,6 +1125,12 @@ class CognitiveCommitCoordinator:
             return None, f"character_mood:{proposal.base_revision}", fingerprint
         if proposal.target == REPLY_NOTE_TARGET:
             return None, f"reply_note:{proposal.base_revision}", fingerprint
+        if proposal.target == MEMORY_CONFLICT_TARGET:
+            new_id = str(proposal.payload.get("new_id") or "")
+            semantic = hashlib.sha256(
+                f"memory_conflict|{new_id}|{fingerprint}".encode("utf-8")
+            ).hexdigest()
+            return semantic, None, fingerprint
         if proposal.target == "cognition.reflection_candidate":
             insight = _normalize_text(str(proposal.payload.get("insight", "")))
             claim = _claim_fingerprint(proposal.payload.get("belief_candidate"))

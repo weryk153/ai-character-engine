@@ -29,6 +29,11 @@ class CompanionSettings:
     # read it every turn.
     mood_every: int = 2
     memory_every: int = 2
+    # A memory of the user just written is held against the earlier ones on
+    # its topic: one more call, only when there are any. A fact that moved on
+    # (a new job, a move) replaces the old one; two that cannot both be true
+    # are kept, and she asks the user which is right, once.
+    memory_conflicts: bool = True
     goal_every: int = 4
     reflection_every: int = 6
     summary_every: int = 0

@@ -34,6 +34,9 @@ class CognitiveRole(str, Enum):
     # Her reply read back for slips, for a note on her next reply; a role of
     # its own so that a host can give it a model of its own.
     REPLY_CHECK = "reply_check"
+    # A new fact about the user held against the earlier ones on its topic;
+    # a role of its own so that a host can give it a model of its own.
+    MEMORY_CONFLICT = "memory_conflict"
 
 
 class CognitiveOptimization(str, Enum):

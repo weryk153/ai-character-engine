@@ -18,7 +18,14 @@ from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.goals.models import MOTIVATION_SOURCE_TYPES, MotivationKind
 from ai_character_engine.llm.models import LLMResponse, Message
 from ai_character_engine.context.builder import is_turn_context
+from ai_character_engine.memory.conflicts import (
+    CONFLICT_RELATIONS,
+    one_day_against_a_habit,
+    says_a_change,
+    says_a_plan,
+)
 from ai_character_engine.memory.evidence import classify_user_text
+from ai_character_engine.memory.models import MemoryRecord
 from ai_character_engine.memory.self_kinds import SELF_MEMORY_KINDS, kind_of_what_she_said
 from ai_character_engine.runtime.models import CharacterRunResult
 from ai_character_engine.state.mood import (
@@ -57,6 +64,8 @@ class BackgroundCognitionKind(str, Enum):
     SELF_MEMORY_EXTRACTION = "self_memory_extraction"
     CHARACTER_MOOD = "character_mood"
     REPLY_CHECK = "reply_check"
+    # Scheduled when a memory of the user is written, not after a turn.
+    MEMORY_CONFLICT = "memory_conflict"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -69,6 +78,7 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: CognitiveRole.SELF_MEMORY,
     BackgroundCognitionKind.CHARACTER_MOOD: CognitiveRole.MOOD,
     BackgroundCognitionKind.REPLY_CHECK: CognitiveRole.REPLY_CHECK,
+    BackgroundCognitionKind.MEMORY_CONFLICT: CognitiveRole.MEMORY_CONFLICT,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
@@ -76,6 +86,8 @@ MOOD_TARGET = "state.mood_candidate"
 # A note for her next reply about a slip in this one. Nothing is written for
 # it: CharacterCompanion keeps the note for that one reply.
 REPLY_NOTE_TARGET = "context.reply_note_candidate"
+# How a new fact about the user stands to earlier ones; see memory/conflicts.py.
+MEMORY_CONFLICT_TARGET = "memory.conflict_candidate"
 # What the reply check looks for, and nothing else.
 REPLY_CHECK_KINDS: tuple[str, ...] = (
     "broke_character",
@@ -250,6 +262,8 @@ class StructuredBackgroundWorker:
                 value, evidence, proposals = await self._confirmed_slips(
                     context, data, proposals[0]
                 )
+            if self.spec.kind is BackgroundCognitionKind.MEMORY_CONFLICT and proposals:
+                value, proposals = await self._confirmed_conflicts(context, proposals[0])
             return TaskOutput(
                 value=BackgroundCognitionResult(
                     kind=self.spec.kind,
@@ -279,6 +293,8 @@ class StructuredBackgroundWorker:
             return _mood_messages(context, self.history_messages)
         if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK:
             return _reply_check_messages(context, self.history_messages)
+        if self.spec.kind is BackgroundCognitionKind.MEMORY_CONFLICT:
+            return _conflict_messages(context)
         history = list(context.snapshot.history[-self.history_messages :])
         payload = context.request.payload
         latest = str(payload.get("latest_user_or_event", "")).strip()
@@ -382,6 +398,63 @@ class StructuredBackgroundWorker:
                 )
             ],
         )
+
+    async def _confirmed_conflicts(
+        self, context: TaskContext, proposal: TaskProposal
+    ) -> tuple[tuple[dict[str, str], ...], list[TaskProposal]]:
+        """A relation that changes her memory, asked about once more, one by
+        one. A 9B model called 25 against 27 years old a change with time, and
+        a weekend at home against weekends spent hiking a contradiction.
+        supersedes holds only on a change said in the user's own words; else,
+        when both facts cannot be true, it is a contradiction to ask about. A
+        contradiction holds only when both cannot be true. No clear answer is
+        no relation. What the user's words show is not left to the model: a
+        change must be said in so many words, a plan is no change yet, and one
+        day does not go against a habit."""
+        payload = context.request.payload
+        new = payload.get("new_memory") or {}
+        said = str(new.get("said") or "")
+        newer = f"{new.get('summary') or ''} {said}"
+        summary_of = {
+            str(item.get("id")): str(item.get("summary") or "")
+            for item in payload.get("candidates") or ()
+        }
+        kept = []
+        for item in proposal.payload["conflicts"]:
+            if item["relation"] == "refines":
+                kept.append(item)
+                continue
+            earlier = summary_of.get(item["old_id"], "")
+            if says_a_plan(newer) or one_day_against_a_habit(newer, earlier):
+                continue
+            try:
+                response = await self.models.generate(
+                    _ROLE_BY_KIND[self.spec.kind],
+                    _change_question(earlier, str(new.get("summary") or ""), said),
+                    requirements=self.spec.requirements,
+                )
+                answer = _parse_json_object(response.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                continue
+            both_true = _yes(answer.get("both_true"))
+            if both_true is None:
+                continue
+            word = _squeeze(str(answer.get("word") or "").casefold())
+            changed = (
+                _yes(answer.get("changed")) is True
+                and bool(word)
+                and word in _squeeze(said.casefold())
+                and says_a_change(said)
+            )
+            if item["relation"] == "supersedes" and changed:
+                kept.append(item)
+            elif not both_true:
+                kept.append({**item, "relation": "contradicts"})
+        if not kept:
+            return (), []
+        return tuple(kept), [replace(proposal, payload={**proposal.payload, "conflicts": kept})]
 
     def _normalize(
         self,
@@ -525,6 +598,50 @@ class StructuredBackgroundWorker:
                 )
             )
             return value, confidence, evidence, proposals
+
+        if kind is BackgroundCognitionKind.MEMORY_CONFLICT:
+            payload = context.request.payload
+            new_id = str((payload.get("new_memory") or {}).get("id") or "")
+            candidates = [str(item.get("id")) for item in payload.get("candidates") or ()]
+            # The model names an earlier fact by its label (m1, m2...); one
+            # it was not shown is no answer about it.
+            label_of = {f"m{number}": old_id for number, old_id in enumerate(candidates, 1)}
+            label_of.update({old_id: old_id for old_id in candidates})
+            raw_conflicts = data.get("conflicts")
+            conflicts: list[dict[str, str]] = []
+            for raw in raw_conflicts if isinstance(raw_conflicts, list) else ():
+                if not isinstance(raw, dict):
+                    continue
+                old_id = label_of.get(str(raw.get("old_id") or "").strip())
+                relation = str(raw.get("relation") or "").strip().casefold()
+                if old_id is None or relation not in CONFLICT_RELATIONS:
+                    continue
+                if any(item["old_id"] == old_id for item in conflicts):
+                    continue
+                conflicts.append(
+                    {
+                        "old_id": old_id,
+                        "relation": relation,
+                        "reason": str(raw.get("reason") or "").strip(),
+                    }
+                )
+            if not conflicts or not new_id:
+                return (), confidence, evidence, []
+            proposals.append(
+                context.proposal(
+                    MEMORY_CONFLICT_TARGET,
+                    {"new_id": new_id, "conflicts": conflicts},
+                    # Every relation names a fact it was shown, checked above.
+                    confidence=1.0,
+                    provenance={
+                        **provenance,
+                        "evidence_type": "asserted_fact",
+                        "new_id": new_id,
+                        "candidates": candidates,
+                    },
+                )
+            )
+            return tuple(conflicts), confidence, evidence, proposals
 
         if kind is BackgroundCognitionKind.REPLY_CHECK:
             raw_issues = data.get("issues")
@@ -858,6 +975,11 @@ class BackgroundCognitionRuntime:
             if spec.kind is BackgroundCognitionKind.GOAL_MOTIVATION and getattr(self.tasks.runtime, "goal_manager", None) is None:
                 self._emit(spec.kind, "not_applicable", revision, event.id, detail="goal_manager_not_configured")
                 continue
+            if spec.kind is BackgroundCognitionKind.MEMORY_CONFLICT:
+                # Asked when a memory of the user is written; see
+                # schedule_memory_conflict.
+                self._emit(spec.kind, "not_applicable", revision, event.id, detail="after_memory_commit")
+                continue
             if spec.kind is BackgroundCognitionKind.VISION_INTERPRETATION and not _is_vision_event(event):
                 self._emit(spec.kind, "not_applicable", revision, event.id)
                 continue
@@ -937,6 +1059,54 @@ class BackgroundCognitionRuntime:
             handles.append(handle)
             self._emit(spec.kind, "scheduled", revision, event.id, task_id=handle.task_id)
         return tuple(handles)
+
+    async def schedule_memory_conflict(
+        self, new: MemoryRecord, candidates: Sequence[MemoryRecord]
+    ) -> TaskHandle | None:
+        """Ask how a memory of the user just written stands to the earlier
+        ones on its topic (memory.conflicts.conflict_candidates). None, and
+        no model asked, without candidates or without the worker."""
+        spec = self.config.spec_for(BackgroundCognitionKind.MEMORY_CONFLICT)
+        if spec is None or not spec.enabled or not candidates:
+            return None
+        provenance = new.metadata.get("background_provenance") or {}
+        said = next(iter(provenance.get("evidence") or ()), "") or new.metadata.get(
+            "source_content", ""
+        )
+        payload: dict[str, Any] = {
+            "new_memory": {"id": new.id, "summary": new.summary, "said": str(said or "")},
+            "candidates": [{"id": record.id, "summary": record.summary} for record in candidates],
+            "foreground_event_id": new.source_event_id,
+            "foreground_event_type": new.source_event_type,
+            "memory_evidence_type": "asserted_fact",
+        }
+        if self.output_language.strip():
+            payload["output_language"] = self.output_language.strip()
+        revision = self.tasks.revision
+        try:
+            handle = await self.tasks.submit_background(
+                spec.kind.value,
+                payload,
+                priority=spec.priority,
+                timeout_s=spec.timeout_s,
+                source="background_cognition",
+            )
+        except (TaskQueueFullError, TaskRuntimeClosedError) as exc:
+            self._emit(
+                spec.kind,
+                "schedule_failed",
+                revision,
+                new.source_event_id,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        self._handles[handle.task_id] = handle
+        self._task_kind[handle.task_id] = spec.kind
+        for kept in (self._handles, self._task_kind):
+            while len(kept) > self.config.event_history:
+                del kept[next(iter(kept))]
+        self._emit(spec.kind, "scheduled", revision, new.source_event_id, task_id=handle.task_id)
+        return handle
 
     async def collect(self, handle: TaskHandle) -> Any:
         try:
@@ -1251,6 +1421,27 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "Return JSON: {\"issues\":[{\"kind\":str,\"evidence\":str,\"against\":str,"
             "\"fix\":str}]}, against empty for the other kinds; when there is no slip, return "
             "{\"issues\":[]}."
+        ),
+        BackgroundCognitionKind.MEMORY_CONFLICT: (
+            "A new fact about the user was just learned. Earlier facts about the user are "
+            "listed, each with a label. For each earlier fact, judge how the new fact stands "
+            "to it, and leave out every earlier fact that is about something else or that can "
+            "be true together with the new fact.\n"
+            "- supersedes: the new fact replaces the earlier one because time moved on: the "
+            "user changed jobs or school, moved, broke up or married, a plan was done or "
+            "dropped. The earlier fact was true and is no longer. Only when the new fact says "
+            "or plainly means that the earlier situation ended or changed.\n"
+            "- contradicts: both cannot be true at once and nothing tells which one is "
+            "later: another age, another name, another birthplace, another number for the "
+            "same thing.\n"
+            "- refines: the new fact adds a detail to the earlier one, and both stay true.\n"
+            "Liking one thing and liking another, a habit and an exception, the past and the "
+            "present told as such, or two facts about different people, places or times, are "
+            "left out. A wrong supersedes erases a true fact: when unsure, leave the fact out. "
+            "old_id is the label of the earlier fact exactly as listed; reason is a few words. "
+            "Return JSON: {\"conflicts\":[{\"old_id\":str,\"relation\":"
+            "\"supersedes\"|\"contradicts\"|\"refines\",\"reason\":str}]}; when none "
+            "applies, return {\"conflicts\":[]}."
         ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
             "Interpret only the supplied textual vision observation and recent context. Do not claim unseen pixels. "
@@ -1579,6 +1770,64 @@ def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]
         Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.CHARACTER_MOOD]),
         Message(role="user", content=user),
     ]
+
+
+_CHANGE_QUESTION = (
+    "Two facts about the user were learned at different times. Answer three questions. "
+    "changed: do the user's words say that something about the user changed, ended or was "
+    "done (a new job, a move, a break-up, graduating, quitting, coming back from a trip)? "
+    "Stating a fact is no change. word: the words of the user that say the change, copied "
+    "exactly; empty when changed is false. both_true: can both facts be true of the user at "
+    "the same time (a habit and one exception, liking two things, a general fact and one "
+    "day's event, facts about different people)? "
+    "Return JSON: {\"changed\":bool,\"word\":str,\"both_true\":bool}."
+)
+
+
+def _change_question(earlier: str, newer: str, said: str) -> list[Message]:
+    user = f"Earlier fact:\n{_one_line(earlier)}\n\nNew fact:\n{_one_line(newer)}\n\n"
+    user += f"The user's words:\n{_one_line(said) or '(not given)'}\n"
+    return [Message(role="system", content=_CHANGE_QUESTION), Message(role="user", content=user)]
+
+
+def _yes(value: Any) -> bool | None:
+    """True, False, or None when the answer is neither."""
+    if isinstance(value, bool):
+        return value
+    word = str(value or "").strip().casefold()
+    if word in {"yes", "true"}:
+        return True
+    if word in {"no", "false"}:
+        return False
+    return None
+
+
+def _conflict_messages(context: TaskContext) -> list[Message]:
+    """The new fact, the user's words it came from, and the earlier facts
+    labelled m1, m2...: a 9B model copies a short label, not a 32-digit id."""
+    payload = context.request.payload
+    new = payload.get("new_memory") or {}
+    said = str(new.get("said") or "").strip()
+    earlier = "\n".join(
+        f"m{number}: {_one_line(item.get('summary'))}"
+        for number, item in enumerate(payload.get("candidates") or (), 1)
+    )
+    user = f"New fact about the user:\n{_one_line(new.get('summary'))}\n"
+    if said:
+        user += f"The user's words it was learned from:\n{_one_line(said)}\n"
+    user += f"\nEarlier facts about the user:\n{earlier}\n"
+    language = str(payload.get("output_language") or "").strip()
+    user += "\nReturn only the requested JSON object." + (
+        f" Text values must be written in {language}." if language else _OUTPUT_LANGUAGE_RULE
+    )
+    return [
+        Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.MEMORY_CONFLICT]),
+        Message(role="user", content=user),
+    ]
+
+
+def _one_line(value: Any) -> str:
+    return " ".join(str(value or "").split())
 
 
 def _replies_around(context: TaskContext, history_messages: int) -> tuple[str, str, str]:

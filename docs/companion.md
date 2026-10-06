@@ -162,6 +162,47 @@ she speaks. An expression keyword in square brackets (`[joy]`) is never a
 her reply on purpose, for her to read the face she made, would otherwise get a
 note on every reply that has one.
 
+### Facts of the user that no longer agree
+
+When a memory of the user is written, the earlier ones of its conversation on
+the same topic are picked out without a model: they share a topic (work, home,
+partner, school, pet, age, name), a name or words, two characters of Chinese or
+Japanese, or alike embeddings; at most five (`conflict_candidates` in the
+commit result of `memory.append_candidate`). Only when there are any is the
+`memory_conflict` worker asked how the new fact stands to each, and it may answer
+only for a fact it was shown, with one of three relations:
+
+- `supersedes`: time moved on (a new job, a move, a break-up). The earlier fact
+  is marked `superseded` (`superseded_by` the new one) and leaves her mind;
+  nothing is asked.
+- `contradicts`: both cannot be true and nothing tells which is later (another
+  age, another name). Both stay; the new one has `conflict_with` in its
+  metadata, and the note of her next turn in that conversation tells her, once,
+  to ask the user which is right (`For the next reply only: 關於使用者：之前記得「…」，現在聽到「…」——…`,
+  in the writing of `language`, else of the facts; English otherwise).
+- `refines`: a detail added. Both stay as they are (`refines` in metadata).
+
+A wrong `supersedes` erases a true fact, so it is held to the user's words:
+each `supersedes` and `contradicts` is asked about once more, and `supersedes`
+stands only when the user's own words say a change in so many words (換工作,
+搬到, 分手, 畢業, quit, moved...); otherwise, when both facts cannot be true, it
+is a contradiction to ask about. A plan (下個月要搬, going to) and one day
+against a habit (這週末沒去爬山 against 週末常去爬山) are neither. A
+contradiction stands only when both cannot be true at once. A failed or
+unclear answer changes nothing, and the memory itself is committed before the
+model is asked.
+
+`memory_conflicts(conversation_id)` lists the contradictions not settled, as
+`MemoryConflict` (the newer fact and the earlier one, with ids, and the
+model's reason), for a memory page; `resolve_conflict(keep_id,
+conversation_id=)` keeps one and marks the other superseded. When the user
+answers, the memory worker writes the answer as a new fact, and it settles
+the contradiction itself if it is judged to replace one side. All of it is kept
+on the memories, so it survives a restart, and a contradiction is asked about
+once also across one. `memory_conflicts=False` turns it off. One client for
+every worker serves it too; a host that passes a mapping adds a
+`memory_conflict` key.
+
 What the character knows, wants and thinks is written into the conversation as
 notes that say only what is new, never into the system prompt, so that each
 prompt extends the one before it and the inference server can reuse its work
@@ -179,6 +220,7 @@ prompt extends the one before it and the inference server can reuse its work
 | `take_back(conversation_id)` | The host did not use the newest reply (it repeated her last one, say) and asks again: the reply and the words it answered leave the conversation. Only when that reply came from the conversation's last turn: after a turn that failed, the reply before it was heard whole and stays |
 | `companion.character = profile` | Rewrite the persona between turns; the id cannot change |
 | `companion.tools.register(definition, handler)` | Give the character a tool |
+| `memory_conflicts(conversation_id)` / `resolve_conflict(keep_id, conversation_id=)` | Two facts of the user that cannot both be true and are not settled, and settling one as the user answered: the fact kept stays, the other leaves her mind |
 | `memories(conversation_id)` / `rewrite_memories(conversation_id, lines, edited_from=shown)` | Show what she remembers of a conversation, and take the user's edit back: a shown line that is gone is forgotten, a new line is remembered; what arrived while the page was open stays |
 | `self_memories()` / `rewrite_self_memories(lines, edited_from=shown)` | What she said about herself, in any conversation, oldest first (`in_conversation=` for those in her mind in one conversation), and the user's edit of it, the same way as `rewrite_memories`. Beyond `self_memories_kept` the oldest are forgotten. For memories brought in from before the engine kept them, pass `from_before=True` (and `edited_from=[]` to only add): they are dated before every one she holds, so they are in mind last and forgotten first |
 | `speak_up(conversation_id, notes=[...])` | She speaks up on her own; the host decides when. What she says comes from her: what is still open, what she wants and thinks, or turning to the user. `notes` suggest material for this remark only; `instruction` replaces the engine's own, for a host that asks in the language she speaks. What she says is generated whole and checked before any of it is passed on: the sentences a reply leaves out are left out, and so are sentences that quote back the words of her latest remarks. A remark that repeats her, or that only acknowledges ("OK.", "嗯。") when nobody said anything, is asked again, and after three attempts she stays quiet. `statement_only=True` leaves out questions as well, for a host whose user stayed quiet through her last questions. What she said stays in the conversation, the instruction does not; `keep=False` for a host that keeps what she said itself |
@@ -393,6 +435,7 @@ model can run every worker on every turn.
 |---|---|---|
 | `emotion_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
 | `reply_check_every` | 1 | Check her reply every N turns; 0 turns it off. A run reads only that reply, her reply before it and the user's line it answers |
+| `memory_conflicts` | true | Hold a memory of the user just written against the earlier ones on its topic; one call, two when a relation changes her memory, and none without earlier ones on its topic |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |
@@ -422,7 +465,10 @@ exports `CHARACTER_MOODS`, and `CompanionSnapshot` has `mood_half_life_seconds`;
 from 1.1.1 it also has `mood_floor`. From 1.2.0 it exports `SELF_MEMORY_KINDS`
 and `CONVERSATION_SELF_MEMORY_KINDS`, `CompanionSettings` has
 `plans_stay_in_conversation`, `short_term_goal_max_age_hours` and
-`reply_check_every`, and `self_memories()` takes `in_conversation`.
+`reply_check_every`, and `self_memories()` takes `in_conversation`. It also
+exports `MemoryConflict`; `CompanionSettings` has `memory_conflicts`, and
+`hasattr(CharacterCompanion, "memory_conflicts")` tells whether facts that no
+longer agree are found.
 
 ## Lifecycle
 

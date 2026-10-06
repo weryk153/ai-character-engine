@@ -11,6 +11,7 @@ from .companion import (
     CharacterCompanion,
     CompanionClosed,
     CompanionSnapshot,
+    MemoryConflict,
     TurnInterrupted,
 )
 from .settings import CompanionSettings
@@ -24,6 +25,7 @@ __all__ = [
     "CompanionClosed",
     "CompanionSettings",
     "CompanionSnapshot",
+    "MemoryConflict",
     "ModelAccess",
     "PoliteClient",
     "SELF_MEMORY_KINDS",

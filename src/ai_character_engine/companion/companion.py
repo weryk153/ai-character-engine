@@ -42,9 +42,12 @@ from ai_character_engine.cognition import (
     CognitiveRolePolicy,
 )
 from ai_character_engine.cognition.background import (
+    MEMORY_CONFLICT_TARGET,
     MOOD_TARGET,
     REPLY_NOTE_TARGET,
     SELF_MEMORY_TARGET,
+    _script,
+    _script_of_language,
     said_in,
 )
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
@@ -63,6 +66,11 @@ from ai_character_engine.long_term_cognition.store import (
     JsonlLongTermCognitionStore,
 )
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
+from ai_character_engine.memory.conflicts import (
+    resolve_conflict,
+    take_unasked_conflicts,
+    unresolved_conflicts,
+)
 from ai_character_engine.memory.models import MemoryRecord, RetrievedMemory
 from ai_character_engine.memory.self_kinds import (
     CONVERSATION_KEY,
@@ -95,20 +103,35 @@ from .settings import CompanionSettings
 logger = logging.getLogger(__name__)
 
 MEMORY_TARGET = "memory.append_candidate"
-# These two write into memory, and memory belongs to a conversation.
-CONVERSATION_SCOPED_TARGETS = (MEMORY_TARGET, "memory.conversation_summary_candidate")
+# These write into memory, and memory belongs to a conversation.
+CONVERSATION_SCOPED_TARGETS = (
+    MEMORY_TARGET,
+    "memory.conversation_summary_candidate",
+    MEMORY_CONFLICT_TARGET,
+)
 # Each job of these reads lines no other job reads, and what was said stays
 # said: a newer job does not replace it, and its result is used however late.
 _READ_ONCE = (
     BackgroundCognitionKind.MEMORY_EXTRACTION,
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION,
 )
-_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET)
+# A conflict is checked against the memories as they are when it is
+# committed: a turn in between does not make it wrong.
+_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET, MEMORY_CONFLICT_TARGET)
 # Of use only before the next turn: a note about a reply is never moved onto
 # a later one.
 _THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
 # How a slip in her last reply is pointed out to her, one line each.
 REPLY_NOTE_LINE = "About your last reply: "
+# How she is told to ask about two facts of the user that cannot both be
+# true, in the writing of the conversation; latin for any other.
+CONFLICT_NOTES = {
+    "zh": "關於使用者：之前記得「{earlier}」，現在聽到「{newer}」——找個自然的時機，輕輕問一句哪個才對。",
+    "zh-hans": "关于用户：之前记得「{earlier}」，现在听到「{newer}」——找个自然的时机，轻轻问一句哪个才对。",
+    "ja": "ユーザーについて：前は「{earlier}」、今は「{newer}」と聞いた。自然なときに、どちらが正しいか軽く聞いてみて。",
+    "ko": "사용자에 대해: 전에는 「{earlier}」, 지금은 「{newer}」라고 들었어. 자연스러울 때 어느 쪽이 맞는지 가볍게 물어봐.",
+    "latin": 'About the user: earlier they said "{earlier}", now "{newer}" — ask which is right, lightly, when it fits.',
+}
 # Memory jobs can queue up while the user talks faster than the model works.
 # Each holds a slot of the task runtime while it waits; without room to spare
 # the emotion job of the newest turn would wait behind them for a slot.
@@ -143,6 +166,19 @@ class CompanionSnapshot:
     # Below this intensity, faded, she is neutral again: a host that fades
     # the face itself stops where the engine does.
     mood_floor: float = DEFAULT_MOOD_FLOOR
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryConflict:
+    """Two facts of the user she holds that cannot both be true: the newer
+    one, the earlier one, and why, as the model put it. Settled with
+    CharacterCompanion.resolve_conflict()."""
+
+    id: str
+    summary: str
+    earlier_id: str
+    earlier_summary: str
+    reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +223,15 @@ _WORKERS = (
         CognitiveRole.MEMORY,
         TaskPriority.HIGH,
         MEMORY_TARGET,
+    ),
+    # A memory of the user just written, held against the earlier ones on its
+    # topic. Asked when one is written, not after a turn; right after memory.
+    _Worker(
+        "memory_conflict",
+        BackgroundCognitionKind.MEMORY_CONFLICT,
+        CognitiveRole.MEMORY_CONFLICT,
+        TaskPriority.HIGH,
+        MEMORY_CONFLICT_TARGET,
     ),
     # What she said about herself. Before goals and thoughts: left for later,
     # she contradicts it within the next few turns. After memory of the user,
@@ -805,8 +850,8 @@ class CharacterCompanion:
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, reply_check,
-        mood, memory, self_memory, goal, reflection, summary) to a client; a worker without a client does not
-        run. It defaults to ``llm``. Background workers must return JSON, so a
+        mood, memory, memory_conflict, self_memory, goal, reflection, summary)
+        to a client; a worker without a client does not run. It defaults to ``llm``. Background workers must return JSON, so a
         client with a low temperature serves them better than the one tuned for
         conversation.
 
@@ -823,6 +868,9 @@ class CharacterCompanion:
         # fixes), until her next turn; and the fixes that turn is given.
         self._reply_note: tuple[str | None, str, tuple[str, ...]] | None = None
         self._reply_fixes: tuple[str, ...] = ()
+        # Two facts of the user that cannot both be true, for her to ask
+        # about on this turn.
+        self._conflict_notes: tuple[str, ...] = ()
         self._dir = Path(storage_dir) if storage_dir is not None else None
         if self._dir is not None:
             self._dir.mkdir(parents=True, exist_ok=True)
@@ -890,6 +938,7 @@ class CharacterCompanion:
                 for note in self._notes
             ),
             "\n".join(f"{REPLY_NOTE_LINE}{fix}" for fix in self._reply_fixes),
+            *(f"For the next reply only: {note}" for note in self._conflict_notes),
         ]
         # Kept here as well: a turn kept out of memory takes the memory
         # manager away from the runtime for its duration, and a host's memory
@@ -1018,10 +1067,15 @@ class CharacterCompanion:
         temporary.write_text(payload, encoding="utf-8")
         os.replace(temporary, path)
 
+    def _every(self, worker: _Worker) -> int:
+        if worker.kind is BackgroundCognitionKind.MEMORY_CONFLICT:
+            return 1 if self.settings.memory_conflicts else 0
+        return int(getattr(self.settings, f"{worker.name}_every"))
+
     def _background_clients(self, source: Any) -> list[tuple[_Worker, Any]]:
         clients = []
         for worker in _WORKERS:
-            if int(getattr(self.settings, f"{worker.name}_every")) <= 0:
+            if self._every(worker) <= 0:
                 continue
             client = source.get(worker.name) if isinstance(source, Mapping) else source
             if client is None and worker.name == "reply_check" and source:
@@ -1038,7 +1092,7 @@ class CharacterCompanion:
             return None
         specs, endpoints, policies = [], [], {}
         for rank, (worker, client) in enumerate(clients):
-            every = int(getattr(self.settings, f"{worker.name}_every"))
+            every = self._every(worker)
             specs.append(
                 BackgroundWorkerSpec(
                     worker.kind,
@@ -1315,6 +1369,7 @@ class CharacterCompanion:
                 self._take_back_what_she_no_longer_holds()
                 self._notes = tuple(note for note in notes if note.strip())
                 self._reply_fixes = self._take_reply_note(conversation_id)
+                self._conflict_notes = self._take_conflict_notes(conversation_id)
                 self._access.foreground_started()
                 try:
                     turn.generating = True
@@ -1359,6 +1414,7 @@ class CharacterCompanion:
                 finally:
                     self._notes = ()
                     self._reply_fixes = ()
+                    self._conflict_notes = ()
                     # Not before the new jobs are taken on: work that waited for
                     # the reply to end wakes up here and must find the hold for
                     # this turn's mood in place.
@@ -1768,6 +1824,8 @@ class CharacterCompanion:
                 for proposal, outcome in zip(proposals, outcomes):
                     if outcome.committed and proposal.target == REPLY_NOTE_TARGET:
                         self._keep_reply_note(proposal, conversation_id)
+                    if outcome.committed and proposal.target == MEMORY_TARGET:
+                        await self._judge_conflicts(outcome, conversation_id, first)
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
                     await self._react_to_observation()
                 if any(o.committed and o.target == SELF_MEMORY_TARGET for o in outcomes):
@@ -1787,6 +1845,62 @@ class CharacterCompanion:
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
             self._first_by_task.pop(handle.task_id, None)
+
+    async def _judge_conflicts(self, outcome, conversation_id: str | None, first) -> None:
+        """Call with the turn lock held. A memory of the user just written,
+        held against the earlier ones on its topic that the commit named; no
+        model is asked without any."""
+        candidates = list(outcome.metadata.get("conflict_candidates") or ())
+        if not candidates or self._background is None or self._closed:
+            return
+        records = {
+            record.id: record
+            for record in self._memory_store.list_for_character(self._scope(conversation_id))
+        }
+        new = records.get(outcome.applied_record_id or "")
+        earlier = [records[old_id] for old_id in candidates if old_id in records]
+        if new is None or not earlier:
+            return
+        handle = await self._background.schedule_memory_conflict(new, earlier)
+        if handle is None:
+            return
+        live = self._live_by_kind.setdefault(BackgroundCognitionKind.MEMORY_CONFLICT, [])
+        live[:] = [item for item in live if _under_way(item)]
+        live.append(handle)
+        self._conversation_by_task[handle.task_id] = conversation_id
+        self._first_by_task[handle.task_id] = first
+        task = asyncio.create_task(self._collect(handle))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    def _take_conflict_notes(self, conversation_id: str | None) -> tuple[str, ...]:
+        """Call with the turn lock held. Two facts of the user that cannot
+        both be true and that she has not been told to ask about: told now,
+        once. Kept on the memories, so once also across a restart."""
+        if not self.settings.memory_conflicts:
+            return ()
+        scope = self._scope(conversation_id)
+        records, unasked = take_unasked_conflicts(self._memory_store.list_for_character(scope))
+        if not unasked:
+            return ()
+        self._memory_store.replace_for_character(scope, records)
+        notes = []
+        for newer, earlier, _ in unasked:
+            frame = CONFLICT_NOTES[self._note_script(newer.summary + earlier.summary)]
+            notes.append(
+                frame.format(earlier=one_line(earlier.summary), newer=one_line(newer.summary))
+            )
+        return tuple(notes)
+
+    def _note_script(self, said: str) -> str:
+        """The writing of the language the host names, else of the facts."""
+        language = self.settings.language
+        script = _script_of_language(language) if language.strip() else _script(said)
+        if script == "zh":
+            name = language.casefold()
+            if "简" in name or "simplified" in name or "hans" in name:
+                return "zh-hans"
+        return script if script in CONFLICT_NOTES else "latin"
 
     def _keep_reply_note(self, proposal, conversation_id: str | None) -> None:
         fixes = tuple(
@@ -2169,6 +2283,31 @@ class CharacterCompanion:
         open was never removed by anyone.
         """
         self._rewrite(self._scope(conversation_id), summaries, edited_from, "asserted_fact")
+
+    def memory_conflicts(self, conversation_id: str | None = None) -> list[MemoryConflict]:
+        """Two facts of the user she holds in a conversation that cannot both
+        be true and are not settled, oldest first: for a host's memory page."""
+        records = self._memory_store.list_for_character(self._scope(conversation_id))
+        return [
+            MemoryConflict(
+                id=newer.id,
+                summary=one_line(newer.summary),
+                earlier_id=earlier.id,
+                earlier_summary=one_line(earlier.summary),
+                reason=reason,
+            )
+            for newer, earlier, reason in unresolved_conflicts(records)
+        ]
+
+    def resolve_conflict(self, keep_id: str, *, conversation_id: str | None = None) -> bool:
+        """Settle the contradictions a fact is in, as the user answered: the
+        fact ``keep_id`` stays, the one against it leaves her mind. False
+        when it is in none."""
+        scope = self._scope(conversation_id)
+        records, settled = resolve_conflict(self._memory_store.list_for_character(scope), keep_id)
+        if settled:
+            self._memory_store.replace_for_character(scope, records)
+        return settled
 
     def memories(self, conversation_id: str | None = None) -> list[str]:
         records = self._memory_store.list_for_character(self._scope(conversation_id))
