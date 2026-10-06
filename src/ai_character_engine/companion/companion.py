@@ -46,9 +46,9 @@ from ai_character_engine.cognition.background import (
     MOOD_TARGET,
     REPLY_NOTE_TARGET,
     SELF_MEMORY_TARGET,
-    _script,
-    _script_of_language,
     said_in,
+    script_of,
+    script_of_language,
 )
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
@@ -67,6 +67,7 @@ from ai_character_engine.long_term_cognition.store import (
 )
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
 from ai_character_engine.memory.conflicts import (
+    CONFLICTS_LOG,
     resolve_conflict,
     take_unasked_conflicts,
     unresolved_conflicts,
@@ -179,6 +180,9 @@ class MemoryConflict:
     earlier_id: str
     earlier_summary: str
     reason: str = ""
+    # "contradicts" for two facts not settled (memory_conflicts()),
+    # "supersedes" for a fact the newer one replaced (replaced_memories()).
+    relation: str = "contradicts"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1895,10 +1899,11 @@ class CharacterCompanion:
     def _note_script(self, said: str) -> str:
         """The writing of the language the host names, else of the facts."""
         language = self.settings.language
-        script = _script_of_language(language) if language.strip() else _script(said)
+        script = script_of_language(language) if language.strip() else script_of(said)
         if script == "zh":
             name = language.casefold()
-            if "简" in name or "simplified" in name or "hans" in name:
+            simplified = ("简", "simplified", "hans", "china", "singapore", "中国", "大陆", "新加坡")
+            if any(word in name for word in simplified) or re.search(r"(?<![a-z])(?:cn|sg)(?![a-z])", name):
                 return "zh-hans"
         return script if script in CONFLICT_NOTES else "latin"
 
@@ -2299,6 +2304,38 @@ class CharacterCompanion:
             for newer, earlier, reason in unresolved_conflicts(records)
         ]
 
+    def replaced_memories(self, conversation_id: str | None = None) -> list[MemoryConflict]:
+        """Facts of the user that a newer one replaced, with the newer one
+        still held, oldest first: a memory page shows what was replaced and
+        why. Forgetting the newer one (rewrite_memories) brings the earlier
+        one back."""
+        records = self._memory_store.list_for_character(self._scope(conversation_id))
+        by_id = {record.id: record for record in records}
+        found = []
+        for earlier in sorted(records, key=lambda record: record.created_at):
+            newer = by_id.get(earlier.superseded_by or "")
+            if earlier.status != "superseded" or newer is None or not newer.is_active:
+                continue
+            reason = next(
+                (
+                    str(entry.get("reason") or "")
+                    for entry in newer.metadata.get(CONFLICTS_LOG) or ()
+                    if isinstance(entry, Mapping) and entry.get("old_id") == earlier.id
+                ),
+                "",
+            )
+            found.append(
+                MemoryConflict(
+                    id=newer.id,
+                    summary=one_line(newer.summary),
+                    earlier_id=earlier.id,
+                    earlier_summary=one_line(earlier.summary),
+                    reason=reason,
+                    relation="supersedes",
+                )
+            )
+        return found
+
     def resolve_conflict(self, keep_id: str, *, conversation_id: str | None = None) -> bool:
         """Settle the contradictions a fact is in, as the user answered: the
         fact ``keep_id`` stays, the one against it leaves her mind. False
@@ -2389,12 +2426,22 @@ class CharacterCompanion:
         removable = None if edited_from is None else {one_line(line) for line in edited_from}
         records = []
         forgotten: dict[str, MemoryRecord] = {}
+        gone: set[str] = set()
         for record in store.list_for_character(scope):
             shown = one_line(record.summary)
             if record.is_active and shown not in wanted and (removable is None or shown in removable):
                 forgotten.setdefault(shown, record)
+                gone.add(record.id)
                 record = replace(record, status="forgotten", forgotten_at=datetime.now(UTC))
             records.append(record)
+        # A fact that replaced another, forgotten: the one it replaced is held
+        # again. A wrong replacement is undone by removing the newer line.
+        records = [
+            replace(record, status="active", superseded_by=None)
+            if record.status == "superseded" and record.superseded_by in gone
+            else record
+            for record in records
+        ]
         remembered = {one_line(record.summary) for record in records if record.is_active}
         new = [summary for summary in wanted if summary not in remembered]
         edited = (

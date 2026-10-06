@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 import time
 from collections import deque
@@ -52,6 +53,8 @@ from .models import (
     StalePolicy,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
     "memory.append_candidate": CommitTargetPolicy(
@@ -694,14 +697,19 @@ class CognitiveCommitCoordinator:
             if proposal.target == "memory.append_candidate":
                 # The earlier facts this one may change, picked without a
                 # model; a host asks one about them (memory_conflict).
-                self._told[proposal.id] = {
-                    "conflict_candidates": [
+                try:
+                    candidates = [
                         candidate.id
                         for candidate in conflict_candidates(
                             record, manager.store.list_for_character(runtime.memory_scope_id)
                         )
                     ]
-                }
+                except Exception as exc:
+                    # The memory is written; the search for what it may
+                    # change must not turn it into an error to retry.
+                    logger.warning("conflict candidates not found (%s: %s)", type(exc).__name__, exc)
+                    candidates = []
+                self._told[proposal.id] = {"conflict_candidates": candidates}
             return record.id
 
         if proposal.target == MEMORY_CONFLICT_TARGET:

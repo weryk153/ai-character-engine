@@ -183,18 +183,23 @@ only for a fact it was shown, with one of three relations:
 - `refines`: a detail added. Both stay as they are (`refines` in metadata).
 
 A wrong `supersedes` erases a true fact, so it is held to the user's words:
-each `supersedes` and `contradicts` is asked about once more, and `supersedes`
-stands only when the user's own words say a change in so many words (換工作,
-搬到, 分手, 畢業, quit, moved...); otherwise, when both facts cannot be true, it
-is a contradiction to ask about. A plan (下個月要搬, going to) and one day
-against a habit (這週末沒去爬山 against 週末常去爬山) are neither. A
-contradiction stands only when both cannot be true at once. A failed or
-unclear answer changes nothing, and the memory itself is committed before the
-model is asked.
+each `supersedes` and `contradicts` is asked about once more, and either
+stands only when both facts cannot be true at once. `supersedes` stands only
+when, besides, the words the model copies from the user's line say a change
+themselves (換工作, 搬到, 分手, 畢業, quit, moved...), and the earlier fact is one
+fact on a topic the new one is about: 「住在台北，在台積電上班」 is two, and a job
+change does not replace it. Otherwise it is a contradiction to ask about. A
+plan (下個月要搬, going to) and one day against a habit (這週末沒去爬山 against
+週末常去爬山) are neither. The coordinator applies these rules again to every
+`memory.conflict_candidate`, whoever proposed it. A failed or unclear answer
+changes nothing, and the memory itself is committed before the model is
+asked; a failed search for candidates leaves `conflict_candidates` empty.
 
 `memory_conflicts(conversation_id)` lists the contradictions not settled, as
-`MemoryConflict` (the newer fact and the earlier one, with ids, and the
-model's reason), for a memory page; `resolve_conflict(keep_id,
+`MemoryConflict` (the newer fact and the earlier one, with ids, the model's
+reason and `relation`), for a memory page; `replaced_memories(conversation_id)`
+lists the facts a newer one replaced (`relation="supersedes"`), and forgetting
+the newer line with `rewrite_memories` brings the earlier one back; `resolve_conflict(keep_id,
 conversation_id=)` keeps one and marks the other superseded. When the user
 answers, the memory worker writes the answer as a new fact, and it settles
 the contradiction itself if it is judged to replace one side. All of it is kept
@@ -221,6 +226,7 @@ prompt extends the one before it and the inference server can reuse its work
 | `companion.character = profile` | Rewrite the persona between turns; the id cannot change |
 | `companion.tools.register(definition, handler)` | Give the character a tool |
 | `memory_conflicts(conversation_id)` / `resolve_conflict(keep_id, conversation_id=)` | Two facts of the user that cannot both be true and are not settled, and settling one as the user answered: the fact kept stays, the other leaves her mind |
+| `replaced_memories(conversation_id)` | Facts of the user a newer one replaced; forgetting the newer line in `rewrite_memories` brings the earlier one back |
 | `memories(conversation_id)` / `rewrite_memories(conversation_id, lines, edited_from=shown)` | Show what she remembers of a conversation, and take the user's edit back: a shown line that is gone is forgotten, a new line is remembered; what arrived while the page was open stays |
 | `self_memories()` / `rewrite_self_memories(lines, edited_from=shown)` | What she said about herself, in any conversation, oldest first (`in_conversation=` for those in her mind in one conversation), and the user's edit of it, the same way as `rewrite_memories`. Beyond `self_memories_kept` the oldest are forgotten. For memories brought in from before the engine kept them, pass `from_before=True` (and `edited_from=[]` to only add): they are dated before every one she holds, so they are in mind last and forgotten first |
 | `speak_up(conversation_id, notes=[...])` | She speaks up on her own; the host decides when. What she says comes from her: what is still open, what she wants and thinks, or turning to the user. `notes` suggest material for this remark only; `instruction` replaces the engine's own, for a host that asks in the language she speaks. What she says is generated whole and checked before any of it is passed on: the sentences a reply leaves out are left out, and so are sentences that quote back the words of her latest remarks. A remark that repeats her, or that only acknowledges ("OK.", "嗯。") when nobody said anything, is asked again, and after three attempts she stays quiet. `statement_only=True` leaves out questions as well, for a host whose user stayed quiet through her last questions. What she said stays in the conversation, the instruction does not; `keep=False` for a host that keeps what she said itself |
@@ -435,7 +441,7 @@ model can run every worker on every turn.
 |---|---|---|
 | `emotion_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
 | `reply_check_every` | 1 | Check her reply every N turns; 0 turns it off. A run reads only that reply, her reply before it and the user's line it answers |
-| `memory_conflicts` | true | Hold a memory of the user just written against the earlier ones on its topic; one call, two when a relation changes her memory, and none without earlier ones on its topic |
+| `memory_conflicts` | true | Hold a memory of the user just written against the earlier ones on its topic: no call without earlier ones on its topic, else one, and one more for each `supersedes` or `contradicts` answered (at most 6) |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |

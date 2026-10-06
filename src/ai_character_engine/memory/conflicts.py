@@ -57,7 +57,7 @@ _TOPICS: Mapping[str, tuple[str, ...]] = {
     "work": (
         "工作", "上班", "公司", "職", "职", "辭", "辞", "離職", "跳槽", "老闆", "老板", "同事",
         "打工", "兼職", "仕事", "会社", "勤め", "転職", "退職", "バイト",
-        "job", "work", "company", "employ", "office", "career", "boss", "colleague", "hired",
+        "job", "jobs", "work", "works", "company", "employ", "office", "career", "boss", "colleague", "hired",
         "fired", "quit",
     ),
     "home": (
@@ -74,8 +74,9 @@ _TOPICS: Mapping[str, tuple[str, ...]] = {
         "學校", "学校", "大學", "大学", "高中", "國中", "研究所", "畢業", "毕业", "念書",
         "讀書", "读书", "學生", "学生", "主修", "科系", "留學", "留学", "卒業", "専攻",
         "school", "university", "college", "graduat", "student", "major", "study", "studies",
-        "studying", "degree",
+        "studying", "degree", "考試", "考试", "考完", "exam", "exams",
     ),
+    "trip": ("旅行", "旅遊", "旅游", "出國", "出国", "旅行", "trip", "travel", "traveling"),
     "pet": ("貓", "猫", "狗", "犬", "寵物", "宠物", "ペット", "cat", "cats", "dog", "dogs", "pet", "pets"),
     "age": ("歲", "岁", "歳", "年紀", "年纪", "生日", "age", "years old", "birthday"),
     "name": ("名字", "叫", "名前", "name", "called", "nickname"),
@@ -111,7 +112,8 @@ _CHANGE_WORDS = re.compile(
 )
 # A change still to come: the earlier fact is still true.
 _PLAN_CUES = (
-    "要", "打算", "準備", "准备", "計畫", "计划", "計劃", "下個", "下个", "下週", "下周", "明天",
+    "要去", "要搬", "要換", "要换", "要辭", "要辞", "要離", "要离", "要結", "要结", "要回",
+    "要開始", "要开始", "打算", "準備", "准备", "計畫", "计划", "計劃", "下個", "下个", "下週", "下周", "明天",
     "明年", "之後", "之后", "以後", "以后", "將", "将", "即將", "即将", "預計", "预计",
     "予定", "つもり", "来月", "来年", "来週", "明日", "これから", "しよう", "したい",
 )
@@ -161,6 +163,47 @@ def one_day_against_a_habit(newer: str, earlier: str) -> bool:
         and _has(earlier, _HABIT_CUES, _HABIT_WORDS)
         and not _has(newer, _CHANGE_CUES, _CHANGE_WORDS)
     )
+
+
+_CLAUSE_BREAK = re.compile(r"[，,；;、]|\band\b", re.IGNORECASE)
+
+
+def _compound(summary: str) -> bool:
+    """Two facts in one summary, each on a topic of its own: 「住在台北，在台積
+    電上班」. A change replaces one of them, not both."""
+    topics = {
+        frozenset(found)
+        for clause in _CLAUSE_BREAK.split(summary)
+        if (found := _topics(clause))
+    }
+    return len(topics) > 1
+
+
+def said_of(record: MemoryRecord) -> str:
+    """The user's words a memory was learned from, when it was kept."""
+    provenance = record.metadata.get("background_provenance") or {}
+    evidence = provenance.get("evidence") if isinstance(provenance, Mapping) else None
+    if isinstance(evidence, (list, tuple)) and evidence:
+        return str(evidence[0] or "")
+    return str(record.metadata.get("source_content") or "")
+
+
+def may_contradict(earlier: str, newer: str) -> bool:
+    """Whether two facts can be held against each other at all: a plan is
+    no change yet, and one day does not go against a habit."""
+    return not says_a_plan(newer) and not one_day_against_a_habit(newer, earlier)
+
+
+def may_supersede(earlier: str, newer: str, said: str) -> bool:
+    """Whether ``newer`` may replace ``earlier``, whoever proposes it: the
+    user's own words say a change, it is not a plan or one day against a
+    habit, and the earlier fact is one fact on a topic the new one is about.
+    A replacement wrongly made erases a true fact."""
+    text = f"{newer} {said}"
+    if not says_a_change(said) or not may_contradict(earlier, text):
+        return False
+    topics = _topics(earlier)
+    return bool(topics) and topics <= _topics(text) and not _compound(earlier)
 
 
 def _plain(summary: str) -> str:
@@ -296,6 +339,7 @@ def apply_conflicts(
         return list(records), ()
     applied: list[dict[str, str]] = []
     superseded: dict[str, MemoryRecord] = {}
+    said = said_of(new)
     metadata = dict(new.metadata)
     supersedes = list(new.supersedes)
     for item in conflicts:
@@ -311,6 +355,12 @@ def apply_conflicts(
             or not old.is_active
             or old_id in superseded
             or any(done["old_id"] == old_id for done in applied)
+            # Held to the same rules whoever proposed it.
+            or (relation == "supersedes" and not may_supersede(old.summary, new.summary, said))
+            or (
+                relation == "contradicts"
+                and not may_contradict(old.summary, f"{new.summary} {said}")
+            )
         ):
             continue
         entry = {

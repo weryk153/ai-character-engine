@@ -20,9 +20,9 @@ from ai_character_engine.llm.models import LLMResponse, Message
 from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.memory.conflicts import (
     CONFLICT_RELATIONS,
-    one_day_against_a_habit,
+    may_contradict,
+    may_supersede,
     says_a_change,
-    says_a_plan,
 )
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.memory.models import MemoryRecord
@@ -409,8 +409,9 @@ class StructuredBackgroundWorker:
         when both facts cannot be true, it is a contradiction to ask about. A
         contradiction holds only when both cannot be true. No clear answer is
         no relation. What the user's words show is not left to the model: a
-        change must be said in so many words, a plan is no change yet, and one
-        day does not go against a habit."""
+        change must be said in so many words, a plan is no change yet, one day
+        does not go against a habit, and two facts in one summary are not
+        replaced by a change of one (memory.conflicts.may_supersede)."""
         payload = context.request.payload
         new = payload.get("new_memory") or {}
         said = str(new.get("said") or "")
@@ -425,7 +426,7 @@ class StructuredBackgroundWorker:
                 kept.append(item)
                 continue
             earlier = summary_of.get(item["old_id"], "")
-            if says_a_plan(newer) or one_day_against_a_habit(newer, earlier):
+            if not may_contradict(earlier, newer):
                 continue
             try:
                 response = await self.models.generate(
@@ -442,15 +443,24 @@ class StructuredBackgroundWorker:
             if both_true is None:
                 continue
             word = _squeeze(str(answer.get("word") or "").casefold())
+            # The words copied must say the change themselves: 「我上個月」 is in
+            # 「我上個月換工作了」 and says none.
             changed = (
                 _yes(answer.get("changed")) is True
-                and bool(word)
+                and len(word) >= 2
                 and word in _squeeze(said.casefold())
-                and says_a_change(said)
+                and says_a_change(word)
             )
-            if item["relation"] == "supersedes" and changed:
+            if both_true:
+                # Both can be true: no change of hers replaces either.
+                continue
+            if (
+                item["relation"] == "supersedes"
+                and changed
+                and may_supersede(earlier, str(new.get("summary") or ""), said)
+            ):
                 kept.append(item)
-            elif not both_true:
+            else:
                 kept.append({**item, "relation": "contradicts"})
         if not kept:
             return (), []
@@ -1876,7 +1886,7 @@ _REPEATED_RATIO = 0.6
 _WHOLE_SENTENCE = 12
 
 
-def _script(text: str) -> str:
+def script_of(text: str) -> str:
     """The writing a text is mostly in: ja (a quarter or more of its letters
     kana), zh, ko, latin or other; empty without letters."""
     counts = {"kana": 0, "zh": 0, "ko": 0, "latin": 0, "other": 0}
@@ -1900,6 +1910,10 @@ def _script(text: str) -> str:
     if counts["kana"] * 4 >= total:
         return "ja"
     return max(("zh", "ko", "latin", "other"), key=counts.__getitem__)
+
+
+# The name it had; kept for whoever imported it.
+_script = script_of
 
 
 _CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
@@ -2027,7 +2041,7 @@ def _same_opening(reply: str, previous: str) -> str:
     return ""
 
 
-def _script_of_language(name: str) -> str:
+def script_of_language(name: str) -> str:
     """The writing of a language named by the host ("繁體中文", "Japanese",
     "Traditional Chinese (Taiwan)"); empty when it cannot be told."""
     name = name.strip().casefold()
@@ -2043,6 +2057,10 @@ def _script_of_language(name: str) -> str:
     if "english" in name or "英" in name or name.startswith("en"):
         return "latin"
     return ""
+
+
+# The name it had; kept for whoever imported it.
+_script_of_language = script_of_language
 
 
 def _fix_script(language: str, said_by_user: str) -> str:

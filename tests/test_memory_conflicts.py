@@ -109,7 +109,7 @@ def test_embeddings_alike_make_a_candidate_when_both_have_one():
 
 def test_a_fact_that_moved_on_replaces_the_old_one():
     old = fact("使用者在台積電上班")
-    new = fact("使用者換工作了", minutes=1)
+    new = said("使用者換工作了", "我上個月換工作了", minutes=1)
     records, applied = apply_conflicts(
         [old, new], new.id, [{"old_id": old.id, "relation": "supersedes", "reason": "換工作"}]
     )
@@ -223,8 +223,13 @@ def test_settling_what_is_in_no_contradiction_changes_nothing():
 
 
 def test_a_newer_fact_that_replaces_one_side_settles_it():
-    old, new, records = contradicting()
-    newest = fact("使用者其實26歲", minutes=3)
+    old = fact("使用者住在台北")
+    new = fact("使用者住在高雄", minutes=1)
+    records, _ = apply_conflicts(
+        [old, new], new.id, [{"old_id": old.id, "relation": "contradicts", "reason": ""}]
+    )
+    assert len(unresolved_conflicts(records)) == 1
+    newest = said("使用者搬到台中了", "我搬到台中了", minutes=3)
     records, _ = apply_conflicts(
         [*records, newest], newest.id, [{"old_id": new.id, "relation": "supersedes"}]
     )
@@ -848,9 +853,10 @@ def test_the_prompts_of_the_other_workers_are_unchanged():
         "vision_interpretation": "4729602b14eaf2cb844f9c569706955bf825a31dd90bbb83b737ec561dbaf952",
     }
     actual = {
-        kind.value: hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-        for kind, prompt in _SYSTEM_PROMPTS.items()
-        if kind is not BackgroundCognitionKind.MEMORY_CONFLICT
+        name: hashlib.sha256(
+            _SYSTEM_PROMPTS[BackgroundCognitionKind(name)].encode("utf-8")
+        ).hexdigest()
+        for name in expected
     }
     assert actual == expected
 
@@ -890,8 +896,13 @@ def one(relation):
         ("supersedes", {"changed": False, "word": "", "both_true": False}, "contradicts"),
         ("supersedes", {"changed": True, "word": "辭職", "both_true": False}, "contradicts"),
         ("supersedes", {"changed": "yes", "word": "換工作", "both_true": "no"}, "supersedes"),
-        # Both can be true: nothing to do.
+        # Both can be true: nothing to do, whatever change is said.
         ("supersedes", {"changed": False, "word": "", "both_true": True}, None),
+        ("supersedes", {"changed": True, "word": "換工作", "both_true": True}, None),
+        ("supersedes", {"changed": True, "word": "換工作", "both_true": None}, None),
+        # The words copied must themselves say the change, two characters at least.
+        ("supersedes", {"changed": True, "word": "我上個月", "both_true": False}, "contradicts"),
+        ("supersedes", {"changed": True, "word": "換", "both_true": False}, "contradicts"),
         ("contradicts", {"changed": False, "word": "", "both_true": True}, None),
         ("contradicts", {"changed": False, "word": "", "both_true": False}, "contradicts"),
         # A change said does not make a contradiction a replacement.
@@ -1010,3 +1021,156 @@ async def test_the_words_of_the_user_decide_before_the_model_is_asked_again(rela
         result = await (await background.schedule_memory_conflict(new, [old])).wait()
     assert result.output.proposals == ()
     assert len(judge.calls) == 1
+
+
+# --- review: what a supersedes must show, wherever it comes from ------------------
+
+from ai_character_engine.memory.conflicts import may_supersede  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "earlier, newer, words, allowed",
+    [
+        ("使用者在台積電上班", "使用者換工作了", "我上個月換工作了", True),
+        ("使用者住在台北", "使用者搬到台中了", "我搬到台中了", True),
+        # No change said.
+        ("使用者27歲", "使用者25歲", "我25歲", False),
+        # Another topic, or none to compare.
+        ("使用者住在台北", "使用者換工作了", "我換工作了", False),
+        ("使用者喜歡下雨天", "使用者換了一把傘", "我換了一把傘", False),
+        # Two facts in one: the change replaces one of them only.
+        ("使用者住在台北，在台積電上班", "使用者換到聯發科上班", "我換到聯發科上班了", False),
+        ("The user lives in Taipei and works at TSMC", "The user changed jobs", "I changed jobs", False),
+        # A plan, and one day against a habit.
+        ("使用者住在台北", "使用者下個月要搬到台中", "我下個月要搬去台中", False),
+        ("使用者每天早上跑步", "使用者今天換了跑步路線", "今天換了跑步路線", False),
+    ],
+)
+def test_a_supersedes_needs_a_change_said_on_the_topic_of_one_fact(earlier, newer, words, allowed):
+    assert may_supersede(earlier, newer, words) is allowed
+
+
+def test_a_supersedes_that_does_not_show_it_is_not_applied():
+    for earlier, newer, words in [
+        ("使用者27歲", "使用者25歲", "我25歲"),
+        ("使用者住在台北，在台積電上班", "使用者換到聯發科上班", "我換到聯發科上班了"),
+    ]:
+        old = fact(earlier)
+        new = said(newer, words, minutes=1)
+        records, applied = apply_conflicts([old, new], new.id, [{"old_id": old.id, "relation": "supersedes"}])
+        assert applied == () and records == [old, new]
+
+
+def test_a_contradiction_that_is_a_plan_or_one_day_is_not_applied():
+    for earlier, newer, words in [
+        ("使用者住在台北", "使用者下個月要搬到台中", "我下個月要搬去台中"),
+        ("使用者週末常去爬山", "使用者這週末沒去爬山", "這週末沒去爬山"),
+    ]:
+        old = fact(earlier)
+        new = said(newer, words, minutes=1)
+        _, applied = apply_conflicts([old, new], new.id, [{"old_id": old.id, "relation": "contradicts"}])
+        assert applied == ()
+
+
+@pytest.mark.asyncio
+async def test_two_facts_in_one_are_asked_about_not_replaced():
+    old = fact("使用者住在台北，在台積電上班")
+    new = said("使用者換到聯發科上班", "我換到聯發科上班了", minutes=1)
+    judge = Judge(one("supersedes"), {"changed": True, "word": "換到聯發科", "both_true": False})
+    tasks, background = conflict_runtime(judge)
+    async with tasks:
+        result = await (await background.schedule_memory_conflict(new, [old])).wait()
+    assert [c["relation"] for c in result.output.proposals[0].payload["conflicts"]] == ["contradicts"]
+
+
+@pytest.mark.asyncio
+async def test_a_supersedes_from_any_producer_is_held_to_the_same_rules():
+    engine, store, commits = committing()
+    old = (await commits.commit(memory_proposal("使用者27歲"))).applied_record_id
+    new = (await commits.commit(memory_proposal("使用者25歲"))).applied_record_id
+    result = await commits.commit(
+        conflict_proposal(new, [{"old_id": old, "relation": "supersedes"}], [old])
+    )
+    assert (result.status, result.reason) == (CommitStatus.REJECTED, "memory_conflict_without_relation")
+    assert all(r.is_active for r in store.list_for_character(engine.memory_scope_id))
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_search_that_fails_never_fails_the_memory(monkeypatch):
+    from ai_character_engine.commit import coordinator
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("broken")
+
+    monkeypatch.setattr(coordinator, "conflict_candidates", broken)
+    engine, store, commits = committing()
+    result = await commits.commit(memory_proposal("使用者在台積電上班"))
+    assert result.status is CommitStatus.COMMITTED
+    assert result.metadata["conflict_candidates"] == []
+    assert [r.summary for r in store.list_for_character(engine.memory_scope_id)] == ["使用者在台積電上班"]
+
+
+def test_forgetting_the_newer_fact_brings_back_the_one_it_replaced(tmp_path):
+    async def scenario():
+        current = a_companion(
+            tmp_path,
+            {"memory": Worker(facts_said), "memory_conflict": Worker(judging("supersedes"))},
+        )
+        await two_facts(current, JOB, NEW_JOB)
+        replaced = current.replaced_memories("a")
+        shown = current.memories("a")
+        current.rewrite_memories("a", [], edited_from=shown)
+        await current.close()
+        return replaced, shown, current.memories("a"), current.replaced_memories("a")
+
+    replaced, shown, after, replaced_after = run(scenario())
+    ((item,),) = (replaced,)
+    assert (item.relation, item.earlier_summary, item.summary) == (
+        "supersedes",
+        "使用者在台積電上班",
+        "使用者換工作了",
+    )
+    assert shown == ["使用者換工作了"]
+    assert after == ["使用者在台積電上班"]
+    assert replaced_after == []
+
+
+def test_a_contradiction_says_what_it_is(tmp_path):
+    async def scenario():
+        current = a_companion(
+            tmp_path,
+            {"memory": Worker(facts_said), "memory_conflict": Worker(judging("contradicts"))},
+        )
+        await two_facts(current, "我27歲", "我25歲")
+        await current.close()
+        return current.memory_conflicts("a")
+
+    ((conflict,),) = (run(scenario()),)
+    assert conflict.relation == "contradicts"
+
+
+def test_the_writing_of_a_language_is_public():
+    from ai_character_engine.cognition.background import script_of, script_of_language
+
+    assert script_of("我在台北") == "zh"
+    assert script_of_language("Japanese") == "ja"
+
+
+@pytest.mark.parametrize(
+    "language, head",
+    [("zh-CN", "关于用户"), ("Chinese (China)", "关于用户"), ("zh_SG", "关于用户"), ("繁體中文", "關於使用者")],
+)
+def test_the_note_is_in_simplified_chinese_for_china_and_singapore(tmp_path, language, head):
+    current = a_companion(tmp_path, {}, language=language)
+    assert current._note_script("使用者27歲").startswith("zh")
+    from ai_character_engine.companion.companion import CONFLICT_NOTES
+
+    assert CONFLICT_NOTES[current._note_script("使用者27歲")].startswith(head)
+
+
+@pytest.mark.parametrize(
+    "words, plan",
+    [("我下個月要搬去台中", True), ("我要去日本", True), ("我不要香菜", False), ("我主要在家工作", False)],
+)
+def test_a_plan_is_a_change_still_to_come_not_every_want(words, plan):
+    assert says_a_plan(words) is plan
