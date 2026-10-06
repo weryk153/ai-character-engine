@@ -943,6 +943,8 @@ class CharacterCompanion:
         # talked in which conversation, and when her mood changed.
         self._diary_entries: list[DiaryEntry] = self._load_diary()
         self._day_log: list[dict[str, Any]] = self._load_day_log()
+        # Also without a diary: a host runs for months.
+        self._forget_old_days(self._clock())
         self._turn_started_at: float = self._clock()
         self._diary_tasks: set[str] = set()
         self._diary_by_hand: set[str] = set()

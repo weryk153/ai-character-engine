@@ -4713,3 +4713,21 @@ def test_her_mood_through_the_day_is_part_of_what_happened(tmp_path):
 def test_the_diary_and_user_state_settings_are_never_negative(setting):
     with pytest.raises(ValueError, match=setting):
         CompanionSettings(**{setting: -1})
+
+
+def test_what_her_days_were_made_of_is_let_go_after_eight_days(tmp_path):
+    clock = Clock()
+
+    async def scenario():
+        current = companion(tmp_path, clock=clock)
+        await current.reply("hello", conversation_id="a")
+        await current.close()
+        clock.ahead = 9 * 86400
+        later = companion(tmp_path, clock=clock)
+        await later.reply("hello again", conversation_id="a")
+        await later.close()
+
+    run(scenario())
+    lines = (tmp_path / "engine" / "diary_log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["conversation"] for line in lines] == ["a"]
+    assert json.loads(lines[0])["at"] > clock() - 86400

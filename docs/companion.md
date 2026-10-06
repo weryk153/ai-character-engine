@@ -219,7 +219,7 @@ before a stream: about the time since her last entry, or about a given day
 is no diary worker, or the entry rested on nothing. `diary(limit=7)` gives her
 newest entries, oldest first. They are kept in `diary.jsonl` under
 `storage_dir`, and what her days were made of in `diary_log.jsonl` (when she
-talked, her mood as it changed), eight days past her last entry.
+talked, her mood as it changed) for eight days.
 
 The first two sentences of her last entry are in her system prompt, after who
 she is (`From your diary (<date>), in your own words:`), unless
