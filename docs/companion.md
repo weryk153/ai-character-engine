@@ -104,6 +104,26 @@ Without `storage_dir` nothing is written to disk.
    between (up to `max_turns_late`; memory however late), unless a newer job of
    the same kind makes them obsolete.
 
+After the user's emotion, and before her mood, the `reply_check` worker
+(`BackgroundCognitionKind.REPLY_CHECK`, role `CognitiveRole.REPLY_CHECK`) reads
+her reply back against who she is (`background`, or `description`, as for her
+mood), her previous reply and what she replied to. It looks for five slips and
+nothing else: `broke_character` (talking about prompts, notes, speech
+recognition, a model or being an AI), `leaked_markup` (a tag or direction said
+as words; `[joy]` keywords and `*actions*` are not), `off_persona` (contradicting
+a fact of her persona), `repeated` (nearly the same opening or main sentence
+as her previous reply) and `wrong_language` (the whole reply in another
+language). Each slip quotes the sentence of her reply it is in, and comes with
+a fix of at most 40 characters in the language of the conversation; a kind off
+the list, or a quote she did not say in that reply, is dropped, and at most two
+are kept. What she said is never changed and her reply waits for nothing:
+the fixes go into the note of her next turn, one line each
+(`About your last reply: ...`), and only that turn. They are dropped when
+another turn came first, when the next turn is in another conversation, or when
+the reply was cut short or rewritten (`interrupt`, `replace_reply`, `take_back`)
+in between. The commit target `context.reply_note_candidate` writes nothing
+itself. It runs every `reply_check_every` turns (1; 0 turns it off).
+
 What the character knows, wants and thinks is written into the conversation as
 notes that say only what is new, never into the system prompt, so that each
 prompt extends the one before it and the inference server can reuse its work
@@ -333,7 +353,7 @@ model can run every worker on every turn.
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `emotion_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
+| `emotion_every`, `reply_check_every`, `mood_every`, `memory_every`, `self_memory_every`, `goal_every`, `reflection_every`, `summary_every` | 1, 1, 2, 2, 2, 4, 6, 0 | Run the worker every N turns of a conversation; 0 turns it off. Each run reads every line of its conversation since the run before |
 | `call_timeout_seconds` | 60 | One background model call |
 | `max_turns_late` | 3 | A result this many turns late is still used |
 | `foreground_patience_seconds` | 120 | Background work resumes after this long without an end of reply |

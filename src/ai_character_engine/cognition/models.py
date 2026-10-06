@@ -31,6 +31,9 @@ class CognitiveRole(str, Enum):
     # role of its own so that a host can give it a model apart from the
     # emotion of the user.
     MOOD = "mood"
+    # Her reply read back for slips, for a note on her next reply; a role of
+    # its own so that a host can give it a model of its own.
+    REPLY_CHECK = "reply_check"
 
 
 class CognitiveOptimization(str, Enum):

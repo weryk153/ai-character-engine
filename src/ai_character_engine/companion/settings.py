@@ -18,6 +18,11 @@ class CompanionSettings:
     """
 
     emotion_every: int = 1
+    # Her reply read back for slips (talking about prompts or being an AI,
+    # markup said aloud, contradicting her persona, repeating her last reply,
+    # the wrong language); a slip found is pointed out to her on her next
+    # reply only. Every turn: the note is for the next reply.
+    reply_check_every: int = 1
     # Her own mood, from both sides of the conversation; about 7 s a call on
     # the hardware above, so every second turn. Between readings the emotion of
     # the user still moves it. A host with a separate background model can
@@ -89,6 +94,7 @@ class CompanionSettings:
     def __post_init__(self) -> None:
         for name in (
             "emotion_every",
+            "reply_check_every",
             "mood_every",
             "memory_every",
             "goal_every",

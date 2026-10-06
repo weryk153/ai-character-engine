@@ -41,7 +41,12 @@ from ai_character_engine.cognition import (
     CognitiveRole,
     CognitiveRolePolicy,
 )
-from ai_character_engine.cognition.background import MOOD_TARGET, SELF_MEMORY_TARGET, said_in
+from ai_character_engine.cognition.background import (
+    MOOD_TARGET,
+    REPLY_NOTE_TARGET,
+    SELF_MEMORY_TARGET,
+    said_in,
+)
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
 from ai_character_engine.commit.models import StalePolicy
 from ai_character_engine.context.builder import SELF_MEMORY_LINE, ContextBuilder, one_line
@@ -99,6 +104,11 @@ _READ_ONCE = (
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION,
 )
 _KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET)
+# Of use only before the next turn: a note about a reply is never moved onto
+# a later one.
+_THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
+# How a slip in her last reply is pointed out to her, one line each.
+REPLY_NOTE_LINE = "About your last reply: "
 # Memory jobs can queue up while the user talks faster than the model works.
 # Each holds a slot of the task runtime while it waits; without room to spare
 # the emotion job of the newest turn would wait behind them for a slot.
@@ -152,6 +162,15 @@ _WORKERS = (
         CognitiveRole.EMOTION,
         TaskPriority.HIGH,
         "state.emotion_candidate",
+    ),
+    # Her reply read back for slips, for a note on her next reply: it has to
+    # be in before she speaks again. After the user's emotion, before her mood.
+    _Worker(
+        "reply_check",
+        BackgroundCognitionKind.REPLY_CHECK,
+        CognitiveRole.REPLY_CHECK,
+        TaskPriority.HIGH,
+        REPLY_NOTE_TARGET,
     ),
     # Her own mood, from both sides of the conversation: the face she shows
     # once she stops talking. Right after the user's emotion; not in its lane.
@@ -774,8 +793,8 @@ class CharacterCompanion:
         clock: Callable[[], float] | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
-        for every worker, or a mapping from worker name (emotion, mood, memory,
-        self_memory, goal, reflection, summary) to a client; a worker without a client does not
+        for every worker, or a mapping from worker name (emotion, reply_check,
+        mood, memory, self_memory, goal, reflection, summary) to a client; a worker without a client does not
         run. It defaults to ``llm``. Background workers must return JSON, so a
         client with a low temperature serves them better than the one tuned for
         conversation.
@@ -789,6 +808,10 @@ class CharacterCompanion:
         self._clock: Callable[[], float] = clock or time.time
         self._character = character
         self._notes: tuple[str, ...] = ()
+        # A slip in her newest reply: (conversation, the reply as read, the
+        # fixes), until her next turn; and the fixes that turn is given.
+        self._reply_note: tuple[str | None, str, tuple[str, ...]] | None = None
+        self._reply_fixes: tuple[str, ...] = ()
         self._dir = Path(storage_dir) if storage_dir is not None else None
         if self._dir is not None:
             self._dir.mkdir(parents=True, exist_ok=True)
@@ -855,6 +878,7 @@ class CharacterCompanion:
                 note if note.startswith("- ") else f"For the next reply only: {note}"
                 for note in self._notes
             ),
+            "\n".join(f"{REPLY_NOTE_LINE}{fix}" for fix in self._reply_fixes),
         ]
         # Kept here as well: a turn kept out of memory takes the memory
         # manager away from the runtime for its duration, and a host's memory
@@ -923,6 +947,8 @@ class CharacterCompanion:
         self._commits.mood_half_life_seconds = self.settings.mood_half_life_seconds
         self._commits.mood_floor = self.settings.mood_floor
         for target, policy in tuple(self._commits.policies.items()):
+            if target in _THIS_TURN_ONLY:
+                continue
             # The defaults ask for a rerun whenever a turn happened in between.
             # A local model needs 30 s or more for the background work of one
             # turn, so nearly nothing would ever be committed.
@@ -1270,6 +1296,7 @@ class CharacterCompanion:
                 self._take_back_what_the_host_no_longer_knows(conversation_id, notes)
                 self._take_back_what_she_no_longer_holds()
                 self._notes = tuple(note for note in notes if note.strip())
+                self._reply_fixes = self._take_reply_note(conversation_id)
                 self._access.foreground_started()
                 try:
                     turn.generating = True
@@ -1313,6 +1340,7 @@ class CharacterCompanion:
                     self._take_on(handles)
                 finally:
                     self._notes = ()
+                    self._reply_fixes = ()
                     # Not before the new jobs are taken on: work that waited for
                     # the reply to end wakes up here and must find the hold for
                     # this turn's mood in place.
@@ -1710,11 +1738,18 @@ class CharacterCompanion:
                 if self._closed:
                     return
                 mood_before = self._mood_as_stored()
-                outcomes = [
-                    await self._commit_what_she_said(proposal, conversation_id)
+                proposals = [
+                    proposal
                     for proposal in result.output.proposals
                     if self._still_said(proposal, conversation_id, first)
                 ]
+                outcomes = [
+                    await self._commit_what_she_said(proposal, conversation_id)
+                    for proposal in proposals
+                ]
+                for proposal, outcome in zip(proposals, outcomes):
+                    if outcome.committed and proposal.target == REPLY_NOTE_TARGET:
+                        self._keep_reply_note(proposal, conversation_id)
                 if any(o.committed and o.target == "state.emotion_candidate" for o in outcomes):
                     await self._react_to_observation()
                 if any(o.committed and o.target == SELF_MEMORY_TARGET for o in outcomes):
@@ -1734,6 +1769,35 @@ class CharacterCompanion:
         finally:
             self._conversation_by_task.pop(handle.task_id, None)
             self._first_by_task.pop(handle.task_id, None)
+
+    def _keep_reply_note(self, proposal, conversation_id: str | None) -> None:
+        fixes = tuple(
+            dict.fromkeys(
+                str(issue.get("fix", "")).strip()
+                for issue in proposal.payload.get("issues") or ()
+                if isinstance(issue, Mapping) and str(issue.get("fix", "")).strip()
+            )
+        )
+        if fixes:
+            reply = str(proposal.provenance.get("reply", ""))
+            self._reply_note = (conversation_id, reply, fixes)
+
+    def _take_reply_note(self, conversation_id: str | None) -> tuple[str, ...]:
+        """Call with the turn lock held and the conversation at hand. The
+        fixes for this turn, once: only in the conversation of the reply they
+        are about, and only while that reply is still her newest as it was
+        read. Cut short or rewritten, it is not what the user heard."""
+        note, self._reply_note = self._reply_note, None
+        if note is None or note[0] != conversation_id:
+            return ()
+        newest = self._newest_reply.get(conversation_id)
+        if (
+            newest is None
+            or not any(message is newest[1] for message in self.runtime.history)
+            or newest[1].content.strip() != note[1].strip()
+        ):
+            return ()
+        return note[2]
 
     def _mood_as_stored(self) -> tuple[str, float, float | None]:
         state = self.runtime.state
@@ -1908,6 +1972,7 @@ class CharacterCompanion:
                 outcome.status is CommitStatus.STALE
                 and outcome.reason == "foreground_revision_changed"
                 and turns_late > 0
+                and proposal.target not in _THIS_TURN_ONLY
                 and (
                     proposal.target in _KEPT_HOWEVER_LATE
                     or turns_late <= self.settings.max_turns_late

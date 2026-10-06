@@ -54,6 +54,7 @@ class BackgroundCognitionKind(str, Enum):
     VISION_INTERPRETATION = "vision_interpretation"
     SELF_MEMORY_EXTRACTION = "self_memory_extraction"
     CHARACTER_MOOD = "character_mood"
+    REPLY_CHECK = "reply_check"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -65,10 +66,25 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.VISION_INTERPRETATION: CognitiveRole.VISION,
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION: CognitiveRole.SELF_MEMORY,
     BackgroundCognitionKind.CHARACTER_MOOD: CognitiveRole.MOOD,
+    BackgroundCognitionKind.REPLY_CHECK: CognitiveRole.REPLY_CHECK,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
 MOOD_TARGET = "state.mood_candidate"
+# A note for her next reply about a slip in this one. Nothing is written for
+# it: CharacterCompanion keeps the note for that one reply.
+REPLY_NOTE_TARGET = "context.reply_note_candidate"
+# What the reply check looks for, and nothing else.
+REPLY_CHECK_KINDS: tuple[str, ...] = (
+    "broke_character",
+    "leaked_markup",
+    "off_persona",
+    "repeated",
+    "wrong_language",
+)
+# A fix is one short sentence; longer is cut.
+REPLY_FIX_CHARS = 40
+_REPLY_ISSUES_KEPT = 2
 # A stage direction between asterisks describes what she does; it is not
 # something she said about herself.
 _STAGE_DIRECTION = re.compile(r"\*[^*\n]*\*")
@@ -246,6 +262,8 @@ class StructuredBackgroundWorker:
     def _messages(self, context: TaskContext) -> list[Message]:
         if self.spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
             return _mood_messages(context, self.history_messages)
+        if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK:
+            return _reply_check_messages(context, self.history_messages)
         history = list(context.snapshot.history[-self.history_messages :])
         payload = context.request.payload
         latest = str(payload.get("latest_user_or_event", "")).strip()
@@ -442,6 +460,41 @@ class StructuredBackgroundWorker:
                 )
             )
             return value, confidence, evidence, proposals
+
+        if kind is BackgroundCognitionKind.REPLY_CHECK:
+            raw_issues = data.get("issues")
+            if not isinstance(raw_issues, list):
+                return (), confidence, (), []
+            reply = _replies_around(context, self.history_messages)[1]
+            issues: list[dict[str, str]] = []
+            for raw in raw_issues:
+                if not isinstance(raw, dict):
+                    continue
+                issue_kind = str(raw.get("kind") or "").strip().casefold()
+                quote = str(raw.get("evidence") or "").strip()
+                fix = str(raw.get("fix") or "").strip()[:REPLY_FIX_CHARS].strip()
+                # A kind off the list is something this check does not judge;
+                # a quote she did not say in this reply, or no fix, is no slip
+                # she can do anything about.
+                if issue_kind not in REPLY_CHECK_KINDS or not fix:
+                    continue
+                if _line_quoted(quote, [reply]) is None:
+                    continue
+                issues.append({"kind": issue_kind, "evidence": quote, "fix": fix})
+            issues = issues[:_REPLY_ISSUES_KEPT]
+            evidence = tuple(item["evidence"] for item in issues)
+            if not issues:
+                return (), confidence, evidence, []
+            proposals.append(
+                context.proposal(
+                    REPLY_NOTE_TARGET,
+                    {"issues": issues},
+                    # Every slip is quoted from her reply, checked above.
+                    confidence=1.0,
+                    provenance={**provenance, "evidence": list(evidence), "reply": reply},
+                )
+            )
+            return tuple(issues), confidence, evidence, proposals
 
         if kind is BackgroundCognitionKind.EMOTION_ANALYSIS:
             emotion = str(data.get("emotion", "neutral")).strip() or "neutral"
@@ -746,7 +799,10 @@ class BackgroundCognitionRuntime:
                             self.tasks.runtime.history, openers[start:]
                         ),
                     }
-            if spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
+            if spec.kind in (
+                BackgroundCognitionKind.CHARACTER_MOOD,
+                BackgroundCognitionKind.REPLY_CHECK,
+            ):
                 persona = _persona_summary(getattr(self.tasks.runtime, "character", None))
                 if persona:
                     job = {**payload, "character_persona": persona}
@@ -1065,6 +1121,35 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "and do not repeat the same quote. "
             "Return JSON: {\"mood\":str,\"intensity\":0..1,\"confidence\":0..1,\"evidence\":[str]}."
         ),
+        BackgroundCognitionKind.REPLY_CHECK: (
+            "Check the character's reply to check for slips of the kinds below, and only "
+            "these. Write the kind exactly as listed, in English.\n"
+            "- broke_character: the character talks about what runs behind the conversation "
+            "as if it were part of it: instructions, prompts, notes or hints given to the "
+            "character, speech recognition or transcription, a model, a system prompt, or being "
+            "an AI, unless who the character is makes that part of the character.\n"
+            "- leaked_markup: markup or a direction said as part of the character's words: a "
+            "tag or field name written out (\"emotion: happy\", \"(expression: smile)\"), code, "
+            "JSON or markdown. An expression keyword in square brackets such as [joy], and an "
+            "action between asterisks, are how expressions and actions are written: no slip.\n"
+            "- off_persona: the reply contradicts a fact given in who the character is: age, "
+            "name or how it is written, or another stated fact. What the character makes up "
+            "that nothing given contradicts is no slip.\n"
+            "- repeated: the reply opens with, or its main sentence is, nearly the same as the "
+            "character's previous reply.\n"
+            "- wrong_language: the whole reply is in a language other than the one the user "
+            "writes in or the character is meant to speak. Foreign words, quotes, names and "
+            "sentences the character is teaching are no slip.\n"
+            "Do not judge anything else: whether what is said is true or right, the tone, the "
+            "length, or whether it is interesting. When in doubt there is no slip: most replies "
+            "have none, and a false alarm costs more than a missed slip. "
+            "evidence is the one sentence of the reply that has the slip, copied exactly from "
+            "the reply to check, in the language it was said in. fix is one sentence telling "
+            "the character what to do in the next reply, addressed to the character as \"you\", "
+            "at most 40 characters. At most 2 issues. "
+            "Return JSON: {\"issues\":[{\"kind\":str,\"evidence\":str,\"fix\":str}]}; when "
+            "there is no slip, return {\"issues\":[]}."
+        ),
         BackgroundCognitionKind.VISION_INTERPRETATION: (
             "Interpret only the supplied textual vision observation and recent context. Do not claim unseen pixels. "
             "Return JSON: {\"interpretation\":str,\"tags\":[str],\"confidence\":0..1,\"evidence\":[str]}."
@@ -1379,6 +1464,63 @@ def _mood_messages(context: TaskContext, history_messages: int) -> list[Message]
     user += "\nReturn only the requested JSON object. The mood is one of the listed English words."
     return [
         Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.CHARACTER_MOOD]),
+        Message(role="user", content=user),
+    ]
+
+
+def _replies_around(context: TaskContext, history_messages: int) -> tuple[str, str, str]:
+    """(her previous reply, her reply of this turn, what she replied to) as
+    kept in the conversation; the turn notes are nobody's words. Without kept
+    history, this turn as the runtime reported it."""
+    spoken = [
+        message
+        for message in context.snapshot.history[-history_messages:]
+        if message.role in {"user", "assistant", "event"}
+        and message.content.strip()
+        and not is_turn_context(message)
+    ]
+    payload = context.request.payload
+    latest = str(payload.get("latest_user_or_event", "")).strip()
+    opener = next(
+        (index for index in range(len(spoken) - 1, -1, -1) if spoken[index].role != "assistant"),
+        None,
+    )
+    if opener is None:
+        return "", str(payload.get("assistant_response", "")).strip(), latest
+    after = [m.content.strip() for m in spoken[opener + 1 :] if m.role == "assistant"]
+    before = [m.content.strip() for m in spoken[:opener] if m.role == "assistant"]
+    reply = after[-1] if after else str(payload.get("assistant_response", "")).strip()
+    return (before[-1] if before else ""), reply, latest
+
+
+def _reply_check_messages(context: TaskContext, history_messages: int) -> list[Message]:
+    """Who she is, her previous reply, what she replied to and her reply,
+    each apart: the check looks at her reply alone, the rest is what it is
+    held against."""
+    previous, reply, latest = _replies_around(context, history_messages)
+    payload = context.request.payload
+    persona = str(payload.get("character_persona") or "").strip()
+    said = payload.get("foreground_event_type") == "user_message"
+    user = (
+        f"Character: {context.snapshot.character_name}\n"
+        + (
+            f"Who the character is (background, not part of the conversation):\n{persona}\n\n"
+            if persona
+            else ""
+        )
+        + f"The character's previous reply:\n{previous or '(none)'}\n\n"
+        + ("The user's latest line" if said else "What just happened (not said by anyone)")
+        + f":\n{latest or '(none)'}\n\n"
+        + f"The character's reply to check:\n{reply or '(none)'}\n"
+    )
+    language = str(payload.get("output_language") or "").strip()
+    user += (
+        "\nReturn only the requested JSON object. kind is one of the listed English words; "
+        "evidence is copied as it was said."
+        + (f" Text values must be written in {language}." if language else _OUTPUT_LANGUAGE_RULE)
+    )
+    return [
+        Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.REPLY_CHECK]),
         Message(role="user", content=user),
     ]
 

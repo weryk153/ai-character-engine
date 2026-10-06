@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Callable, Iterable
 from uuid import uuid4
 
+from ai_character_engine.cognition.background import REPLY_CHECK_KINDS, REPLY_NOTE_TARGET
 from ai_character_engine.memory.models import MemoryRecord
 from ai_character_engine.memory.self_kinds import CONVERSATION_KEY
 from ai_character_engine.long_term_cognition import (
@@ -76,6 +77,13 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         stale_policy=StalePolicy.RERUN,
         expected_worker_kind="character_mood",
         max_age_s=90.0,
+    ),
+    # A note for her next reply about a slip in this one. Only for the reply
+    # it was read from: never moved onto a later turn.
+    REPLY_NOTE_TARGET: CommitTargetPolicy(
+        min_confidence=0.50,
+        stale_policy=StalePolicy.REJECT,
+        expected_worker_kind="reply_check",
     ),
     "memory.conversation_summary_candidate": CommitTargetPolicy(
         min_confidence=0.70,
@@ -425,6 +433,20 @@ class CognitiveCommitCoordinator:
                     "mood_not_in_vocabulary",
                     current_revision,
                 )
+        if proposal.target == REPLY_NOTE_TARGET:
+            issues = proposal.payload.get("issues")
+            if not isinstance(issues, list) or not issues or not all(
+                isinstance(issue, dict)
+                and str(issue.get("kind", "")) in REPLY_CHECK_KINDS
+                and str(issue.get("fix", "")).strip()
+                for issue in issues
+            ):
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "reply_note_without_issue",
+                    current_revision,
+                )
         if proposal.target == "cognition.reflection_candidate":
             insight = str(proposal.payload.get("insight", "")).strip()
             if not insight:
@@ -731,6 +753,11 @@ class CognitiveCommitCoordinator:
                 raise
             return None
 
+        if proposal.target == REPLY_NOTE_TARGET:
+            # Nothing authoritative changes: the note is for her next reply
+            # only, and the host that asked for it (CharacterCompanion) keeps it.
+            return None
+
         if proposal.target == "cognition.reflection_candidate":
             manager = getattr(runtime, "long_term_cognition", None)
             if manager is None:
@@ -1027,6 +1054,8 @@ class CognitiveCommitCoordinator:
             return None, f"observed_user_emotion:{proposal.base_revision}", fingerprint
         if proposal.target == "state.mood_candidate":
             return None, f"character_mood:{proposal.base_revision}", fingerprint
+        if proposal.target == REPLY_NOTE_TARGET:
+            return None, f"reply_note:{proposal.base_revision}", fingerprint
         if proposal.target == "cognition.reflection_candidate":
             insight = _normalize_text(str(proposal.payload.get("insight", "")))
             claim = _claim_fingerprint(proposal.payload.get("belief_candidate"))

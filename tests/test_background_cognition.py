@@ -1503,3 +1503,205 @@ def test_the_emotion_worker_is_told_to_judge_the_latest_line_only():
     prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.EMOTION_ANALYSIS]
     assert "Judge only from the Latest event/user content." in prompt
     assert "answer neutral with a low intensity, valence 0 and stance 0" in prompt
+
+
+# --- reply check: her reply read back for slips, a note for her next reply --------------
+
+REPLY = "Konpeko! I am eighteen this year. Want to learn a word?"
+
+
+class SaysClient:
+    """Her model, saying one fixed reply."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    async def generate(self, messages, *, tools=None):
+        return LLMResponse(text=self.text, model="foreground")
+
+
+def issue(kind="off_persona", evidence="I am eighteen this year.", fix="You are 111, not 18."):
+    return {"kind": kind, "evidence": evidence, "fix": fix}
+
+
+async def reply_check(payload, *, reply=REPLY, history=None, profile=None, language=""):
+    from ai_character_engine.cognition.background import REPLY_NOTE_TARGET  # noqa: F401
+
+    client = CapturingClient(payload, name="reply_check")
+    runtime = CharacterRuntime(
+        character=profile or CharacterProfile(id="c", name="C", description="test"),
+        llm=SaysClient(reply),
+    )
+    runtime.history = list(
+        history
+        if history is not None
+        else [Message("user", "earlier question"), Message("assistant", "Konpeko! earlier answer")]
+    )
+    tasks = MultiTaskRuntime(runtime)
+    bg = BackgroundCognitionRuntime(
+        tasks,
+        model_runtime({CognitiveRole.REPLY_CHECK: client}),
+        config=BackgroundCognitionConfig(
+            worker_specs=(BackgroundWorkerSpec(BackgroundCognitionKind.REPLY_CHECK),)
+        ),
+    )
+    bg.output_language = language
+    async with tasks:
+        await bg.run_turn("how old are you?")
+        result = (await bg.collect_all())[0]
+    assert result.status is TaskStatus.SUCCEEDED, result.error
+    system, user = client.messages
+    return system.content, user.content, result.output
+
+
+@pytest.mark.asyncio
+async def test_a_slip_in_her_reply_becomes_a_note_for_her_next_reply():
+    from ai_character_engine.cognition.background import REPLY_NOTE_TARGET
+
+    _, _, output = await reply_check({"issues": [issue()]})
+    (proposal,) = output.proposals
+    assert proposal.target == REPLY_NOTE_TARGET
+    assert proposal.payload == {"issues": [issue()]}
+    assert proposal.provenance["worker_kind"] == "reply_check"
+    assert proposal.provenance["reply"] == REPLY
+    assert proposal.provenance["evidence"] == ["I am eighteen this year."]
+    assert proposal.confidence == 1.0
+    assert output.value.value == (issue(),)
+
+
+@pytest.mark.asyncio
+async def test_a_reply_without_slips_proposes_nothing():
+    _, _, output = await reply_check({"issues": []})
+    assert output.proposals == ()
+    assert output.value.value == ()
+
+
+@pytest.mark.asyncio
+async def test_a_kind_off_the_list_is_no_slip():
+    _, _, output = await reply_check(
+        {"issues": [issue(kind="boring"), issue(kind="tone"), issue(kind="Off_Persona ")]}
+    )
+    (proposal,) = output.proposals
+    assert proposal.payload == {"issues": [issue()]}
+
+
+@pytest.mark.asyncio
+async def test_evidence_she_did_not_say_in_this_reply_is_no_slip():
+    _, _, output = await reply_check(
+        {
+            "issues": [
+                issue(evidence="I am eighteen years old."),  # reworded
+                issue(kind="repeated", evidence="earlier answer"),  # her previous reply
+                issue(kind="repeated", evidence=""),
+                issue(evidence="  I am  eighteen this year. "),  # spacing does not count
+            ]
+        }
+    )
+    (proposal,) = output.proposals
+    assert proposal.payload == {"issues": [issue(evidence="I am  eighteen this year.")]}
+
+
+@pytest.mark.asyncio
+async def test_a_long_fix_is_cut_and_an_empty_one_is_no_slip():
+    from ai_character_engine.cognition.background import REPLY_FIX_CHARS
+
+    long_fix = "Do not say your age is eighteen; you are one hundred and eleven."
+    _, _, output = await reply_check(
+        {"issues": [issue(fix="   "), issue(fix=long_fix)]}
+    )
+    (proposal,) = output.proposals
+    (kept,) = proposal.payload["issues"]
+    assert REPLY_FIX_CHARS == 40
+    assert kept["fix"] == long_fix[:40].strip()
+
+
+@pytest.mark.asyncio
+async def test_at_most_two_slips_are_kept():
+    _, _, output = await reply_check(
+        {
+            "issues": [
+                issue(fix="first"),
+                issue(kind="broke_character", evidence="Konpeko!", fix="second"),
+                issue(kind="repeated", evidence="Konpeko!", fix="third"),
+            ]
+        }
+    )
+    (proposal,) = output.proposals
+    assert [item["fix"] for item in proposal.payload["issues"]] == ["first", "second"]
+
+
+@pytest.mark.asyncio
+async def test_an_answer_without_an_issues_array_is_no_check():
+    _, _, output = await reply_check({"verdict": "fine"})
+    assert output.proposals == ()
+
+
+REPLY_CHECK_PERSONA = "Who the character is (background, not part of the conversation):"
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_reads_her_persona_her_previous_reply_the_user_and_this_reply():
+    profile = CharacterProfile(
+        id="c", name="C", description="rules", background="A rabbit idol, 111 years old."
+    )
+    _, user, _ = await reply_check({"issues": []}, profile=profile)
+    persona = user.split(REPLY_CHECK_PERSONA, 1)[1].split("\n\n", 1)[0]
+    assert "A rabbit idol, 111 years old." in persona
+    assert "The character's previous reply:\nKonpeko! earlier answer\n" in user
+    assert "how old are you?" in user
+    assert f"reply to check:\n{REPLY}\n" in user
+    assert user.index("earlier answer") < user.index("how old are you?") < user.index(REPLY)
+    assert "earlier question" not in user
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_without_a_previous_reply_says_so():
+    _, user, _ = await reply_check({"issues": []}, history=[])
+    assert "previous reply:\n(none)\n" in user
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_does_not_take_a_turn_note_for_her_previous_reply():
+    _, user, _ = await reply_check(
+        {"issues": []},
+        history=[
+            Message("user", "earlier question"),
+            Message("assistant", "Konpeko! earlier answer"),
+            Message("user", NOTE),
+        ],
+    )
+    assert "Character context" not in user
+    assert "previous reply:\nKonpeko! earlier answer\n" in user
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_writes_its_fix_in_the_language_of_the_conversation():
+    _, user, _ = await reply_check({"issues": []})
+    assert user.rstrip().endswith(
+        "Text values must be written in the language the user writes in,"
+        " not in English unless the user writes English."
+    )
+    _, user, _ = await reply_check({"issues": []}, language="繁體中文")
+    assert user.rstrip().endswith("Text values must be written in 繁體中文.")
+
+
+@pytest.mark.asyncio
+async def test_the_reply_check_is_told_the_five_kinds_and_nothing_else():
+    from ai_character_engine.cognition.background import REPLY_CHECK_KINDS
+
+    system, _, _ = await reply_check({"issues": []})
+    assert REPLY_CHECK_KINDS == (
+        "broke_character",
+        "leaked_markup",
+        "off_persona",
+        "repeated",
+        "wrong_language",
+    )
+    for kind in REPLY_CHECK_KINDS:
+        assert f"- {kind}: " in system
+    assert "Do not judge anything else" in system
+    assert "a false alarm costs more than a missed slip" in system
+    assert "copied exactly from the reply to check" in system
+    assert "at most 40 characters" in system
+    assert "At most 2 issues" in system
+    assert '{"issues":[]}' in system

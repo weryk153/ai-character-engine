@@ -4116,3 +4116,160 @@ def test_an_async_listener_without_a_running_loop_is_dropped_with_a_warning(tmp_
     assert called == []
     assert "no event loop is running" in caplog.text
     run(current.close())
+
+
+# --- reply check: a slip in her reply is pointed out on her next reply ----------------
+
+SLIP = {"issues": [{"kind": "repeated", "evidence": "How are you?", "fix": "Open differently."}]}
+REPLY_NOTE = "About your last reply: Open differently."
+
+
+def slip_once(messages):
+    """Finds the slip in the first reply it reads, none after."""
+    slip_once.calls += 1
+    return SLIP if slip_once.calls == 1 else {"issues": []}
+
+
+def new_in(llm, turn):
+    """What the prompt of ``turn`` (0-based) added to the one before it."""
+    before = llm.calls[turn - 1] if turn else []
+    return "\n".join(message.content for message in llm.calls[turn][len(before) :])
+
+
+async def three_turns(tmp_path, worker, between=None, **settings):
+    llm = Foreground()
+    current = companion(tmp_path, {"reply_check": worker}, llm=llm, **settings)
+    for number, text in enumerate(("hi", "what are you doing", "and then")):
+        await current.reply(text, conversation_id="a")
+        await current.settle()
+        if between is not None and number == 0:
+            between(current)
+    await current.close()
+    return llm
+
+
+def test_a_slip_in_her_reply_is_pointed_out_on_her_next_reply_only(tmp_path):
+    slip_once.calls = 0
+    llm = run(three_turns(tmp_path, Worker(slip_once), reply_check_every=1))
+    assert REPLY_NOTE not in new_in(llm, 0)
+    assert REPLY_NOTE in new_in(llm, 1)
+    assert REPLY_NOTE not in new_in(llm, 2)
+    assert slip_once.calls == 3
+
+
+def test_the_reply_check_runs_every_turn_by_default_and_not_at_zero(tmp_path):
+    assert CompanionSettings().reply_check_every == 1
+    worker = Worker(SLIP)
+    llm = run(three_turns(tmp_path, worker, reply_check_every=0))
+    assert worker.calls == 0
+    assert all(REPLY_NOTE not in new_in(llm, turn) for turn in range(3))
+
+
+def test_a_reply_without_slips_leaves_no_trace(tmp_path):
+    worker = Worker({"issues": []})
+    llm = run(three_turns(tmp_path, worker, reply_check_every=1))
+    assert worker.calls == 3
+    assert all("About your last reply" not in new_in(llm, turn) for turn in range(3))
+
+
+def test_a_note_on_a_reply_she_was_cut_off_in_is_dropped(tmp_path):
+    slip_once.calls = 0
+    llm = run(
+        three_turns(
+            tmp_path,
+            Worker(slip_once),
+            between=lambda current: current.interrupt("Hello."),
+            reply_check_every=1,
+        )
+    )
+    assert REPLY_NOTE not in new_in(llm, 1)
+
+
+def test_a_note_on_a_reply_the_host_rewrote_is_dropped(tmp_path):
+    slip_once.calls = 0
+    llm = run(
+        three_turns(
+            tmp_path,
+            Worker(slip_once),
+            between=lambda current: current.replace_reply("Hello. What is new?"),
+            reply_check_every=1,
+        )
+    )
+    assert REPLY_NOTE not in new_in(llm, 1)
+
+
+def test_a_note_is_for_the_conversation_of_the_reply(tmp_path):
+    async def scenario():
+        slip_once.calls = 0
+        llm = Foreground()
+        current = companion(
+            tmp_path, {"reply_check": Worker(slip_once)}, llm=llm, reply_check_every=1
+        )
+        await current.reply("hi", conversation_id="a")
+        await current.settle()
+        await current.reply("hi", conversation_id="b")
+        await current.reply("and you", conversation_id="a")
+        await current.close()
+        return llm
+
+    llm = run(scenario())
+    assert all(REPLY_NOTE not in "\n".join(m.content for m in call) for call in llm.calls)
+
+
+def test_a_late_note_is_not_given_to_a_later_reply(tmp_path):
+    async def scenario():
+        slip_once.calls = 0
+        gate = asyncio.Event()
+        llm = Foreground()
+        current = companion(
+            tmp_path, {"reply_check": Worker(slip_once, gate=gate)}, llm=llm, reply_check_every=2
+        )
+        await current.reply("hi", conversation_id="a")
+        # Checked after this turn, every second one; the check is slow.
+        await current.reply("what are you doing", conversation_id="a")
+        await current.reply("and then", conversation_id="a")
+        gate.set()
+        await current.settle()
+        await current.reply("and after that", conversation_id="a")
+        await current.close()
+        return llm
+
+    llm = run(scenario())
+    assert slip_once.calls >= 1
+    assert REPLY_NOTE not in new_in(llm, 2)
+    assert REPLY_NOTE not in new_in(llm, 3)
+
+
+def test_her_reply_is_checked_after_the_users_emotion_and_before_her_mood(tmp_path):
+    async def scenario():
+        workers = {
+            "emotion": Worker(NEUTRAL, name="emotion"),
+            "mood": Worker(
+                {"mood": "calm", "intensity": 0.3, "confidence": 0.9, "evidence": []},
+                name="mood",
+            ),
+            "reply_check": Worker({"issues": []}, name="reply_check"),
+        }
+        current = companion(
+            tmp_path, workers, emotion_every=1, mood_every=1, reply_check_every=1
+        )
+        await current.reply("hello", conversation_id="a")
+        await current.settle()
+        await current.close()
+        return list(Worker.order)
+
+    assert run(scenario()) == ["emotion", "reply_check", "mood"]
+
+
+def test_a_note_on_a_reply_the_host_took_back_is_dropped(tmp_path):
+    slip_once.calls = 0
+    llm = run(
+        three_turns(
+            tmp_path,
+            Worker(slip_once),
+            between=lambda current: current.take_back("a"),
+            reply_check_every=1,
+        )
+    )
+    # The exchange left the conversation: the next prompt is no longer longer.
+    assert REPLY_NOTE not in "\n".join(message.content for message in llm.calls[1])
