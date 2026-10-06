@@ -4281,3 +4281,34 @@ def test_a_note_on_a_reply_the_host_took_back_is_dropped(tmp_path):
     )
     # The exchange left the conversation: the next prompt is no longer longer.
     assert REPLY_NOTE not in "\n".join(message.content for message in llm.calls[1])
+
+
+
+class Openings(Foreground):
+    """Her replies in turn, each in one part."""
+
+    def __init__(self, *replies):
+        super().__init__()
+        self.replies = list(replies)
+
+    async def stream_generate(self, messages, *, tools=None):
+        self.parts = (self.replies.pop(0),)
+        async for chunk in super().stream_generate(messages, tools=tools):
+            yield chunk
+
+
+def test_her_opening_said_again_is_pointed_out_without_the_model_seeing_it(tmp_path):
+    async def scenario():
+        llm = Openings("Well now, hello there.", "Well now, what a day it was.", "Fine.")
+        current = companion(
+            tmp_path, {"reply_check": Worker({"issues": []})}, llm=llm, reply_check_every=1
+        )
+        for text in ("hi", "how was it", "and then"):
+            await current.reply(text, conversation_id="a")
+            await current.settle()
+        await current.close()
+        return llm
+
+    llm = run(scenario())
+    assert "About your last reply" not in new_in(llm, 1)
+    assert "About your last reply: Do not open with the same words again." in new_in(llm, 2)

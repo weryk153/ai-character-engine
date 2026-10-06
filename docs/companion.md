@@ -113,10 +113,21 @@ recognition, a model or being an AI), `leaked_markup` (a tag or direction said
 as words; `[joy]` keywords and `*actions*` are not), `off_persona` (contradicting
 a fact of her persona), `repeated` (nearly the same opening or main sentence
 as her previous reply) and `wrong_language` (the whole reply in another
-language). Each slip quotes the sentence of her reply it is in, and comes with
-a fix of at most 40 characters in the language of the conversation; a kind off
-the list, or a quote she did not say in that reply, is dropped, and at most two
-are kept. A small model calls nearly every reply a slip of some kind, so each
+language). Each slip quotes the sentence of her reply it is in (`evidence`);
+`off_persona` and `repeated` also quote what they are held against (`against`,
+from her persona or her previous reply). Each comes with a fix of at most 40
+characters, written in `CompanionSettings.language` when the host names one,
+else in the language of the user's latest line; a fix in another writing
+(Chinese, Japanese, Korean or Latin letters) is dropped, and so is a kind off
+the list or a quote she did not say in that reply. At most two are kept.
+
+Her opening said again is not left to the model, which never reported it: when
+her reply opens with the same first clause as her previous reply (three
+letters or more) or the same first six letters, once `[keyword]` tags,
+`*actions*` and quote marks are taken out, a `repeated` slip is made with that
+opening as its evidence and a fixed fix in the language above ("Do not open
+with the same words again.", 「開頭別再用同一句，換個起手。」, and so on). It
+comes first and stands for any `repeated` the model reported. A small model calls nearly every reply a slip of some kind, so each
 is held to what its words can show: `off_persona` quotes the fact of her
 persona it contradicts and shares words with it; `repeated` quotes her previous
 reply and is its opening again or a whole sentence again; `broke_character`
@@ -134,6 +145,12 @@ another turn came first, when the next turn is in another conversation, or when
 the reply was cut short or rewritten (`interrupt`, `replace_reply`, `take_back`)
 in between. The commit target `context.reply_note_candidate` writes nothing
 itself. It runs every `reply_check_every` turns (1; 0 turns it off).
+
+The note's label is English like the engine's other notes, whatever language
+she speaks. An expression keyword in square brackets (`[joy]`) is never a
+`leaked_markup` slip, even said as words: a host that keeps such keywords in
+her reply on purpose, for her to read the face she made, would otherwise get a
+note on every reply that has one.
 
 What the character knows, wants and thinks is written into the conversation as
 notes that say only what is new, never into the system prompt, so that each

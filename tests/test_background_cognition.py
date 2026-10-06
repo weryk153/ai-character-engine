@@ -1513,7 +1513,7 @@ REPLY = (
     "Want to learn a word?"
 )
 PERSONA = "A rabbit girl from Pekoland, forever 111 years old."
-PREVIOUS = "Konpeko! You are up late."
+PREVIOUS = "Hello there. Want to learn a new word with me? You are up late."
 
 
 class SaysClient:
@@ -1720,6 +1720,7 @@ async def test_off_persona_holds_only_where_her_words_touch_the_fact():
             issue("off_persona", evidence, "別自創名字寫法。", fact),
             profile=profile,
             reply=reply,
+            user="妳叫什麼名字？",
             confirm={"conflict": "yes", "word": "佩克勞"},
         )
 
@@ -1734,8 +1735,9 @@ async def test_repeated_holds_only_for_nearly_the_words_of_her_previous_reply():
     def repeated(evidence, against):
         return issue("repeated", evidence, "Open differently.", against)
 
-    assert await slips_kept(repeated("Konpeko!", "Konpeko!")) == [
-        kept("repeated", "Konpeko!", "Open differently.")
+    sentence = repeated("Want to learn a word?", "Want to learn a new word with me?")
+    assert await slips_kept(sentence) == [
+        kept("repeated", "Want to learn a word?", "Open differently.")
     ]
     # Not in her previous reply.
     assert await slips_kept(repeated("Konpeko!", "Konpeko! Hello")) == []
@@ -1752,7 +1754,10 @@ async def test_repeated_is_the_same_opening_or_a_whole_sentence_said_again():
 
     def repeated(evidence, against, reply):
         return slips_kept(
-            issue("repeated", evidence, "換個開場。", against), reply=reply, history=history
+            issue("repeated", evidence, "換個開場。", against),
+            reply=reply,
+            history=history,
+            user="再來一句",
         )
 
     opening = "哈↗哈↘哈↗，你來啦！今天也要學日文嗎？"
@@ -1777,6 +1782,7 @@ async def test_broke_character_holds_only_for_words_of_what_runs_behind_the_conv
     assert await slips_kept(
         issue("broke_character", chinese, "別提語音辨識。", None),
         reply=chinese,
+        user="妳聽不懂嗎？",
         confirm={"behind": "yes", "word": "語音辨識"},
     ) == [kept("broke_character", chinese, "別提語音辨識。")]
 
@@ -1889,11 +1895,93 @@ async def test_the_reply_check_does_not_take_a_turn_note_for_her_previous_reply(
 async def test_the_reply_check_writes_its_fix_in_the_language_of_the_conversation():
     _, user, _ = await reply_check({"issues": []})
     assert user.rstrip().endswith(
-        "Text values must be written in the language the user writes in,"
-        " not in English unless the user writes English."
+        "The fix is written in the language of the user's latest line,"
+        " not in English unless that line is English."
     )
     _, user, _ = await reply_check({"issues": []}, language="繁體中文")
-    assert user.rstrip().endswith("Text values must be written in 繁體中文.")
+    assert user.rstrip().endswith("The fix is written in 繁體中文.")
+
+
+@pytest.mark.asyncio
+async def test_a_fix_in_another_language_than_the_conversation_is_dropped():
+    def ai(fix):
+        return {**AI_SLIP, "fix": fix}
+
+    # The host's language when it names one, else that of the user's line.
+    assert await slips_kept(ai("別說自己是 AI。"), language="Traditional Chinese (Taiwan)")
+    assert not await slips_kept(ai("Never call yourself an AI."), language="繁體中文")
+    assert not await slips_kept(ai("AIだと言わないで。"), language="繁體中文")
+    assert await slips_kept(ai("AIだと言わないで。"), language="Japanese")
+    assert await slips_kept(ai("Never call yourself an AI."))
+    assert not await slips_kept(ai("別說自己是 AI。"))
+    assert await slips_kept(ai("別說自己是 AI。"), user="妳幾歲？")
+    # A language the check cannot tell by its writing is left to the model.
+    assert await slips_kept(ai("Ne dis pas que tu es une IA."), language="Klingon")
+
+
+# Her opening said again is read off the words, not asked of the model: a 9B
+# model never reported 「哈↗哈↘哈↗，」 opening seven replies in a row.
+
+PEKORA_BEFORE = "哈↗哈↘哈↗，「おはようございます」？喂，你剛才明明就說「我知道啦」耶！"
+PEKORA_NOW = "哈↗哈↘哈↗，總、總算把「おはようございます」唸對了嗎？不過嘛……勉強合格啦！"
+
+
+async def openings(reply, previous, **kwargs):
+    kwargs.setdefault("user", "おはようございます")
+    return await slips_kept(
+        reply=reply,
+        history=[Message("user", "earlier question"), Message("assistant", previous)],
+        **kwargs,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_same_opening_as_her_previous_reply_is_pointed_out_without_the_model():
+    found = await openings(PEKORA_NOW, PEKORA_BEFORE, language="Traditional Chinese (Taiwan)")
+    assert found == [
+        {"kind": "repeated", "evidence": "哈↗哈↘哈↗", "fix": "開頭別再用同一句，換個起手。"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_note_on_her_opening_is_in_the_language_of_the_conversation():
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE)
+    assert found["fix"] == "同じ書き出しはやめて、別の言葉で始めて。"
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE, user="早安", language="")
+    assert found["fix"] == "開頭別再用同一句，換個起手。"
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE, language="简体中文")
+    assert found["fix"] == "开头别再用同一句，换个起手。"
+    (found,) = await openings(PEKORA_NOW, PEKORA_BEFORE, user="good morning")
+    assert found["fix"] == "Do not open with the same words again."
+
+
+@pytest.mark.asyncio
+async def test_an_opening_is_its_first_clause_or_its_first_six_letters():
+    # Tags, actions and quote marks are not the words she opens with.
+    assert await openings("[joy] *跳起來* 哈↗哈↘哈↗！今天呢？", "哈↗哈↘哈↗，昨天呢？")
+    # The first six letters the same, the first clause shorter than three.
+    assert await openings("總、總算把「さようなら」也唸對了嗎？", "總、總算把「さよ」念出來了？")
+    # A word or two alike is no repetition.
+    assert not await openings("哼，「懂」啊？那就好！", "哼，終於「懂」了？")
+    assert not await openings("嗯，今天呢？", "嗯，昨天呢？")
+    assert not await openings("哈↗哈↘哈↗，今天呢？", "哈哈，昨天呢？")
+    assert not await openings("哈↗哈↘哈↗，今天呢？", "")
+
+
+@pytest.mark.asyncio
+async def test_her_opening_said_again_is_one_note_even_when_the_model_saw_it_too():
+    found = await openings(PEKORA_NOW, PEKORA_BEFORE, language="繁體中文")
+    assert [item["kind"] for item in found] == ["repeated"]
+    _, _, output = await reply_check(
+        {"issues": [issue("repeated", "哈↗哈↘哈↗，", "換個開場吧。", "哈↗哈↘哈↗，")]},
+        reply=PEKORA_NOW,
+        history=[Message("user", "q"), Message("assistant", PEKORA_BEFORE)],
+        user="早安",
+    )
+    (proposal,) = output.proposals
+    assert proposal.payload["issues"] == [
+        {"kind": "repeated", "evidence": "哈↗哈↘哈↗", "fix": "開頭別再用同一句，換個起手。"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -1966,11 +2054,11 @@ async def test_the_second_answer_names_the_word_in_her_sentence_that_shows_the_s
 async def test_what_the_words_show_is_not_asked_about_again():
     calls = []
     found = await slips_kept(
-        issue("repeated", "Konpeko!", "Open differently.", "Konpeko!"),
+        issue("repeated", "Want to learn a word?", "Open differently.", "Want to learn a new word"),
         confirm="no",
         calls=calls,
     )
-    assert found == [kept("repeated", "Konpeko!", "Open differently.")]
+    assert found == [kept("repeated", "Want to learn a word?", "Open differently.")]
     assert len(calls) == 1
 
 

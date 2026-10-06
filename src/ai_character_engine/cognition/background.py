@@ -518,14 +518,19 @@ class StructuredBackgroundWorker:
 
         if kind is BackgroundCognitionKind.REPLY_CHECK:
             raw_issues = data.get("issues")
-            if not isinstance(raw_issues, list):
-                return (), confidence, (), []
             previous, reply, latest = _replies_around(context, self.history_messages)
             payload = context.request.payload
             persona = str(payload.get("character_persona") or "")
             said_by_user = latest if payload.get("foreground_event_type") == "user_message" else ""
+            fix_script = _fix_script(str(payload.get("output_language") or ""), said_by_user)
             issues: list[dict[str, str]] = []
-            for raw in raw_issues:
+            # Her opening said again is read off the words; the model never
+            # reported it. It comes first, and stands for the model's own.
+            opening = _same_opening(reply, previous)
+            if opening:
+                fix = _opening_fix(fix_script, payload)
+                issues.append({"kind": "repeated", "evidence": opening, "fix": fix})
+            for raw in raw_issues if isinstance(raw_issues, list) else ():
                 if not isinstance(raw, dict):
                     continue
                 issue_kind = str(raw.get("kind") or "").strip().casefold()
@@ -535,6 +540,12 @@ class StructuredBackgroundWorker:
                 # a quote she did not say in this reply, or no fix, is no slip
                 # she can do anything about.
                 if issue_kind not in REPLY_CHECK_KINDS or not fix:
+                    continue
+                if opening and issue_kind == "repeated":
+                    continue
+                # A fix she cannot read in the language of the conversation is
+                # no help to her.
+                if fix_script and not _written_in(fix, fix_script):
                     continue
                 if _line_quoted(quote, [reply]) is None:
                     continue
@@ -1649,6 +1660,101 @@ def _word_pieces(text: str) -> set[str]:
     return pieces
 
 
+# Where the first clause of what she says ends.
+_CLAUSE_END = re.compile(r"[，,、。．.！!？?…～~；;：:—\n]")
+_QUOTE_MARKS = re.compile(r"[「」『』“”\"'《》〈〉]")
+# Letters an opening clause needs to count, and letters alike at the start of
+# two replies that make one opening.
+_OPENING_CLAUSE_LETTERS = 3
+_OPENING_LETTERS = 6
+_OPENING_FIXES = {
+    "zh": "開頭別再用同一句，換個起手。",
+    "zh-hans": "开头别再用同一句，换个起手。",
+    "ja": "同じ書き出しはやめて、別の言葉で始めて。",
+    "ko": "같은 말로 시작하지 말고 다르게 시작해.",
+    "latin": "Do not open with the same words again.",
+}
+
+
+def _spoken_start(text: str) -> str:
+    """Her words from the start: without expression tags, actions and quote
+    marks."""
+    return _QUOTE_MARKS.sub("", _DIRECTIONS.sub(" ", text)).strip()
+
+
+def _same_opening(reply: str, previous: str) -> str:
+    """The opening of her reply when her previous reply opened the same way:
+    the same first clause of three letters or more, or the same first six
+    letters; empty otherwise."""
+    if not previous.strip():
+        return ""
+    now, before = _spoken_start(reply), _spoken_start(previous)
+    clause = _CLAUSE_END.split(now, 1)[0].strip()
+    clause_before = _CLAUSE_END.split(before, 1)[0].strip()
+    letters = _letters(clause)
+    if len(letters) >= _OPENING_CLAUSE_LETTERS and letters == _letters(clause_before):
+        return clause
+    head, head_before = _letters(now)[:_OPENING_LETTERS], _letters(before)[:_OPENING_LETTERS]
+    if len(head) == _OPENING_LETTERS and head == head_before:
+        seen, end = 0, 0
+        for end, char in enumerate(now, 1):
+            seen += char.isalnum()
+            if seen == _OPENING_LETTERS:
+                break
+        return now[:end]
+    return ""
+
+
+def _script_of_language(name: str) -> str:
+    """The writing of a language named by the host ("繁體中文", "Japanese",
+    "Traditional Chinese (Taiwan)"); empty when it cannot be told."""
+    name = name.strip().casefold()
+    if not name:
+        return ""
+    if "日本" in name or "japan" in name or name.startswith("ja"):
+        return "ja"
+    if "korea" in name or "한국" in name or "韓" in name or "韩" in name or name.startswith("ko"):
+        return "ko"
+    chinese = ("中文", "chinese", "漢語", "汉语", "華語", "华语", "國語", "国语", "普通")
+    if any(word in name for word in chinese) or name.startswith("zh"):
+        return "zh"
+    if "english" in name or "英" in name or name.startswith("en"):
+        return "latin"
+    return ""
+
+
+def _fix_script(language: str, said_by_user: str) -> str:
+    """The writing a fix must be in: that of the host's language when it
+    names one, else that of the user's latest line."""
+    if language.strip():
+        return _script_of_language(language)
+    return _script(said_by_user)
+
+
+def _written_in(text: str, script: str) -> bool:
+    """Whether a short text is written in ``script``; a word quoted in
+    another writing does not change it."""
+    kana = sum(0x3040 <= ord(c) <= 0x30FF for c in text)
+    han = sum(0x4E00 <= ord(c) <= 0x9FFF or 0x3400 <= ord(c) <= 0x4DBF for c in text)
+    hangul = sum(0xAC00 <= ord(c) <= 0xD7AF for c in text)
+    if script == "ja":
+        return kana > 0 and kana * 4 >= han + kana
+    if script == "zh":
+        return han > 0 and kana * 4 < han + kana
+    if script == "ko":
+        return hangul > 0
+    if script == "latin":
+        return kana + han + hangul == 0
+    return _script(text) == script
+
+
+def _opening_fix(script: str, payload: Mapping[str, Any]) -> str:
+    language = str(payload.get("output_language") or "").casefold()
+    if script == "zh" and ("简" in language or "simplified" in language or "hans" in language):
+        return _OPENING_FIXES["zh-hans"]
+    return _OPENING_FIXES.get(script, _OPENING_FIXES["latin"])
+
+
 def _slip_holds(
     kind: str,
     quote: str,
@@ -1784,7 +1890,12 @@ def _reply_check_messages(context: TaskContext, history_messages: int) -> list[M
     user += (
         "\nReturn only the requested JSON object. kind is one of the listed English words; "
         "evidence is copied as it was said."
-        + (f" Text values must be written in {language}." if language else _OUTPUT_LANGUAGE_RULE)
+        + (
+            f" The fix is written in {language}."
+            if language
+            else " The fix is written in the language of the user's latest line,"
+            " not in English unless that line is English."
+        )
     )
     return [
         Message(role="system", content=_SYSTEM_PROMPTS[BackgroundCognitionKind.REPLY_CHECK]),
