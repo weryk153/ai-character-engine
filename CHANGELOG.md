@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
 
 - Saves (`ai_character_engine.companion`): `await CharacterCompanion.export_state(timeout=120.0)` gives everything she keeps as bytes for a game's own save (a zip with `manifest.json`: format 1, engine version, character id, her clock, sha256 of each file; her state, `memory.jsonl`, `goals.jsonl`, `cognition.jsonl`, `diary.jsonl`, `diary_log.jsonl`, and the conversations she holds with their notes). It waits for a reply under way and for background work to settle, and raises `StateBusy` after `timeout` without saving and without cancelling that work. `import_state(data, allow_other_character=False)` replaces all of it, in `storage_dir` too, before she first speaks (`RuntimeError` after); `StateFormatError` for a damaged save or a newer format, `ValueError` for another character's. Everything is read before anything is replaced; each file is replaced whole. `save_state_file(companion, path)` and `load_state_file(companion, path)` write and read one.
 - Memories across runs: `CharacterCompanion(meta_dir=...)`, `remember_across_runs(text, tags=(), run=None) -> str`, `across_runs() -> list[AcrossRunsMemory]`, `forget_across_runs(id) -> bool`. Written by the game only, kept in `meta_dir/across_runs.jsonl`, not in a save. The newest `CompanionSettings.across_runs_in_context` (8) are in her system prompt after who she is, under `across_runs_framing` (None: `From before this world began again, you remember:`). `ContextBuilder.across_runs` holds the section.

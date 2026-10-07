@@ -7,7 +7,7 @@
 <p align="center"><strong>用 Python 打造有記憶、會使用工具、能持續互動的 AI 角色。</strong></p>
 
 <p align="center">
-  <a href="pyproject.toml"><img src="docs/assets/badge-version.svg" alt="Version 1.2.0" /></a>
+  <a href="pyproject.toml"><img src="docs/assets/badge-version.svg" alt="Version 1.3.0" /></a>
   <a href="LICENSE"><img src="docs/assets/badge-license.svg" alt="License: Apache-2.0" /></a>
   <a href="docs/getting-started.md"><img src="docs/assets/badge-python.svg" alt="Python 3.11–3.13" /></a>
   <a href="https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml"><img src="docs/assets/badge-platforms.svg" alt="Linux, macOS, Windows" /></a>
@@ -160,6 +160,6 @@ asyncio.run(main())
 
 ## 開發與授權
 
-目前版本 **1.2.0**。CI 涵蓋 Linux／macOS／Windows × Python 3.11／3.12／3.13，並檢查 API 相容性、持久化回放、故障注入、同環境效能及套件安裝。詳見 [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml)、[驗證](VALIDATION.md)與[相容性](docs/compatibility.md)。
+目前版本 **1.3.0**。CI 涵蓋 Linux／macOS／Windows × Python 3.11／3.12／3.13，並檢查 API 相容性、持久化回放、故障注入、同環境效能及套件安裝。詳見 [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml)、[驗證](VALIDATION.md)與[相容性](docs/compatibility.md)。
 
 歡迎提交問題與修正；參與方式見 [CONTRIBUTING](CONTRIBUTING.md)。本專案採用 [Apache-2.0](LICENSE)。第三方模型、聲音與素材依各自授權使用。

@@ -1,6 +1,6 @@
 # Stable root API reference
 
-374 exports in `ai_character_engine`, version 1.2.0.
+374 exports in `ai_character_engine`, version 1.3.0.
 
 Import these names from the package root. This index records the frozen
 root call shapes and links to implementations for full annotations, defaults
