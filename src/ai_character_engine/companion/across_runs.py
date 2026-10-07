@@ -33,12 +33,33 @@ class AcrossRunsMemory:
 
 
 class AcrossRuns:
-    """The memories of one ``meta_dir``, oldest first."""
+    """The memories of one ``meta_dir``, oldest first. Read again when the
+    file changed since: another companion of hers may have written it."""
 
     def __init__(self, directory: str | Path) -> None:
         self.path = Path(directory) / FILE_NAME
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.memories: list[AcrossRunsMemory] = self._load()
+        self._seen: tuple[int, int] | None = None
+        self._memories: list[AcrossRunsMemory] = []
+        self._refresh()
+
+    @property
+    def memories(self) -> list[AcrossRunsMemory]:
+        self._refresh()
+        return self._memories
+
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _refresh(self) -> None:
+        stamp = self._stamp()
+        if stamp != self._seen:
+            self._memories = self._load()
+            self._seen = stamp
 
     def _load(self) -> list[AcrossRunsMemory]:
         if not self.path.is_file():
@@ -79,11 +100,12 @@ class AcrossRuns:
                     ensure_ascii=False,
                 )
                 + "\n"
-                for memory in self.memories
+                for memory in self._memories
             ),
             encoding="utf-8",
         )
         os.replace(temporary, self.path)
+        self._seen = self._stamp()
 
     def add(self, text: str, *, tags, created_at: float, run: int | None) -> AcrossRunsMemory:
         cleaned = " ".join(str(text).split())
@@ -96,15 +118,16 @@ class AcrossRuns:
             created_at=created_at,
             run=run,
         )
-        self.memories.append(memory)
+        self._refresh()
+        self._memories.append(memory)
         self._write()
         return memory
 
     def forget(self, memory_id: str) -> bool:
         kept = [memory for memory in self.memories if memory.id != memory_id]
-        if len(kept) == len(self.memories):
+        if len(kept) == len(self._memories):
             return False
-        self.memories = kept
+        self._memories = kept
         self._write()
         return True
 

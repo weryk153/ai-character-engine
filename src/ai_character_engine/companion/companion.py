@@ -970,6 +970,7 @@ class CharacterCompanion:
         bridge_config: HostBridgeConfig | None = None,
         clock: Callable[[], float] | None = None,
         meta_dir: str | Path | None = None,
+        model_access: ModelAccess | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, reply_check,
@@ -987,6 +988,11 @@ class CharacterCompanion:
         ``meta_dir`` holds what she remembers across runs of a game's world
         (remember_across_runs): apart from ``storage_dir``, not in a save.
         Without it there is no such memory.
+
+        ``model_access`` is who uses the model next. Companions that share
+        one model share one (a game server with several NPCs): background
+        work of every one of them waits while any of them replies. Each
+        companion has its own when not given.
         """
         self.settings = settings or CompanionSettings()
         self._clock: Callable[[], float] = clock or time.time
@@ -1029,7 +1035,7 @@ class CharacterCompanion:
         # A reply of the conversation at hand, interrupted while the next reply
         # was being generated: cut once that turn has let go of the history.
         self._cut_later: tuple[Message, str] | None = None
-        self._access = ModelAccess(self.settings.foreground_patience_seconds)
+        self._access = model_access or ModelAccess(self.settings.foreground_patience_seconds)
         # target -> the turn after which a job for it was last scheduled
         self._scheduled_at: dict[str, int] = {}
         # The turns (revisions) after which her mood was given to the mood
@@ -1380,6 +1386,10 @@ class CharacterCompanion:
             self._active = conversation_id
             self._started = True
         self.runtime.memory_scope_id = self._scope(conversation_id)
+        # Written by another companion of hers, or another process, since.
+        across_runs = self._across_runs_in_context()
+        if across_runs != self.runtime.context_builder.across_runs:
+            self.runtime.context_builder.across_runs = across_runs
 
     # --- the turn --------------------------------------------------------------
 
