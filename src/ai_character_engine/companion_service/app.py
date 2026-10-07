@@ -14,6 +14,7 @@ import dataclasses
 import hmac
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Annotated, Any
@@ -22,6 +23,7 @@ from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ai_character_engine import CharacterProfile
@@ -202,6 +204,39 @@ async def _reply(companion: CharacterCompanion, entry, body: ReplyIn, **options)
         raise
 
 
+class RecentTurns:
+    """A socket's latest requests: which NPC and conversation each was for,
+    so that an interruption by id finds its turn. The oldest are let go."""
+
+    def __init__(self, kept: int = 256) -> None:
+        self._kept = kept
+        self._turns: dict[str, tuple[str, str | None]] = {}
+
+    def add(self, request: str, npc: str, conversation_id: str | None) -> None:
+        self._turns.pop(request, None)
+        self._turns[request] = (npc, conversation_id)
+        while len(self._turns) > self._kept:
+            del self._turns[next(iter(self._turns))]
+
+    def get(self, request: str) -> tuple[str, str | None] | None:
+        return self._turns.get(request)
+
+
+class HideTokens(logging.Filter):
+    """uvicorn logs every WebSocket path with its query: ``?token=`` in it is
+    replaced before the line is written."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                TOKEN_IN_QUERY.sub(r"\1***", arg) if isinstance(arg, str) else arg for arg in record.args
+            )
+        return True
+
+
+TOKEN_IN_QUERY = re.compile(r"([?&]token=)[^&\s\"]*")
+
+
 def create_app(
     config: ServiceConfig,
     *,
@@ -226,6 +261,7 @@ def create_app(
 
     app = FastAPI(title="AI Character Engine companion service", lifespan=lifespan)
     app.state.npcs = npcs
+    replies: set[asyncio.Task] = set()
     if _loopback(config.host):
         # A page in the player's browser reaching 127.0.0.1 by a name of its
         # own (DNS rebinding) is turned away.
@@ -241,6 +277,11 @@ def create_app(
             f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}" for error in exc.errors()
         )
         return JSONResponse(status_code=400, content={"code": "invalid_request", "message": message})
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException):
+        code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, f"http_{exc.status_code}")
+        return JSONResponse(status_code=exc.status_code, content={"code": code, "message": str(exc.detail)})
 
     @app.exception_handler(Exception)
     async def unexpected(request: Request, exc: Exception):
@@ -280,14 +321,13 @@ def create_app(
     @app.get("/slots/{slot}/npcs/{npc}/inspect", dependencies=guarded)
     async def inspect(slot: str, npc: str, conversation_id: str | None = None):
         companion = npcs.companion(slot, npc)
-        entry = npcs.entry(slot, npc)
         return {
             "state": state_of(companion.snapshot()),
             "memories": companion.memories(conversation_id),
             "self_memories": companion.self_memories(),
-            "diary": [dataclasses.asdict(entry) for entry in companion.diary()],
+            "diary": [dataclasses.asdict(day) for day in companion.diary()],
             "across_runs": [dataclasses.asdict(memory) for memory in companion.across_runs()],
-            "clock": entry.clock(),
+            "clock": npcs.entry(slot, npc).clock(),
         }
 
     @app.post("/slots/{slot}/npcs/{npc}/save", dependencies=guarded)
@@ -369,21 +409,23 @@ def create_app(
             return
         await websocket.accept()
         outbox: asyncio.Queue[dict] = asyncio.Queue()
-        turns: dict[str, tuple[str, str | None]] = {}
-        heard: dict[str, str] = {}
-        running: set[asyncio.Task] = set()
+        turns = RecentTurns()
+        running: dict[str, str] = {}  # request -> what the player saw of it, once interrupted
 
         def told(npc: str, snapshot: CompanionSnapshot) -> None:
             outbox.put_nowait({"type": "state", "npc": npc, "state": state_of(snapshot)})
 
         stop_listening = npcs.listen(slot, told)
 
+        def fail(request: str, npc: str, code: str, message: str) -> None:
+            outbox.put_nowait({"type": "error", "id": request, "npc": npc, "code": code, "message": message})
+
         async def send_all() -> None:
             while True:
                 await websocket.send_json(await outbox.get())
 
-        async def one_reply(message: dict) -> None:
-            request, npc = str(message.get("id", "")), str(message.get("npc", ""))
+        async def one_reply(request: str, npc: str, message: dict) -> None:
+            running[request] = ""
             try:
                 try:
                     body = ReplyIn.model_validate(message)
@@ -392,7 +434,7 @@ def create_app(
                         "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
                     ) from exc
                 companion = npcs.companion(slot, npc, body.game_time)
-                turns[request] = (npc, body.conversation_id)
+                turns.add(request, npc, body.conversation_id)
 
                 def delta(text: str) -> None:
                     outbox.put_nowait({"type": "delta", "id": request, "npc": npc, "text": text})
@@ -403,7 +445,7 @@ def create_app(
                     )
                     text, interrupted = result.text, False
                 except TurnInterrupted:
-                    text, interrupted = heard.pop(request, ""), True
+                    text, interrupted = running.get(request, ""), True
                 outbox.put_nowait(
                     {
                         "type": "done",
@@ -415,44 +457,58 @@ def create_app(
                     }
                 )
             except ServiceError as exc:
-                outbox.put_nowait({"type": "error", "id": request, "npc": npc, "code": exc.code, "message": exc.message})
+                fail(request, npc, exc.code, exc.message)
             except Exception as exc:  # noqa: BLE001 - reported to the game, the socket stays open
-                outbox.put_nowait({"type": "error", "id": request, "npc": npc, "code": "internal_error", "message": str(exc)})
+                logger.exception("reply %s of %s failed", request, npc)
+                fail(request, npc, "internal_error", str(exc))
+            finally:
+                running.pop(request, None)
 
-        def interrupt(message: dict) -> None:
-            request = str(message.get("id", ""))
-            npc, conversation = turns.get(request, (str(message.get("npc", "")), None))
-            heard[request] = str(message.get("heard", ""))
+        def interrupt(request: str, message: dict) -> None:
+            npc, conversation = turns.get(request) or (str(message.get("npc", "")), None)
+            heard = str(message.get("heard", ""))
+            if request in running:
+                running[request] = heard
             try:
-                npcs.companion(slot, npc).interrupt(
-                    heard[request], conversation_id=conversation, turn_id=request
-                )
+                npcs.companion(slot, npc).interrupt(heard, conversation_id=conversation, turn_id=request)
             except ServiceError as exc:
-                outbox.put_nowait({"type": "error", "id": request, "npc": npc, "code": exc.code, "message": exc.message})
+                fail(request, npc, exc.code, exc.message)
 
         sender = asyncio.create_task(send_all())
         try:
             while True:
-                try:
-                    message = json.loads(await websocket.receive_text())
-                except ValueError:
-                    outbox.put_nowait({"type": "error", "code": "invalid_request", "message": "not JSON"})
+                frame = await websocket.receive()
+                if frame["type"] == "websocket.disconnect":
+                    break
+                if frame.get("text") is None:
+                    fail("", "", "invalid_request", "send JSON in text frames")
                     continue
-                kind = message.get("type") if isinstance(message, dict) else None
-                if kind == "reply":
-                    task = asyncio.create_task(one_reply(message))
-                    running.add(task)
-                    task.add_done_callback(running.discard)
-                elif kind == "interrupt":
-                    interrupt(message)
+                try:
+                    message = json.loads(frame["text"])
+                except ValueError:
+                    fail("", "", "invalid_request", "not JSON")
+                    continue
+                if not isinstance(message, dict):
+                    fail("", "", "invalid_request", "send a JSON object")
+                    continue
+                kind, request = message.get("type"), message.get("id")
+                npc = str(message.get("npc", ""))
+                if kind not in ("reply", "interrupt"):
+                    fail(str(request or ""), npc, "invalid_request", f"unknown type {kind!r}")
+                elif not isinstance(request, str) or not request:
+                    fail("", npc, "invalid_request", "every request needs an id of the game's own")
+                elif kind == "reply":
+                    # Kept by the app, not by this socket: a line under way is
+                    # finished and kept in her history if the socket drops.
+                    task = asyncio.create_task(one_reply(request, npc, message))
+                    replies.add(task)
+                    task.add_done_callback(replies.discard)
                 else:
-                    outbox.put_nowait({"type": "error", "code": "invalid_request", "message": f"unknown type {kind!r}"})
+                    interrupt(request, message)
         except WebSocketDisconnect:
             pass
         finally:
             stop_listening()
-            for task in running:
-                task.cancel()
             sender.cancel()
 
     return app

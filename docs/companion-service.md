@@ -19,7 +19,7 @@ A TOML file; paths are relative to it.
 | `data_dir` | `companion-data` | Where NPCs are kept: `slots/<slot>/<npc>/` per save slot, `meta/<npc>/` for memories across runs |
 | `host`, `port` | `127.0.0.1`, `8765` | Where it listens. Any other host needs a `token` |
 | `token` | none | Asked for as `Authorization: Bearer <token>`, and `?token=` on the WebSocket |
-| `idle_close_seconds` | 600 | An NPC not used this long is closed; it comes back from `data_dir` when used |
+| `idle_close_seconds` | 600 | An NPC not used this long, and with no background work under way, is closed; it comes back from `data_dir` when used |
 | `allowed_origins` | none | Web pages allowed to open the WebSocket (a game exported to the web). A browser sends `Origin`; a desktop game does not, and any `Origin` not listed is refused |
 | `[models.foreground]` | required | `base_url`, `model`, optional `api_key`, `temperature`, `max_tokens`, and `[models.foreground.extra_body]` sent as is: her replies. A reasoning model (Qwen 3.5, …) must be told not to think first, e.g. `reasoning_effort = "none"`, or her whole prompt can take longer than the call's 60 s |
 | `[models.background]` | the foreground model, kept short | One model for her background work, or one table per worker (`[models.background.memory]`, …). Left out: the foreground model with temperature 0.1, at most 600 tokens and only the not-thinking keys of its `extra_body` |
@@ -84,10 +84,12 @@ and receives
 - `{"type": "error", "id", "npc", "code", "message"}`,
 - `{"type": "state", "npc", "state"}` when her mood changed between replies.
 
-`id` is the game's own name for the request. One NPC answers one line at a
-time; the next waits. A wrong token or an `Origin` not allowed refuses the
-handshake (HTTP 403). If the socket drops, a reply under way is lost: send
-it again once connected.
+`id` is the game's own name for the request, required on every message.
+Messages are JSON in text frames. One NPC answers one line at a time; the
+next waits. A wrong token or an `Origin` not allowed refuses the handshake
+(HTTP 403). If the socket drops, a reply under way is still finished and kept
+in her history; the game only misses its messages (`inspect` or `state` tell
+where she is). The token never appears in the service's log.
 
 The service answers only to `127.0.0.1`, `localhost` and `::1` as host names
 while it listens on loopback, so that a page in the player's browser cannot
@@ -109,4 +111,5 @@ reach it by a name of its own.
 | `other_character` | 422 | A save of another NPC |
 | `model_unavailable` | 502 | The model could not be reached |
 | `model_timeout` | 504 | The model did not answer in time |
+| `not_found`, `method_not_allowed` | 404, 405 | A path or a method the service does not have |
 | `internal_error` | 500 | Anything else; the service log has the details |

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 
-from .app import create_app
+from .app import HideTokens, create_app
 from .config import load_config
 
 
@@ -13,9 +13,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     config = load_config(args.config)
 
+    import logging
+
     import uvicorn
 
-    uvicorn.run(create_app(config), host=config.host, port=config.port)
+    server = uvicorn.Config(create_app(config), host=config.host, port=config.port)
+    # After uvicorn has set its logging up: the token stays out of the log.
+    for name in ("uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).addFilter(HideTokens())
+    uvicorn.Server(server).run()
 
 
 if __name__ == "__main__":

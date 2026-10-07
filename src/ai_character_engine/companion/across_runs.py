@@ -38,8 +38,7 @@ class AcrossRuns:
 
     def __init__(self, directory: str | Path) -> None:
         self.path = Path(directory) / FILE_NAME
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._seen: tuple[int, int] | None = None
+        self._seen: tuple[int, int, int] | None = None
         self._memories: list[AcrossRunsMemory] = []
         self._refresh()
 
@@ -48,12 +47,14 @@ class AcrossRuns:
         self._refresh()
         return self._memories
 
-    def _stamp(self) -> tuple[int, int] | None:
+    def _stamp(self) -> tuple[int, int, int] | None:
+        """Every write moves a new file into place: its inode changes even
+        where the clock is too coarse for the time to."""
         try:
             stat = self.path.stat()
         except FileNotFoundError:
             return None
-        return (stat.st_mtime_ns, stat.st_size)
+        return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
     def _refresh(self) -> None:
         stamp = self._stamp()
@@ -86,6 +87,7 @@ class AcrossRuns:
         return memories
 
     def _write(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(self.path.name + ".tmp")
         temporary.write_text(
             "".join(

@@ -90,3 +90,22 @@ def test_a_memory_across_runs_written_elsewhere_is_in_her_next_reply(tmp_path):
     assert "The fire." not in before
     assert listed == ["The fire."]
     assert "- The fire." in after
+
+
+def test_a_rewrite_of_the_same_size_and_time_is_still_seen(tmp_path):
+    """On a file system with coarse times, a rewrite can keep size and mtime;
+    every write moves a new file into place, so its inode tells."""
+    import os
+
+    from ai_character_engine.companion.across_runs import AcrossRuns
+
+    reader = AcrossRuns(tmp_path)
+    writer = AcrossRuns(tmp_path)
+    writer.add("The fire.", tags=(), created_at=0.0, run=1)
+    assert [memory.text for memory in reader.memories] == ["The fire."]
+    before = os.stat(writer.path)
+    writer.forget(writer.memories[0].id)
+    writer.add("The bell.", tags=(), created_at=0.0, run=1)  # same length as "The fire."
+    os.utime(writer.path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert os.stat(writer.path).st_size == before.st_size
+    assert [memory.text for memory in reader.memories] == ["The bell."]

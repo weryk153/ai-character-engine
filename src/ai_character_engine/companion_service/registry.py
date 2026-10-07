@@ -98,6 +98,21 @@ class _Npc:
             self.companion.character = self.character
 
 
+async def _close_client(client: Any) -> None:
+    """The HTTP connections of a model client: OpenAICompatibleChatClient
+    keeps them in its AsyncOpenAI ``client``."""
+    for owner in (client, getattr(client, "client", None)):
+        close = getattr(owner, "aclose", None) or getattr(owner, "close", None)
+        if owner is not None and callable(close):
+            try:
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.warning("closing a model client failed", exc_info=True)
+            return
+
+
 class NpcRegistry:
     def __init__(
         self, config: ServiceConfig, *, make_llm: Callable[[ModelConfig], Any] = openai_client
@@ -216,8 +231,8 @@ class NpcRegistry:
         # A copy: a game may open or drop NPCs while one is being closed.
         for key, entry in list(self._npcs.items()):
             companion = entry.companion
-            if companion is None or companion.busy:
-                continue
+            if companion is None or companion.busy or companion.working:
+                continue  # closing would cancel what she is in the middle of
             if now - entry.used_at >= self.config.idle_close_seconds:
                 entry.companion = None
                 try:
@@ -232,6 +247,13 @@ class NpcRegistry:
             old, entry.companion = entry.companion, None
             if old is not None:
                 await self._retire(old)
+        clients = [self._foreground]
+        if isinstance(self._background, dict):
+            clients += self._background.values()
+        elif self._background is not None:
+            clients.append(self._background)
+        for client in {id(client): client for client in clients}.values():
+            await _close_client(client)
 
     # --- listeners ------------------------------------------------------------------
 

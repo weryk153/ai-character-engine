@@ -554,7 +554,8 @@ It also exports `MemoryConflict`, `CompanionSettings` has `memory_conflicts`,
 and `CharacterCompanion` has `memory_conflicts()`, `resolve_conflict()` and
 `replaced_memories()`. From 1.3.0 it exports `AcrossRunsMemory`, `StateBusy`,
 `StateFormatError`, `save_state_file` and `load_state_file`;
-`CharacterCompanion` takes `meta_dir` and has `export_state()`,
+`CharacterCompanion` takes `meta_dir` and `model_access`, has `working`
+(background work under way), `export_state()`,
 `import_state()`, `remember_across_runs()`, `across_runs()` and
 `forget_across_runs()`; `CompanionSettings` has `across_runs_framing` and
 `across_runs_in_context`.

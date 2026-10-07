@@ -1402,6 +1402,12 @@ class CharacterCompanion:
         return self._bridge.busy
 
     @property
+    def working(self) -> bool:
+        """Whether background work or its commits are under way (settle()
+        waits for them)."""
+        return bool(self._pending)
+
+    @property
     def sees(self) -> bool:
         """Whether reply() takes pictures: a vision pipeline was given."""
         return self._bridge.vision is not None

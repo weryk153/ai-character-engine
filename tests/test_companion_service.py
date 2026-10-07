@@ -441,6 +441,7 @@ def test_closing_idle_npcs_survives_an_npc_opened_meanwhile(tmp_path):
     with client:
         opened(client)
         client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"})
+        client.post("/slots/s1/npcs/mira/save")  # waits for her background work
         npcs = client.app.state.npcs
         companion = npcs.companion("s1", "mira")
         close = companion.close
@@ -545,3 +546,146 @@ def test_every_error_is_a_code_and_a_message(tmp_path):
     assert (blank.status_code, blank.json()["code"]) == (400, "invalid_request")
     assert (missing["type"], missing["id"], missing["code"]) == ("error", "r1", "invalid_request")
     assert crashed.status_code == 500 and crashed.json() == {"code": "internal_error", "message": "disk on fire"}
+
+
+
+# --- the smaller things a game or its player may meet ------------------------------
+
+
+class HeldThinker(Thinker):
+    """Her background model, held until ``gate`` is set."""
+
+    def __init__(self) -> None:
+        self.gate = asyncio.Event()
+
+    async def generate(self, messages, *, tools=None):
+        await self.gate.wait()
+        return await super().generate(messages, tools=tools)
+
+
+def test_an_npc_with_background_work_under_way_is_not_closed_as_idle(tmp_path):
+    thinker = HeldThinker()
+    config = ServiceConfig(
+        data_dir=tmp_path / "data",
+        foreground=ModelConfig(base_url="http://speaker", model="speaker"),
+        background=ModelConfig(base_url="http://thinker", model="thinker"),
+        settings={"emotion_every": 0, "reply_check_every": 0, "mood_every": 0, "memory_every": 1,
+                  "memory_conflicts": False, "self_memory_every": 0, "goal_every": 0,
+                  "reflection_every": 0, "user_state_every": 0, "diary_every_hours": 0},
+    )
+    models = {"speaker": Speaker(), "thinker": thinker}
+    client = TestClient(create_app(config, make_llm=lambda model: models[model.model]), base_url="http://127.0.0.1")
+    with client:
+        opened(client)
+        client.post("/slots/s1/npcs/mira/reply", json={"text": DAWN})
+        npcs = client.app.state.npcs
+        while_working = client.portal.call(npcs.close_idle, float("inf"))
+        client.portal.call(thinker.gate.set)
+        client.portal.call(npcs.companion("s1", "mira").settle)
+        after = client.portal.call(npcs.close_idle, float("inf"))
+        remembered = client.get("/slots/s1/npcs/mira/inspect").json()["memories"]
+    assert while_working == []
+    assert after == [("s1", "mira")]
+    assert remembered == ["Dawn works at a print shop."]
+
+
+def test_a_dropped_socket_does_not_cost_her_the_line_she_was_saying(tmp_path):
+    speaker = Slow()
+    client, _ = service(tmp_path, speaker=speaker)
+    with client:
+        opened(client)
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hello", "conversation_id": "pier"})
+            assert socket.receive_json()["type"] == "delta"
+        client.portal.call(speaker.gate.set)
+        companion = client.app.state.npcs.companion("s1", "mira")
+
+        async def until_she_is_done():
+            while companion.busy:
+                await asyncio.sleep(0.01)
+
+        client.portal.call(until_she_is_done)
+        history = [message.content for message in companion.runtime.history]
+    assert history == ["hello", "Good morning. The sea is calm."]
+
+
+def test_a_socket_message_needs_an_id_and_text_frames(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        opened(client)
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "npc": "mira", "text": "hi"})
+            no_id = socket.receive_json()
+            socket.send_bytes(b"\x00\x01")
+            binary = socket.receive_json()
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi"})
+            still_there = socket.receive_json()
+    assert (no_id["type"], no_id["code"]) == ("error", "invalid_request")
+    assert (binary["type"], binary["code"]) == ("error", "invalid_request")
+    assert still_there["id"] == "r1"
+
+
+def test_a_socket_remembers_only_its_recent_requests():
+    from ai_character_engine.companion_service.app import RecentTurns
+
+    turns = RecentTurns(kept=2)
+    for number in range(3):
+        turns.add(f"r{number}", "mira", "pier")
+    assert turns.get("r0") is None
+    assert turns.get("r2") == ("mira", "pier")
+
+
+def test_reading_memories_across_runs_writes_nothing(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        listed = client.get("/npcs/ghost/across-runs")
+    assert listed.json() == []
+    assert not (tmp_path / "data" / "meta" / "ghost").exists()
+
+
+def test_an_unknown_path_or_method_is_a_code_and_a_message(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        missing = client.get("/nowhere")
+        wrong = client.patch("/health")
+    assert (missing.status_code, missing.json()["code"]) == (404, "not_found")
+    assert (wrong.status_code, wrong.json()["code"]) == (405, "method_not_allowed")
+    assert set(missing.json()) == {"code", "message"}
+
+
+def test_the_model_clients_are_closed_with_the_service(tmp_path):
+    class Closable(Speaker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+            class Inner:
+                async def close(inner) -> None:
+                    self.closed = True
+
+            self.client = Inner()
+
+    speaker, thinker = Closable(), Closable()
+    config = ServiceConfig(
+        data_dir=tmp_path / "data",
+        foreground=ModelConfig(base_url="http://speaker", model="speaker"),
+        background=ModelConfig(base_url="http://thinker", model="thinker"),
+    )
+    models = {"speaker": speaker, "thinker": thinker}
+    with TestClient(create_app(config, make_llm=lambda model: models[model.model]), base_url="http://127.0.0.1"):
+        pass
+    assert (speaker.closed, thinker.closed) == (True, True)
+
+
+def test_the_token_does_not_reach_the_server_log():
+    import logging
+
+    from ai_character_engine.companion_service.app import HideTokens
+
+    record = logging.LogRecord(
+        "uvicorn.error", logging.INFO, __file__, 1, '%s - "WebSocket %s" [accepted]',
+        ("127.0.0.1:5000", "/slots/s1/ws?token=s3cret&x=1"), None,
+    )
+    assert HideTokens().filter(record)
+    assert "s3cret" not in record.getMessage()
+    assert "token=***&x=1" in record.getMessage()
