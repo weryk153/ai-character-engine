@@ -12,6 +12,7 @@ host one object with a `reply()` method and takes care of the rest.
 | Conversations that keep their own history and memory | scope and history switching |
 | Interruption that keeps what was actually heard | cancellation and history repair |
 | State that survives a restart | persistence |
+| A save a game keeps, and a world that begins again | packing, clocks, a memory apart |
 
 Use the parts directly (see [architecture](architecture.md)) when the host needs
 several characters in one world, its own commit policies or distributed workers.
@@ -525,6 +526,7 @@ model can run every worker on every turn.
 | `language` | empty | The language memories, goals and thoughts are written in; empty means the language the user writes in |
 | `self_memories_kept`, `self_memories_shown` | 40, 12 | How many things she said about herself she keeps (the oldest beyond are forgotten), and how many of the newest stand in the conversation |
 | `mood_half_life_seconds`, `mood_floor` | 300, 0.15 | Her mood's intensity halves every this many seconds; below the floor she is neutral again |
+| `across_runs_framing`, `across_runs_in_context` | None, 8 | The line above what she remembers across runs in her system prompt (None: `From before this world began again, you remember:`), and how many of the newest go there (0: none) |
 
 ## Telling what the engine offers
 
@@ -550,7 +552,52 @@ longer agree are found.
 has `user_state`, and `CharacterCompanion` has `write_diary()` and `diary()`.
 It also exports `MemoryConflict`, `CompanionSettings` has `memory_conflicts`,
 and `CharacterCompanion` has `memory_conflicts()`, `resolve_conflict()` and
-`replaced_memories()`.
+`replaced_memories()`. From 1.3.0 it exports `AcrossRunsMemory`, `StateBusy`,
+`StateFormatError`, `save_state_file` and `load_state_file`;
+`CharacterCompanion` takes `meta_dir` and has `export_state()`,
+`import_state()`, `remember_across_runs()`, `across_runs()` and
+`forget_across_runs()`; `CompanionSettings` has `across_runs_framing` and
+`across_runs_in_context`.
+
+## Games: saves, a new game, and the game's clock
+
+A game keeps her in its own save. `await export_state()` gives everything she
+keeps as bytes: her state and mood, her memories of every conversation and
+what she said about herself, her goals, thoughts and beliefs, her diary and
+what her days were made of, and the conversations she holds with their notes.
+It waits for a reply under way and for her background work to settle, so that
+a save holds whole turns; `StateBusy` after `timeout` (120 s) means nothing was
+saved, and her work goes on. `import_state(data)` makes a new companion what
+the save held, before she first speaks: in `storage_dir` too, which it
+replaces. To load a save once she has spoken, start a new companion.
+`await save_state_file(npc, path)` and `load_state_file(npc, path)` do the
+same with a file, written beside it first and moved into place.
+
+A save is a zip: `manifest.json` names its format, the engine that made it,
+the character, her clock when it was made and the sha256 of every other file.
+`import_state` raises `StateFormatError` for a damaged save or one of a newer
+format, and `ValueError` for a save of another character unless
+`allow_other_character=True`, which moves it under her id. Nothing changes
+when it raises. A new game needs no call: a new companion with a fresh
+`storage_dir`, or none.
+
+`clock` is the game's: her mood fades by it, what she writes down (memories,
+what she said about herself, goals, thoughts) is dated by it, ranked by how old
+it is by it, and her short-term goals and her diary's day are measured by it.
+A clock turned back, by the game or by a save loaded later, breaks nothing:
+what is dated after it counts as new, and her mood as of now. Timings of the
+engine's own work (how late a background result is, how long a job waited) stay
+on the system clock.
+
+Something she keeps when the world begins again is written by the game, never
+by her background work: `CharacterCompanion(..., meta_dir=...)` and
+`remember_across_runs(text, tags=(), run=None)` (it returns an id;
+`across_runs()` lists them as `AcrossRunsMemory`, `forget_across_runs(id)`
+removes one). They are kept in `meta_dir/across_runs.jsonl`, not in a save:
+a new game and a loaded save both leave them as they are. The newest
+`across_runs_in_context` (8) are in her system prompt after who she is, under
+`across_runs_framing`; it changes when they do. Give each character its own
+`meta_dir`.
 
 ## Lifecycle
 
