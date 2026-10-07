@@ -824,7 +824,7 @@ class _GoalsInMind(GoalManager):
         self._conversation = conversation
 
     def active_goals(self, *, character_id: str) -> tuple[GoalRecord, ...]:
-        now = datetime.now(UTC)
+        now = self._now()
         cutoff = now - self._max_age
         short_cutoff = None if self._short_term_max_age is None else now - self._short_term_max_age
         here = _ANY if self._conversation is None else self._conversation()
@@ -1065,6 +1065,9 @@ class CharacterCompanion:
             goal_scope_id=character.id,
         )
         self.runtime.stream_text_with_tools = self.settings.stream_text_with_tools
+        # What she writes down is dated by her clock, and ages by it.
+        self.runtime.memory_manager.clock = self._clock
+        self.runtime.goal_manager.clock = self._clock
         self._forget_how_the_user_was()
         self._bridge = CharacterHostBridge(self.runtime, vision=vision, config=bridge_config)
 
@@ -1121,6 +1124,10 @@ class CharacterCompanion:
             policy.mood_floor = self.settings.mood_floor
             policy.mood_read_for = lambda revision: revision in self._mood_read_at
         return policy
+
+    def _now(self) -> datetime:
+        """Her clock, as a date."""
+        return datetime.fromtimestamp(self._clock(), UTC)
 
     def _state_file(self) -> Path | None:
         return self._dir / "state.json" if self._dir is not None else None
@@ -2126,7 +2133,7 @@ class CharacterCompanion:
         scope = self._self_scope()
         before = self._memory_store.list_for_character(scope)
         summary = str(proposal.payload.get("summary", ""))
-        now = datetime.now(UTC)
+        now = self._now()
         same = [r.id for r in before if r.is_active and _the_same_fact(r.summary, summary)]
         if same:
             self._memory_store.replace_for_character(
@@ -2161,7 +2168,7 @@ class CharacterCompanion:
         over = {record.id for shelf in shelves.values() for record in shelf[:-kept]}
         if not over:
             return
-        now = datetime.now(UTC)
+        now = self._now()
         self._memory_store.replace_for_character(
             scope,
             [
@@ -2767,7 +2774,7 @@ class CharacterCompanion:
         if from_before:
             dated_before = min(
                 (record.created_at for record in self._memory_store.list_for_character(scope)),
-                default=datetime.now(UTC),
+                default=self._now(),
             )
         self._rewrite(
             scope, summaries, edited_from, "character_statement", dated_before, carry_over=True
@@ -2823,7 +2830,7 @@ class CharacterCompanion:
             if record.is_active and shown not in wanted and (removable is None or shown in removable):
                 forgotten.setdefault(shown, record)
                 gone.add(record.id)
-                record = replace(record, status="forgotten", forgotten_at=datetime.now(UTC))
+                record = replace(record, status="forgotten", forgotten_at=self._now())
             records.append(record)
         # A fact that replaced another, forgotten: the one it replaced is held
         # again. A wrong replacement is undone by removing the newer line.
@@ -2857,6 +2864,7 @@ class CharacterCompanion:
                 kind=kind,
                 importance=0.7,
                 metadata=metadata,
+                created_at=self._now(),
             )
             if dated_before is not None:
                 earlier = timedelta(seconds=len(new) - number)

@@ -183,8 +183,9 @@ class CognitiveCommitCoordinator:
         self._attempts: dict[str, int] = {}
         # What an apply has to tell beyond the record it wrote, by proposal.
         self._told: dict[str, dict] = {}
-        # Dates her mood when it is written. A host with its own clock
-        # (CharacterCompanion) sets it, so that her mood fades by that clock.
+        # Dates her mood, her thoughts and her goals when they are written. A
+        # host with its own clock (CharacterCompanion) sets it, so that they
+        # fade and age by that clock.
         self.clock: Callable[[], float] = time.time
         # How her mood fades before a new reading is weighed against it
         # (CompanionSettings.mood_half_life_seconds/mood_floor).
@@ -945,6 +946,7 @@ class CognitiveCommitCoordinator:
                     "evidence_type": provenance.get("evidence_type"),
                     **_conversation_of(provenance),
                 },
+                created_at=datetime.fromtimestamp(self.clock(), UTC),
             )
             committed = manager.commit_reflection(record)
             return committed.reflection.id
@@ -954,6 +956,7 @@ class CognitiveCommitCoordinator:
             if manager is None:
                 raise RuntimeError("goal manager is not configured")
             signals = tuple(self._resolve_goal_signal(raw, proposal) for raw in proposal.payload["motivation_signals"])
+            dated = datetime.fromtimestamp(self.clock(), UTC)
             record = GoalRecord(
                 character_id=runtime.goal_scope_id,
                 objective=str(proposal.payload["objective"]),
@@ -971,6 +974,8 @@ class CognitiveCommitCoordinator:
                     "foreground_event_id": proposal.provenance.get("foreground_event_id"),
                     **_conversation_of(proposal.provenance),
                 },
+                created_at=dated,
+                updated_at=dated,
             )
             committed = manager.commit_candidate(record)
             return committed.goal.id

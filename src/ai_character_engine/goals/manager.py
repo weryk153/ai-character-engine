@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -21,6 +23,12 @@ class GoalManager:
     def __init__(self, *, store: GoalStore | None = None) -> None:
         self.store = store or InMemoryGoalStore()
         self.last_commit_result: GoalCommitResult | None = None
+        # What a goal is dated by when it changes. A host with its own clock
+        # (CharacterCompanion, a game) sets it, so that goals age by it.
+        self.clock: Callable[[], float] = time.time
+
+    def _now(self) -> datetime:
+        return datetime.fromtimestamp(self.clock(), UTC)
 
     def commit_candidate(self, record: GoalRecord) -> GoalCommitResult:
         before = self.store.list_goals(record.character_id)
@@ -35,10 +43,10 @@ class GoalManager:
                 candidate = record
                 records.append(candidate)
             else:
-                candidate = self._merge(records[existing_index], record)
+                candidate = self._merge(records[existing_index], record, now=self._now())
                 records[existing_index] = candidate
 
-            records = self._reconcile_conflicts(records)
+            records = self._reconcile_conflicts(records, now=self._now())
             self.store.replace_goals(record.character_id, records)
         except Exception:
             self.store.replace_goals(record.character_id, before)
@@ -75,12 +83,13 @@ class GoalManager:
         current = records[index]
         metadata = dict(current.metadata)
         transitions = list(metadata.get("transitions", ()))
+        now = self._now()
         transitions.append(
             {
                 "from": current.status.value,
                 "to": status.value,
                 "reason": cleaned_reason,
-                "at": datetime.now(UTC).isoformat(),
+                "at": now.isoformat(),
             }
         )
         metadata["transitions"] = transitions
@@ -88,10 +97,10 @@ class GoalManager:
             current,
             status=status,
             metadata=metadata,
-            updated_at=datetime.now(UTC),
+            updated_at=now,
         )
         try:
-            records = self._reconcile_conflicts(records)
+            records = self._reconcile_conflicts(records, now=now)
             self.store.replace_goals(character_id, records)
         except Exception:
             self.store.replace_goals(character_id, before)
@@ -115,7 +124,7 @@ class GoalManager:
         return tuple(self.store.list_goals(character_id))
 
     @staticmethod
-    def _merge(old: GoalRecord, new: GoalRecord) -> GoalRecord:
+    def _merge(old: GoalRecord, new: GoalRecord, *, now: datetime | None = None) -> GoalRecord:
         signals: dict[tuple[str, tuple[str, str]], MotivationSignal] = {
             signal.key: signal for signal in old.motivation_signals
         }
@@ -134,11 +143,13 @@ class GoalManager:
             source_task_ids=tuple(dict.fromkeys((*old.source_task_ids, *new.source_task_ids))),
             base_revisions=tuple(dict.fromkeys((*old.base_revisions, *new.base_revisions))),
             metadata=metadata,
-            updated_at=datetime.now(UTC),
+            updated_at=now or datetime.now(UTC),
         )
 
     @staticmethod
-    def _reconcile_conflicts(records: list[GoalRecord]) -> list[GoalRecord]:
+    def _reconcile_conflicts(
+        records: list[GoalRecord], *, now: datetime | None = None
+    ) -> list[GoalRecord]:
         conflict_groups: dict[str, list[int]] = {}
         for index, record in enumerate(records):
             if record.status in {GoalStatus.COMPLETED, GoalStatus.RETIRED, GoalStatus.PAUSED}:
@@ -152,7 +163,7 @@ class GoalManager:
             if len({records[i].semantic_key for i in indexes}) > 1
             for index in indexes
         }
-        now = datetime.now(UTC)
+        now = now or datetime.now(UTC)
         reconciled: list[GoalRecord] = []
         for index, record in enumerate(records):
             if record.status in {GoalStatus.COMPLETED, GoalStatus.RETIRED, GoalStatus.PAUSED}:

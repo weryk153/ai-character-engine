@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from datetime import UTC, datetime
+
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.llm.models import LLMResponse
 from ai_character_engine.state.models import CharacterStateSnapshot
@@ -52,6 +56,12 @@ class MemoryManager:
         self.revision_policy = revision_policy or HeuristicMemoryRevisionPolicy()
         self.retrieval_limit = retrieval_limit
         self.auto_consolidate_threshold = auto_consolidate_threshold
+        # What memories are dated by, and the "now" they are ranked against. A
+        # host with its own clock (CharacterCompanion, a game) sets it.
+        self.clock: Callable[[], float] = time.time
+
+    def _now(self) -> datetime:
+        return datetime.fromtimestamp(self.clock(), UTC)
         self.last_ledger_entry: EventLedgerEntry | None = None
         self.last_consolidation_result: MemoryConsolidationResult | None = None
         self.last_revision_result: MemoryRevisionResult | None = None
@@ -73,7 +83,7 @@ class MemoryManager:
         self.last_retrieval_trace = None
         result = retrieve_with_trace(
             self.retriever, character_id=character_id,
-            query=event_query(event), limit=self.retrieval_limit,
+            query=event_query(event), limit=self.retrieval_limit, now=self._now(),
         )
         self.last_retrieval_trace = result.trace
         return result
@@ -93,7 +103,7 @@ class MemoryManager:
         result = await retrieve_with_trace_async(
             self.retriever, character_id=character_id,
             query=event_query(event), limit=self.retrieval_limit,
-            rewrite_context=rewrite_context,
+            rewrite_context=rewrite_context, now=self._now(),
         )
         self.last_retrieval_trace = result.trace
         return result
@@ -146,6 +156,7 @@ class MemoryManager:
                     character_id=character_id,
                     plan=revision_plan,
                     new_record=None,
+                    now=self._now(),
                 )
                 self.last_revision_result = revision_result
             return None
@@ -159,6 +170,7 @@ class MemoryManager:
                 character_id=character_id,
                 plan=revision_plan,
                 new_record=None,
+                now=self._now(),
             )
             self.last_revision_result = revision_result
             return None
@@ -190,12 +202,14 @@ class MemoryManager:
                 "source_content": event.content,
                 "evidence_type": classify_memory_evidence(event),
             },
+            created_at=self._now(),
         )
         written, revision_result = apply_revision(
             store=self.store,
             character_id=character_id,
             plan=revision_plan,
             new_record=record,
+            now=record.created_at,
         )
         self.last_revision_result = revision_result
         self._maybe_auto_consolidate(character_id)
@@ -232,6 +246,7 @@ class MemoryManager:
             source_event_id=source_event_id,
             source_event_type=source_event_type,
             metadata=dict(metadata or {}),
+            created_at=self._now(),
         )
         self.store.add(record)
         self._maybe_auto_consolidate(character_id)
