@@ -5,6 +5,7 @@ from ai_character_engine.memory.self_kinds import CONVERSATION_SELF_MEMORY_KINDS
 from ai_character_engine.state.mood import CHARACTER_MOODS
 
 from .access import ModelAccess, PoliteClient
+from .across_runs import AcrossRunsMemory
 from .companion import (
     ACKNOWLEDGEMENTS,
     ASSISTANT_SPEAK,
@@ -21,6 +22,7 @@ from .settings import CompanionSettings
 
 __all__ = [
     "ACKNOWLEDGEMENTS",
+    "AcrossRunsMemory",
     "ASSISTANT_SPEAK",
     "CHARACTER_MOODS",
     "CONVERSATION_SELF_MEMORY_KINDS",

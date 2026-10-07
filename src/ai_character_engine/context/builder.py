@@ -223,6 +223,9 @@ class ContextBuilder:
         # after who she is. It changes once a day, and the system prompt with
         # it; CharacterCompanion sets it.
         self.diary: tuple[str, str] | None = None
+        # What she remembers from before the world began again, framed: right
+        # after who she is, before her diary. CharacterCompanion sets it.
+        self.across_runs: str | None = None
 
     def build_system_prompt(
         self,
@@ -247,6 +250,8 @@ class ContextBuilder:
             # background: printing both would show it twice in her own
             # conversation prompt.
             sections.append(f"Background:\n{character.background}")
+        if self.across_runs:
+            sections.append(self.across_runs)
         if self.diary is not None and self.diary[1].strip():
             date, text = self.diary
             sections.append(f"From your diary ({date}), in your own words:\n{text.strip()}")

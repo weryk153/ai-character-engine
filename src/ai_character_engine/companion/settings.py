@@ -109,6 +109,13 @@ class CompanionSettings:
     # unless diary_in_context is False; it changes once a day.
     diary_every_hours: float = 24.0
     diary_in_context: bool = True
+    # What she remembers across runs (CharacterCompanion(meta_dir=...),
+    # remember_across_runs): the newest across_runs_in_context of them go in
+    # her system prompt after who she is, under across_runs_framing (None:
+    # "From before this world began again, you remember:"). A game may say it
+    # its own way ("You can't shake the feeling you have been here before:").
+    across_runs_framing: str | None = None
+    across_runs_in_context: int = 8
 
     def __post_init__(self) -> None:
         for name in (
@@ -128,6 +135,7 @@ class CompanionSettings:
             "max_history_messages",
             "memories_recalled",
             "self_memories_shown",
+            "across_runs_in_context",
         ):
             if int(getattr(self, name)) < 0:
                 raise ValueError(f"{name} must be >= 0")

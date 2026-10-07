@@ -108,6 +108,8 @@ from ai_character_engine.vision import VisionFrame, VisionPipeline
 
 from . import save_state
 from .access import ModelAccess, PoliteClient
+from .across_runs import AcrossRuns, AcrossRunsMemory
+from .across_runs import section as across_runs_section
 from .save_state import StateBusy, StateFormatError
 from .settings import CompanionSettings
 
@@ -967,6 +969,7 @@ class CharacterCompanion:
         state_policy: CharacterStatePolicy | None = None,
         bridge_config: HostBridgeConfig | None = None,
         clock: Callable[[], float] | None = None,
+        meta_dir: str | Path | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, reply_check,
@@ -978,7 +981,12 @@ class CharacterCompanion:
         Without ``storage_dir`` everything is kept in memory only.
 
         ``clock`` returns the time in seconds since the epoch; her mood is
-        dated and fades by it. The system clock when not given.
+        dated and fades by it, and what she writes down is dated and ages by
+        it. The system clock when not given.
+
+        ``meta_dir`` holds what she remembers across runs of a game's world
+        (remember_across_runs): apart from ``storage_dir``, not in a save.
+        Without it there is no such memory.
         """
         self.settings = settings or CompanionSettings()
         self._clock: Callable[[], float] = clock or time.time
@@ -1060,6 +1068,8 @@ class CharacterCompanion:
         builder.mood_floor = self.settings.mood_floor
         builder.clock = self._clock
         builder.diary = self._diary_in_context()
+        self._across_runs = AcrossRuns(meta_dir) if meta_dir is not None else None
+        builder.across_runs = self._across_runs_in_context()
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -2600,6 +2610,40 @@ class CharacterCompanion:
     def flush(self) -> None:
         """Save state; the companion keeps running."""
         self._save_state()
+
+    # --- across runs -----------------------------------------------------------
+
+    def _across_runs_in_context(self) -> str | None:
+        if self._across_runs is None:
+            return None
+        return across_runs_section(
+            self._across_runs.memories,
+            framing=self.settings.across_runs_framing,
+            shown=self.settings.across_runs_in_context,
+        )
+
+    def remember_across_runs(
+        self, text: str, *, tags: Sequence[str] = (), run: int | None = None
+    ) -> str:
+        """Something she keeps when the game's world begins again: written by
+        the game, never by her background work. Her system prompt holds the
+        newest ``across_runs_in_context``. Returns its id. Raises
+        ``RuntimeError`` without ``meta_dir``."""
+        if self._across_runs is None:
+            raise RuntimeError("memories across runs need meta_dir")
+        memory = self._across_runs.add(text, tags=tags, created_at=self._clock(), run=run)
+        self.runtime.context_builder.across_runs = self._across_runs_in_context()
+        return memory.id
+
+    def across_runs(self) -> list[AcrossRunsMemory]:
+        """What she remembers across runs, oldest first."""
+        return [] if self._across_runs is None else list(self._across_runs.memories)
+
+    def forget_across_runs(self, memory_id: str) -> bool:
+        if self._across_runs is None or not self._across_runs.forget(memory_id):
+            return False
+        self.runtime.context_builder.across_runs = self._across_runs_in_context()
+        return True
 
     # --- saves -----------------------------------------------------------------
 
