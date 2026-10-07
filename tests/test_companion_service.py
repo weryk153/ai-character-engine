@@ -5,6 +5,7 @@ does: open an NPC with its persona, talk, pass time, save, load, start again.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from datetime import UTC, datetime
@@ -60,7 +61,28 @@ class Glad:
         return LLMResponse(text=json.dumps(payload), model="glad")
 
 
-def service(tmp_path, *, speaker=None, token=None, host="127.0.0.1", background=None, **settings):
+class Slow(Speaker):
+    """Her model, held mid-line until ``gate`` is set."""
+
+    def __init__(self, *lines: str) -> None:
+        super().__init__(*lines)
+        self.gate = asyncio.Event()
+        self.started = asyncio.Event()
+
+    async def stream_generate(self, messages, *, tools=None):
+        self.calls.append(list(messages))
+        yield LLMStreamChunk(text="Good morning. ")  # she forwards whole sentences
+        self.started.set()
+        await self.gate.wait()
+        yield LLMStreamChunk(text="The sea is calm.")
+        yield LLMStreamChunk(
+            final=True, response=LLMResponse(text="Good morning. The sea is calm.", model="slow")
+        )
+
+
+def service(
+    tmp_path, *, speaker=None, token=None, host="127.0.0.1", background=None, raise_errors=True, **settings
+):
     speaker = speaker or Speaker()
     config = ServiceConfig(
         data_dir=tmp_path / "data",
@@ -83,7 +105,8 @@ def service(tmp_path, *, speaker=None, token=None, host="127.0.0.1", background=
         },
     )
     models = {"speaker": speaker, "thinker": Thinker(), "glad": Glad()}
-    return TestClient(create_app(config, make_llm=lambda model: models[model.model])), speaker
+    app = create_app(config, make_llm=lambda model: models[model.model])
+    return TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=raise_errors), speaker
 
 
 def opened(client, slot="s1", npc="mira", **body):
@@ -183,7 +206,7 @@ def test_the_socket_streams_her_reply_and_takes_an_interruption(tmp_path):
     client, _ = service(tmp_path)
     with client:
         opened(client)
-        with client.websocket_connect("/slots/s1/ws") as socket:
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
             socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hello", "conversation_id": "pier"})
             deltas, done = [], None
             while done is None:
@@ -307,7 +330,7 @@ def test_the_socket_tells_the_game_when_her_mood_changed_after_a_reply(tmp_path)
     )
     with client:
         opened(client)
-        with client.websocket_connect("/slots/s1/ws") as socket:
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
             socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "I brought you tea"})
             told = None
             while told is None:
@@ -336,7 +359,7 @@ def test_a_model_that_cannot_be_reached_is_named_as_such(tmp_path):
     with client:
         opened(client)
         response = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"})
-        with client.websocket_connect("/slots/s1/ws") as socket:
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
             socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi again"})
             streamed = socket.receive_json()
     assert (response.status_code, response.json()["code"]) == (502, "model_unavailable")
@@ -371,3 +394,154 @@ def test_a_model_is_told_not_to_think_and_her_background_work_is_kept_short(tmp_
         "max_tokens": 600,
         "extra_body": {"reasoning_effort": "none"},
     }
+
+
+
+# --- what a game meets when things go wrong (review of the service) -----------------
+
+
+def test_a_load_or_new_game_during_her_line_ends_it_with_a_code(tmp_path):
+    client, speaker = service(tmp_path, speaker=Slow())
+    with client:
+        opened(client)
+        saved = client.post("/slots/s1/npcs/mira/save").json()["data"]
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hello"})
+            assert socket.receive_json()["type"] == "delta"
+            client.post("/slots/s1/npcs/mira/load", json={"data": saved})
+            ended = socket.receive_json()
+        opened(client)
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r2", "npc": "mira", "text": "hello"})
+            assert socket.receive_json()["type"] == "delta"
+            client.delete("/slots/s1")
+            gone = socket.receive_json()
+    assert (ended["type"], ended["id"], ended["code"]) == ("error", "r1", "npc_reloaded")
+    assert (gone["type"], gone["id"], gone["code"]) == ("error", "r2", "npc_reloaded")
+
+
+def test_a_slot_load_that_cannot_be_done_changes_nothing(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        for npc in ("ann", "mira", "zed"):
+            opened(client, npc=npc)
+        client.post("/slots/s1/npcs/ann/reply", json={"text": DAWN})
+        client.post("/slots/s1/npcs/ann/save")
+        miras = client.post("/slots/s1/npcs/mira/save").json()["data"]
+        refused = client.post("/slots/s1/load", json={"npcs": {"mira": miras, "zed": miras}})
+        damaged = client.post("/slots/s1/npcs/ann/load", json={"data": base64.b64encode(b"PK nonsense").decode()})
+        ann = client.get("/slots/s1/npcs/ann/inspect").json()["memories"]
+    assert (refused.status_code, refused.json()["code"]) == (422, "other_character")
+    assert (damaged.status_code, damaged.json()["code"]) == (422, "bad_save")
+    assert ann == ["Dawn works at a print shop."]
+
+
+def test_closing_idle_npcs_survives_an_npc_opened_meanwhile(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        opened(client)
+        client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"})
+        npcs = client.app.state.npcs
+        companion = npcs.companion("s1", "mira")
+        close = companion.close
+
+        async def close_while_a_game_opens_another():
+            npcs.open("s1", "ren", npcs.entry("s1", "mira").character)
+            await close()
+
+        companion.close = close_while_a_game_opens_another
+        closed = client.portal.call(npcs.close_idle, float("inf"))
+    assert closed == [("s1", "mira")]
+
+
+def test_two_loads_at_once_leave_one_companion_and_none_running_unseen(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        opened(client)
+        npcs = client.app.state.npcs
+        built = []
+        build = npcs._build
+        npcs._build = lambda slot, npc, entry: built.append(build(slot, npc, entry)) or built[-1]
+        first = npcs.companion("s1", "mira")
+        close = first.close
+
+        async def slowly():  # her workers take a moment to stop
+            await asyncio.sleep(0.05)
+            await close()
+
+        first.close = slowly
+
+        async def twice():
+            return await asyncio.gather(npcs.reopen("s1", "mira"), npcs.reopen("s1", "mira"))
+
+        client.portal.call(twice)
+        current = npcs.entry("s1", "mira").companion
+        left_open = [companion for companion in built if not companion._closed and companion is not current]
+    assert left_open == []
+
+
+def test_a_page_in_the_players_browser_cannot_reach_the_npcs(tmp_path):
+    from starlette.websockets import WebSocketDisconnect
+
+    client, _ = service(tmp_path)
+    with client:
+        opened(client)
+        rebound = client.get("/slots/s1/npcs/mira/state", headers={"Host": "evil.example"})
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("ws://127.0.0.1/slots/s1/ws", headers={"Origin": "https://evil.example"}):
+                pass
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:  # Godot sends no Origin
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi"})
+            assert socket.receive_json()["type"] in ("delta", "done")
+    assert rebound.status_code == 400
+
+
+def test_a_numeric_token_and_the_websocket_token(tmp_path):
+    from starlette.websockets import WebSocketDisconnect
+
+    path = tmp_path / "game.toml"
+    path.write_text(
+        "token = 1234\n[models.foreground]\nbase_url = \"http://x\"\nmodel = \"m\"\n", encoding="utf-8"
+    )
+    assert load_config(path).token == "1234"
+    client, _ = service(tmp_path, token="s3cret")
+    with client:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect("ws://127.0.0.1/slots/s1/ws?token=wrong"):
+                pass
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws?token=s3cret") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi"})
+            assert socket.receive_json()["code"] == "npc_not_open"
+
+
+def test_names_differing_only_in_case_are_refused(tmp_path):
+    client, _ = service(tmp_path)
+    with client:
+        upper = client.put("/slots/Slot1/npcs/mira", json={"character": MIRA})
+        npc = client.put("/slots/s1/npcs/Mira", json={"character": MIRA})
+    assert (upper.status_code, upper.json()["code"]) == (400, "invalid_request")
+    assert (npc.status_code, npc.json()["code"]) == (400, "invalid_request")
+
+
+def test_every_error_is_a_code_and_a_message(tmp_path):
+    client, _ = service(tmp_path, raise_errors=False)
+    with client:
+        opened(client)
+        far = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi", "game_time": 1e300})
+        after = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"})
+        blank = client.post("/npcs/mira/across-runs", json={"text": "   "})
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira"})
+            missing = socket.receive_json()
+        npcs = client.app.state.npcs
+
+        def broken(npc):
+            raise RuntimeError("disk on fire")
+
+        npcs.across_runs = broken
+        crashed = client.get("/npcs/mira/across-runs")
+    assert (far.status_code, far.json()["code"]) == (400, "invalid_request")
+    assert after.status_code == 200
+    assert (blank.status_code, blank.json()["code"]) == (400, "invalid_request")
+    assert (missing["type"], missing["id"], missing["code"]) == ("error", "r1", "invalid_request")
+    assert crashed.status_code == 500 and crashed.json() == {"code": "internal_error", "message": "disk on fire"}

@@ -88,6 +88,9 @@ class ServiceConfig:
     token: str | None = None
     idle_close_seconds: float = 600.0
     settings: Mapping[str, Any] = field(default_factory=dict)
+    # Web pages allowed to open the WebSocket (a game exported to the web);
+    # a browser sends Origin, a desktop game does not.
+    allowed_origins: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _loopback(self.host) and not self.token:
@@ -102,6 +105,9 @@ class ServiceConfig:
 
     def companion_settings(self) -> CompanionSettings:
         return CompanionSettings(**dict(self.settings))
+
+
+LOOPBACK_NAMES = ("127.0.0.1", "localhost", "::1", "[::1]")
 
 
 def _loopback(host: str) -> bool:
@@ -146,7 +152,8 @@ def load_config(path: str | Path) -> ServiceConfig:
         background=background,
         host=str(raw.get("host", "127.0.0.1")),
         port=int(raw.get("port", 8765)),
-        token=raw.get("token"),
+        token=None if raw.get("token") is None else str(raw["token"]),
         idle_close_seconds=float(raw.get("idle_close_seconds", 600.0)),
         settings=dict(raw.get("settings") or {}),
+        allowed_origins=tuple(str(origin) for origin in raw.get("allowed_origins") or ()),
     )

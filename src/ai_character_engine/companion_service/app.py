@@ -11,33 +11,45 @@ import base64
 import binascii
 import contextlib
 import dataclasses
+import hmac
 import json
+import logging
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from ai_character_engine import CharacterProfile
 from ai_character_engine._version import VERSION
 from ai_character_engine.companion import (
     CharacterCompanion,
+    CompanionClosed,
     CompanionSnapshot,
     StateBusy,
     StateFormatError,
     TurnInterrupted,
 )
+from ai_character_engine.companion import save_state
 from ai_character_engine.llm.errors import LLMError
 
-from .config import ModelConfig, ServiceConfig
+from .config import LOOPBACK_NAMES, ModelConfig, ServiceConfig, _loopback
+
+logger = logging.getLogger(__name__)
+from .registry import InvalidRequest as InvalidRequestError
 from .registry import NpcRegistry, ServiceError, Unauthorized, checked, openai_client
 
 
 class StateBusyError(ServiceError):
     status, code = 409, "state_busy"
+
+
+class NpcReloaded(ServiceError):
+    status, code = 409, "npc_reloaded"
 
 
 class BadSave(ServiceError):
@@ -62,6 +74,11 @@ class ModelTimeout(ServiceError):
 
 # --- request bodies ----------------------------------------------------------------
 
+# Seconds since the epoch that a date can hold (years 1-9999): a clock past
+# them would break every later request of the NPC.
+GameTime = Annotated[float, Field(allow_inf_nan=False, ge=-62135596800.0, le=253402300799.0)]
+Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
 
 class CharacterIn(BaseModel):
     name: str = Field(min_length=1)
@@ -74,35 +91,35 @@ class CharacterIn(BaseModel):
 
 class OpenIn(BaseModel):
     character: CharacterIn
-    game_time: float | None = None
+    game_time: GameTime | None = None
 
 
 class ReplyIn(BaseModel):
-    text: str = Field(min_length=1)
+    text: Text
     conversation_id: str | None = None
     notes: list[str] = []
-    game_time: float | None = None
+    game_time: GameTime | None = None
 
 
 class TimeIn(BaseModel):
-    game_time: float | None = None
+    game_time: GameTime | None = None
 
 
 class LoadIn(BaseModel):
     data: str
-    game_time: float | None = None
+    game_time: GameTime | None = None
 
 
 class SlotLoadIn(BaseModel):
     npcs: dict[str, str]
-    game_time: float | None = None
+    game_time: GameTime | None = None
 
 
 class AcrossRunsIn(BaseModel):
-    text: str = Field(min_length=1)
+    text: Text
     tags: list[str] = []
     run: int | None = None
-    game_time: float | None = None
+    game_time: GameTime | None = None
 
 
 # --- helpers -------------------------------------------------------------------------
@@ -130,9 +147,21 @@ async def _export(companion: CharacterCompanion) -> str:
         raise StateBusyError(str(exc)) from exc
 
 
-def _import(companion: CharacterCompanion, data: str) -> None:
+def _save_of(npc: str, data: str) -> bytes:
+    """The save, read and checked before anyone is closed for it."""
+    raw = _bytes(data)
     try:
-        companion.import_state(_bytes(data))
+        manifest, _ = save_state.unpack(raw)
+    except StateFormatError as exc:
+        raise BadSave(str(exc)) from exc
+    if manifest.get("character_id") != npc:
+        raise OtherCharacter(f"a save of {manifest.get('character_id')!r}, not of {npc!r}")
+    return raw
+
+
+def _import(companion: CharacterCompanion, raw: bytes) -> None:
+    try:
+        companion.import_state(raw)
     except StateFormatError as exc:
         raise BadSave(str(exc)) from exc
     except ValueError as exc:
@@ -156,6 +185,13 @@ async def _reply(companion: CharacterCompanion, entry, body: ReplyIn, **options)
             before_turn=entry.take_character,
             **options,
         )
+    except (TurnInterrupted, CompanionClosed, asyncio.CancelledError) as exc:
+        if companion.usable_in_running_loop():
+            raise  # an interruption by the player, or this request cancelled
+        task = asyncio.current_task()
+        if isinstance(exc, asyncio.CancelledError) and task is not None and task.cancelling():
+            raise
+        raise NpcReloaded("she was reloaded (a load or a new game) while she spoke") from exc
     except Exception as exc:
         # The turn reports a model failure as a HostBridgeError caused by it.
         for cause in _causes(exc):
@@ -190,6 +226,10 @@ def create_app(
 
     app = FastAPI(title="AI Character Engine companion service", lifespan=lifespan)
     app.state.npcs = npcs
+    if _loopback(config.host):
+        # A page in the player's browser reaching 127.0.0.1 by a name of its
+        # own (DNS rebinding) is turned away.
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(LOOPBACK_NAMES))
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, exc: ServiceError):
@@ -202,8 +242,16 @@ def create_app(
         )
         return JSONResponse(status_code=400, content={"code": "invalid_request", "message": message})
 
+    @app.exception_handler(Exception)
+    async def unexpected(request: Request, exc: Exception):
+        logger.exception("request failed: %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"code": "internal_error", "message": str(exc)})
+
+    def _token_matches(given: str | None) -> bool:
+        return given is not None and hmac.compare_digest(given.encode(), str(config.token).encode())
+
     def authorized(request: Request) -> None:
-        if config.token and request.headers.get("authorization") != f"Bearer {config.token}":
+        if config.token and not _token_matches(request.headers.get("authorization", "").removeprefix("Bearer ")):
             raise Unauthorized("a token is needed: Authorization: Bearer <token>")
 
     guarded = [Depends(authorized)]
@@ -249,9 +297,10 @@ def create_app(
 
     @app.post("/slots/{slot}/npcs/{npc}/load", dependencies=guarded)
     async def load(slot: str, npc: str, body: LoadIn):
-        _bytes(body.data)  # refused before she is closed
+        npcs.entry(slot, npc)
+        raw = _save_of(npc, body.data)  # refused before she is closed
         npcs.entry(slot, npc).clock.set(body.game_time)
-        _import(await npcs.reopen(slot, npc), body.data)
+        _import(await npcs.reopen(slot, npc), raw)
         return {}
 
     # --- a whole slot ---------------------------------------------------------------
@@ -265,13 +314,15 @@ def create_app(
 
     @app.post("/slots/{slot}/load", dependencies=guarded)
     async def load_slot(slot: str, body: SlotLoadIn):
+        # Every save is read and checked before any NPC is closed for it.
+        saves = {}
         for npc, data in body.npcs.items():
             npcs.entry(slot, npc)
-            _bytes(data)
+            saves[npc] = _save_of(npc, data)
         for npc in npcs.npcs_of(slot):
             npcs.entry(slot, npc).clock.set(body.game_time)
-            if npc in body.npcs:
-                _import(await npcs.reopen(slot, npc), body.npcs[npc])
+            if npc in saves:
+                _import(await npcs.reopen(slot, npc), saves[npc])
             else:
                 await npcs.reopen(slot, npc, fresh=True)
         return {}
@@ -303,8 +354,13 @@ def create_app(
 
     @app.websocket("/slots/{slot}/ws")
     async def stream(websocket: WebSocket, slot: str):
-        if config.token and websocket.query_params.get("token") != config.token:
+        if config.token and not _token_matches(websocket.query_params.get("token")):
             await websocket.close(code=4401)
+            return
+        origin = websocket.headers.get("origin")
+        if origin is not None and origin not in config.allowed_origins:
+            # A web page; a game does not send Origin.
+            await websocket.close(code=4403)
             return
         try:
             checked(slot, "slot")
@@ -329,7 +385,12 @@ def create_app(
         async def one_reply(message: dict) -> None:
             request, npc = str(message.get("id", "")), str(message.get("npc", ""))
             try:
-                body = ReplyIn.model_validate(message)
+                try:
+                    body = ReplyIn.model_validate(message)
+                except ValidationError as exc:
+                    raise InvalidRequestError(
+                        "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
+                    ) from exc
                 companion = npcs.companion(slot, npc, body.game_time)
                 turns[request] = (npc, body.conversation_id)
 

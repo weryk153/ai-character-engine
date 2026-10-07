@@ -7,6 +7,8 @@ built again from its ``storage_dir`` when needed again. All of them share one
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 import shutil
 import time
@@ -22,7 +24,10 @@ from ai_character_engine.llm.local import OpenAICompatibleChatClient
 
 from .config import ModelConfig, ServiceConfig
 
-NAME = re.compile(r"[A-Za-z0-9_-]{1,64}")
+logger = logging.getLogger(__name__)
+
+# Lowercase only: "Slot1" and "slot1" are one directory on macOS and Windows.
+NAME = re.compile(r"[a-z0-9_-]{1,64}")
 
 
 class ServiceError(Exception):
@@ -48,7 +53,7 @@ class NpcNotOpen(ServiceError):
 
 def checked(name: str, what: str) -> str:
     if not NAME.fullmatch(name):
-        raise InvalidRequest(f"{what} must be 1-64 letters, digits, '-' or '_'")
+        raise InvalidRequest(f"{what} must be 1-64 lowercase letters, digits, '-' or '_'")
     return name
 
 
@@ -82,6 +87,9 @@ class _Npc:
     clock: GameClock = field(default_factory=GameClock)
     companion: CharacterCompanion | None = None
     used_at: float = field(default_factory=time.monotonic)
+    # Held while she is replaced: two loads at once must not leave one of
+    # the companions they built running unseen.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def take_character(self) -> None:
         """Called when a turn has her to itself: a persona the game sent while
@@ -167,16 +175,25 @@ class NpcRegistry:
         companion.on_mood_change = lambda snapshot: self._tell(slot, npc, snapshot)
         return companion
 
+    @staticmethod
+    async def _retire(companion: CharacterCompanion) -> None:
+        """Close her now: a line she is in the middle of is cut, not waited
+        for (the game is loading or starting over)."""
+        if companion.busy:
+            companion.interrupt("")
+        await companion.close()
+
     async def reopen(self, slot: str, npc: str, *, fresh: bool = False) -> CharacterCompanion:
         """A new companion for the NPC, before her first word: to load a save
         into (``fresh``: with her storage of this slot emptied)."""
         entry = self.entry(slot, npc)
-        if entry.companion is not None:
-            await entry.companion.close()
-            entry.companion = None
-        if fresh:
-            shutil.rmtree(self.storage_dir(slot, npc), ignore_errors=True)
-        return self.companion(slot, npc)
+        async with entry.lock:
+            old, entry.companion = entry.companion, None
+            if old is not None:
+                await self._retire(old)
+            if fresh:
+                shutil.rmtree(self.storage_dir(slot, npc), ignore_errors=True)
+            return self.companion(slot, npc)
 
     def npcs_of(self, slot: str) -> list[str]:
         checked(slot, "slot")
@@ -186,8 +203,9 @@ class NpcRegistry:
         """A new game in this slot: its NPCs closed and forgotten, its data gone."""
         for npc in self.npcs_of(slot):
             entry = self._npcs.pop((slot, npc))
-            if entry.companion is not None:
-                await entry.companion.close()
+            old, entry.companion = entry.companion, None
+            if old is not None:
+                await self._retire(old)
         shutil.rmtree(self.config.data_dir / "slots" / slot, ignore_errors=True)
 
     async def close_idle(self, now: float | None = None) -> list[tuple[str, str]]:
@@ -195,21 +213,25 @@ class NpcRegistry:
         state is in storage, and they are built again when needed."""
         now = time.monotonic() if now is None else now
         closed = []
-        for key, entry in self._npcs.items():
+        # A copy: a game may open or drop NPCs while one is being closed.
+        for key, entry in list(self._npcs.items()):
             companion = entry.companion
             if companion is None or companion.busy:
                 continue
             if now - entry.used_at >= self.config.idle_close_seconds:
                 entry.companion = None
-                await companion.close()
+                try:
+                    await companion.close()
+                except Exception:
+                    logger.exception("closing idle NPC %s of slot %s failed", key[1], key[0])
                 closed.append(key)
         return closed
 
     async def close(self) -> None:
-        for entry in self._npcs.values():
-            if entry.companion is not None:
-                await entry.companion.close()
-                entry.companion = None
+        for entry in list(self._npcs.values()):
+            old, entry.companion = entry.companion, None
+            if old is not None:
+                await self._retire(old)
 
     # --- listeners ------------------------------------------------------------------
 
