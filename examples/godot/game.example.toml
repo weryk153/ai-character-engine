@@ -1,0 +1,14 @@
+# Copy to game.toml, then: uv run --extra service ai-character-engine-serve --config game.toml
+data_dir = "companion-data"
+
+[models.foreground]
+base_url = "http://127.0.0.1:1234/v1"     # LM Studio, Ollama or any OpenAI-compatible server
+model = "qwen/qwen3.5-9b"
+temperature = 0.8
+
+# [models.background]                     # a second machine or model for her background work
+# base_url = "http://127.0.0.1:1235/v1"
+# model = "qwen/qwen3.5-9b"
+
+[settings]
+across_runs_framing = "You cannot shake the feeling that you have lived this day before:"
