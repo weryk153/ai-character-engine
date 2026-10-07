@@ -157,7 +157,8 @@ def retrieve_with_trace(
         return traced(character_id=character_id, query=query, limit=limit, now=now)
     start = perf_counter()
     kwargs = dict(character_id=character_id, query=query, limit=limit)
-    if now is not None:
+    if now is not None and _takes(retriever.retrieve, "now"):
+        # A retriever written before MemoryManager passed its clock's now.
         kwargs["now"] = now
     memories = tuple(retriever.retrieve(**kwargs))
     return RetrievalResult(
@@ -178,6 +179,18 @@ def retrieve_with_trace(
             selected_memory_ids=tuple(item.record.id for item in memories),
             elapsed_ms=(perf_counter() - start) * 1000,
         ),
+    )
+
+
+def _takes(method, name: str) -> bool:
+    import inspect
+
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return True
+    return name in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     )
 
 

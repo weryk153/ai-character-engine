@@ -203,7 +203,11 @@ def rescoped(records: list, scope: Callable[[str], str]) -> list:
 
 
 def conversations_to_bytes(
-    *, active: str | None, started: bool, kept: list[tuple[str | None, list[Message], list]]
+    *,
+    active: str | None,
+    started: bool,
+    kept: list[tuple[str | None, list[Message], list]],
+    told: Mapping[str | None, frozenset[str]],
 ) -> bytes:
     return json.dumps(
         {
@@ -217,6 +221,9 @@ def conversations_to_bytes(
                     "notes": [
                         [message_to_dict(anchor), message_to_dict(note)] for anchor, note in notes
                     ],
+                    # What the host last passed as what it knows: a line it no
+                    # longer passes is taken out of the notes.
+                    "told": sorted(told.get(conversation_id, ())),
                 }
                 for conversation_id, history, notes in kept
             ],
@@ -225,7 +232,9 @@ def conversations_to_bytes(
     ).encode("utf-8")
 
 
-def conversations_from_bytes(data: bytes) -> tuple[str | None, bool, list]:
+def conversations_from_bytes(
+    data: bytes,
+) -> tuple[str | None, bool, list, dict[str | None, frozenset[str]]]:
     raw = json.loads(data)
     kept = [
         (
@@ -235,7 +244,12 @@ def conversations_from_bytes(data: bytes) -> tuple[str | None, bool, list]:
         )
         for item in raw["conversations"]
     ]
-    return raw["active"], bool(raw["started"]), kept
+    told = {
+        item["id"]: frozenset(str(line) for line in item["told"])
+        for item in raw["conversations"]
+        if item.get("told")
+    }
+    return raw["active"], bool(raw["started"]), kept, told
 
 
 # --- files ---------------------------------------------------------------------

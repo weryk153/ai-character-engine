@@ -2695,7 +2695,7 @@ class CharacterCompanion:
             save_state.DIARY: _jsonl(_diary_line(entry) for entry in self._diary_entries).encode("utf-8"),
             save_state.DAY_LOG: _jsonl(self._day_log).encode("utf-8"),
             save_state.CONVERSATIONS: save_state.conversations_to_bytes(
-                active=self._active, started=self._started, kept=kept
+                active=self._active, started=self._started, kept=kept, told=self._told
             ),
         }
         return save_state.pack(files, character_id=self.character.id, clock=self._clock())
@@ -2729,7 +2729,7 @@ class CharacterCompanion:
             reflections, beliefs = save_state.read_cognition(files[save_state.COGNITION])
             diary = _diary_from_text(files[save_state.DIARY].decode("utf-8"))
             day_log = _day_log_from_text(files[save_state.DAY_LOG].decode("utf-8"))
-            active, started, kept = save_state.conversations_from_bytes(
+            active, started, kept, told = save_state.conversations_from_bytes(
                 files[save_state.CONVERSATIONS]
             )
         except Exception as exc:
@@ -2763,6 +2763,7 @@ class CharacterCompanion:
 
         for forget in (self._told, self._emotions, self._newest_reply, self._last_turn, self._newest_turn):
             forget.clear()
+        self._told.update(told)
         held = OrderedDict((conversation, (history, notes)) for conversation, history, notes in kept)
         for conversation in held:
             # What the host loaded before is older than the save.

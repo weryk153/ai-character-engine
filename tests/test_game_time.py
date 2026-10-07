@@ -165,3 +165,33 @@ def test_her_diary_is_about_her_day_by_her_clock(tmp_path):
     assert "- Dawn works at a print shop." in prompts[0]
     assert "- Mei likes strong black tea." in prompts[0]
     assert entry is not None and entry.date == "2001-04-01"
+
+
+# --- MemoryManager with a clock, as a host builds it -----------------------------
+
+
+def test_a_memory_manager_has_its_last_results_before_its_first_write():
+    from ai_character_engine.memory import MemoryManager
+
+    manager = MemoryManager()
+    assert (
+        manager.last_ledger_entry,
+        manager.last_consolidation_result,
+        manager.last_revision_result,
+        manager.last_retrieval_trace,
+    ) == (None, None, None, None)
+
+
+def test_a_retriever_that_knows_no_now_still_serves_a_memory_manager():
+    from ai_character_engine.events.models import CharacterEvent
+    from ai_character_engine.memory import MemoryManager
+    from ai_character_engine.memory.retriever import MemoryRetriever
+
+    class FromBefore(MemoryRetriever):
+        """A host's retriever of 1.2: retrieve() without ``now``."""
+
+        def retrieve(self, *, character_id, query, limit=5):
+            return []
+
+    manager = MemoryManager(retriever=FromBefore(None))
+    assert manager.retrieve_for_event(character_id="mei", event=CharacterEvent.user_message("hi")) == []

@@ -309,3 +309,25 @@ def test_a_save_loaded_after_her_clock_was_turned_back_keeps_her_mood_fading(tmp
         return dated
 
     assert asyncio.run(scenario()) == clock()
+
+
+def test_what_the_host_knows_is_taken_back_after_a_load_as_before(tmp_path):
+    clock = GameClock()
+
+    async def scenario():
+        first = make(tmp_path / "first", clock, llm=Her("Hm.", "Oh no."))
+        await first.reply("is the bridge there?", conversation_id="a", notes=["- The bridge is intact."])
+        data = await first.export_state()
+        second = make(tmp_path / "second", clock, llm=Her("Oh no."))
+        second.import_state(data)
+        prompts = []
+        for current in (first, second):
+            await current.reply("and now?", conversation_id="a", notes=["- The bridge is destroyed."])
+            prompts.append("\n".join(m.content for m in current.runtime.llm.calls[-1]))
+            await current.close()
+        return prompts
+
+    first_prompt, second_prompt = asyncio.run(scenario())
+    assert "The bridge is intact." not in first_prompt
+    assert "The bridge is intact." not in second_prompt
+    assert "The bridge is destroyed." in second_prompt

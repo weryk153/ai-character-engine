@@ -59,13 +59,13 @@ class MemoryManager:
         # What memories are dated by, and the "now" they are ranked against. A
         # host with its own clock (CharacterCompanion, a game) sets it.
         self.clock: Callable[[], float] = time.time
-
-    def _now(self) -> datetime:
-        return datetime.fromtimestamp(self.clock(), UTC)
         self.last_ledger_entry: EventLedgerEntry | None = None
         self.last_consolidation_result: MemoryConsolidationResult | None = None
         self.last_revision_result: MemoryRevisionResult | None = None
         self.last_retrieval_trace: RetrievalTrace | None = None
+
+    def _now(self) -> datetime:
+        return datetime.fromtimestamp(self.clock(), UTC)
 
     def retrieve_for_event(
         self,
