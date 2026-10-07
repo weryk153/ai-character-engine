@@ -2,10 +2,11 @@ extends Control
 ## One day on a lighthouse island, again and again.
 ##
 ## From 06:00 to 18:00 the player talks to Mira, waits, explores and may do two
-## things that matter: warn her of the storm, give back her key. Each of them
-## is kept across runs. At 18:00 the day begins again, the island as new, and
-## Mira only has a feeling she has lived it before. A save holds the day as it
-## was; loading it, she remembers only what had happened by then.
+## things that matter: warn her of the storm, give back her key. When the day
+## ends they are kept across runs. At 18:00 the day begins again, the island as
+## new, and Mira only has a feeling she has lived it before. A save holds the
+## day as it was; loading it, she remembers only what had happened by then, and
+## a deed done after the save is undone.
 
 const Client := preload("res://addons/companion_client/companion_client.gd")
 const DebugPanel := preload("res://addons/companion_client/debug_panel.gd")
@@ -89,6 +90,12 @@ func _begin_day() -> void:
 
 func _end_day() -> void:
 	_system("The sun sets. The storm comes. And then it is morning again.")
+	# What the day held is kept now, not when it was done: a deed undone by
+	# loading a save is not hers, and today she is still living it.
+	var kept: Dictionary = await client.across_runs(NPC)
+	for name in deeds_done:
+		if kept.ok and not kept.data.any(func(memory): return name in memory.tags):
+			await client.remember_across_runs(NPC, DEEDS[name].keep, run, [name])
 	await client.new_game()
 	run += 1
 	_write_run()
@@ -145,14 +152,11 @@ func _skip_line() -> void:
 		client.interrupt(NPC, reply_id, reply_text)
 
 
-## Something that matters: kept across runs once, whichever day it was done.
+## Something that matters: kept across runs when the day ends (once, whichever
+## day it was done).
 func _deed(name: String) -> void:
 	var deed: Dictionary = DEEDS[name]
-	if not deeds_done.has(name):
-		deeds_done[name] = true
-		var kept: Dictionary = await client.across_runs(NPC)
-		if kept.ok and not kept.data.any(func(memory): return name in memory.tags):
-			await client.remember_across_runs(NPC, deed.keep, run, [name])
+	deeds_done[name] = true
 	_talk(deed.say, [deed.note])
 
 
