@@ -183,3 +183,29 @@ def test_without_meta_dir_there_is_no_such_memory(tmp_path):
         with_meta.remember_across_runs("   ")
     with pytest.raises(ValueError):
         CompanionSettings(across_runs_in_context=-1)
+
+
+
+def test_a_tag_given_alone_a_write_that_fails_and_a_closed_companion(tmp_path):
+    from ai_character_engine.companion import CompanionClosed
+
+    async def scenario():
+        current = make(tmp_path / "s", tmp_path / "meta")
+        current.remember_across_runs("The fire.", tags="fire")
+        tags = current.across_runs()[0].tags
+
+        def full_disk():
+            raise OSError("no space left on device")
+
+        current._across_runs._write = full_disk
+        with pytest.raises(OSError):
+            current.remember_across_runs("The bridge.")
+        after_failure = [memory.text for memory in current.across_runs()]
+        await current.close()
+        with pytest.raises(CompanionClosed):
+            current.remember_across_runs("The bell.")
+        return tags, after_failure
+
+    tags, after_failure = asyncio.run(scenario())
+    assert tags == ("fire",)
+    assert after_failure == ["The fire."]

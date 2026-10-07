@@ -570,7 +570,10 @@ It waits for a reply under way and for her background work to settle, so that
 a save holds whole turns; `StateBusy` after `timeout` (120 s) means nothing was
 saved, and her work goes on. `import_state(data)` makes a new companion what
 the save held, before she first speaks: in `storage_dir` too, which it
-replaces. To load a save once she has spoken, start a new companion.
+replaces. To load a save once she has spoken, start a new companion; one
+that is writing a diary entry before her first turn waits for it (`settle()`).
+A save also holds the slip of her last reply she is to be told of, and how
+the user seemed since the user state was last read.
 `await save_state_file(npc, path)` and `load_state_file(npc, path)` do the
 same with a file, written beside it first and moved into place.
 
@@ -579,12 +582,14 @@ the character, her clock when it was made and the sha256 of every other file.
 `import_state` raises `StateFormatError` for a damaged save or one of a newer
 format, and `ValueError` for a save of another character unless
 `allow_other_character=True`, which moves it under her id. Nothing changes
-when it raises. A new game needs no call: a new companion with a fresh
+when it is refused (should the disk fail while it is written, loading it
+again repairs it). A new game needs no call: a new companion with a fresh
 `storage_dir`, or none.
 
 `clock` is the game's: her mood fades by it, what she writes down (memories,
 what she said about herself, goals, thoughts) is dated by it, ranked by how old
-it is by it, and her short-term goals and her diary's day are measured by it.
+it is by it, and her short-term goals and her diary's day are measured by it;
+so is a mood a host's own state policy sets.
 A clock turned back, by the game or by a save loaded later, breaks nothing:
 what is dated after it counts as new, and her mood as of now. Timings of the
 engine's own work (how late a background result is, how long a job waited) stay

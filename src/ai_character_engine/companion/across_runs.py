@@ -116,21 +116,30 @@ class AcrossRuns:
         memory = AcrossRunsMemory(
             id=uuid4().hex,
             text=cleaned,
-            tags=tuple(str(tag) for tag in tags),
+            # One tag given alone is one tag, not its letters.
+            tags=(tags,) if isinstance(tags, str) else tuple(str(tag) for tag in tags),
             created_at=created_at,
             run=run,
         )
         self._refresh()
         self._memories.append(memory)
-        self._write()
+        try:
+            self._write()
+        except BaseException:
+            self._memories.pop()  # not kept on disk: not kept
+            raise
         return memory
 
     def forget(self, memory_id: str) -> bool:
         kept = [memory for memory in self.memories if memory.id != memory_id]
         if len(kept) == len(self._memories):
             return False
-        self._memories = kept
-        self._write()
+        before, self._memories = self._memories, kept
+        try:
+            self._write()
+        except BaseException:
+            self._memories = before
+            raise
         return True
 
 

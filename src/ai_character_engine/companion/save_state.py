@@ -82,9 +82,13 @@ def unpack(data: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
             files = {name: archive.read(name) for name in listed}
     except (zipfile.BadZipFile, KeyError, ValueError, TypeError) as exc:
         raise StateFormatError(f"not a save: {exc}") from exc
-    version = manifest.get("format_version")
-    if not isinstance(version, int) or isinstance(version, bool):
+    version = manifest.get("format_version") if isinstance(manifest, dict) else None
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise StateFormatError("not a save: no format version")
+    if not isinstance(listed, dict) or not all(
+        isinstance(name, str) and isinstance(digest, str) for name, digest in listed.items()
+    ):
+        raise StateFormatError("not a save: its manifest lists no files")
     if version > FORMAT_VERSION:
         raise StateFormatError(
             f"made by a newer engine ({manifest.get('engine_version')}, format {version})"
@@ -208,11 +212,15 @@ def conversations_to_bytes(
     started: bool,
     kept: list[tuple[str | None, list[Message], list]],
     told: Mapping[str | None, frozenset[str]],
+    emotions: Mapping[str | None, Any] = {},
+    reply_note: tuple[str | None, str, tuple[str, ...]] | None = None,
 ) -> bytes:
     return json.dumps(
         {
             "active": active,
             "started": started,
+            # A slip of her last reply, pointed out to her on her next one.
+            "reply_note": None if reply_note is None else [reply_note[0], reply_note[1], list(reply_note[2])],
             # Oldest first, the one at hand last: the order she lets them go in.
             "conversations": [
                 {
@@ -224,6 +232,8 @@ def conversations_to_bytes(
                     # What the host last passed as what it knows: a line it no
                     # longer passes is taken out of the notes.
                     "told": sorted(told.get(conversation_id, ())),
+                    # How the user seemed since the user state was last read.
+                    "emotions": list(emotions.get(conversation_id, ())),
                 }
                 for conversation_id, history, notes in kept
             ],
@@ -232,9 +242,9 @@ def conversations_to_bytes(
     ).encode("utf-8")
 
 
-def conversations_from_bytes(
-    data: bytes,
-) -> tuple[str | None, bool, list, dict[str | None, frozenset[str]]]:
+def conversations_from_bytes(data: bytes) -> dict[str, Any]:
+    """``active``, ``started``, ``kept`` (id, history, notes), ``told``,
+    ``emotions`` and ``reply_note``."""
     raw = json.loads(data)
     kept = [
         (
@@ -249,7 +259,20 @@ def conversations_from_bytes(
         for item in raw["conversations"]
         if item.get("told")
     }
-    return raw["active"], bool(raw["started"]), kept, told
+    emotions = {
+        item["id"]: [dict(reading) for reading in item["emotions"]]
+        for item in raw["conversations"]
+        if item.get("emotions")
+    }
+    note = raw.get("reply_note")
+    return {
+        "active": raw["active"],
+        "started": bool(raw["started"]),
+        "kept": kept,
+        "told": told,
+        "emotions": emotions,
+        "reply_note": None if not note else (note[0], str(note[1]), tuple(str(fix) for fix in note[2])),
+    }
 
 
 # --- files ---------------------------------------------------------------------

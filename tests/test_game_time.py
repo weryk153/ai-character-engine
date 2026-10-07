@@ -195,3 +195,31 @@ def test_a_retriever_that_knows_no_now_still_serves_a_memory_manager():
 
     manager = MemoryManager(retriever=FromBefore(None))
     assert manager.retrieve_for_event(character_id="mei", event=CharacterEvent.user_message("hi")) == []
+
+
+
+def test_a_mood_set_by_the_hosts_own_rules_is_dated_by_her_clock(tmp_path):
+    from ai_character_engine.state.models import StatePatch
+    from ai_character_engine.state.rules import EventStateRule, RuleBasedStatePolicy
+
+    clock = GameClock()
+    rules = RuleBasedStatePolicy(
+        event_rules=[EventStateRule("user_message", StatePatch(emotion="happy", mood_intensity=0.8))]
+    )
+
+    async def scenario():
+        current = CharacterCompanion(
+            character=CharacterProfile(id="mei", name="Mei", description="A researcher."),
+            llm=Foreground((BLACK_TEA, "How are you?")),
+            background_llm={},
+            storage_dir=tmp_path / "engine",
+            settings=CompanionSettings(),
+            state_policy=rules,
+            clock=clock,
+        )
+        await current.reply("hello", conversation_id="a")
+        dated = current.runtime.state.mood_updated_at
+        await current.close()
+        return dated
+
+    assert asyncio.run(scenario()) == GAME_START

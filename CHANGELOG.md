@@ -10,6 +10,9 @@
 - Memories across runs written by another companion of hers, or another process, are in her prompt from her next turn.
 - The `service` extra now includes `websockets`: without it uvicorn answered every WebSocket with 404.
 - `examples/godot`: a Godot 4.3+ game of one repeating day whose NPC remembers across days, with a client addon (`addons/companion_client`) and an NPC inspector (F1) to copy, a headless smoke test and a scripted fake service.
+- A save waits for a diary entry being written, and holds the slip of her last reply she is to be told of and how the user seemed since the user state was read; `import_state` refuses while work of hers is under way. A manifest that lists no files or names a format below 1 is `StateFormatError`. How the user has been, dated after her clock by a save loaded after the clock was turned back, is dated now, as her mood is.
+- A mood a host's own state policy sets (other than `RelationshipStatePolicy`) is dated by her clock.
+- `remember_across_runs(tags="one")` is one tag; a memory across runs whose write failed is not kept; a closed companion refuses one (`CompanionClosed`).
 - Fixed: the 1.2.0 known limitations "diary material is dated by the system clock" and "the `short_term_goal_max_age_hours` window is wall time" no longer hold.
 
 ## 1.2.0

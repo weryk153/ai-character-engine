@@ -83,6 +83,10 @@ async def a_day(current, clock):
     await current.write_diary()
 
 
+def on_disk(storage):
+    return {path.name: path.read_bytes() for path in sorted(storage.iterdir()) if path.is_file()}
+
+
 def everything(current):
     return {
         "snapshot in a": current.snapshot(),
@@ -211,32 +215,43 @@ def test_a_save_that_cannot_be_hers_is_refused_and_changes_nothing(tmp_path):
             if name == "memory.jsonl"
             else content,
         )
-        refusals = {}
+        # She has a life of her own, on disk, that a refused save must not touch.
+        life = lived(tmp_path / "second", clock)
+        await a_day(life, clock)
+        await life.close()
+
+        refusals, kept = {}, []
         current = make(tmp_path / "second", clock)
+        before = (everything(current), on_disk(tmp_path / "second"))
         for label, save in (("newer", newer), ("damaged", damaged), ("not a save", b"PK nonsense")):
             with pytest.raises(StateFormatError) as raised:
                 current.import_state(save)
             refusals[label] = str(raised.value)
-        unchanged = current.memories("a")
+            kept.append((everything(current), on_disk(tmp_path / "second")) == before)
 
         await current.reply("hi", conversation_id="a")
+        await current.settle()
+        spoken = (everything(current), on_disk(tmp_path / "second"))
         with pytest.raises(RuntimeError):
             current.import_state(data)
+        kept.append((everything(current), on_disk(tmp_path / "second")) == spoken)
         await current.close()
 
         other = make(tmp_path / "other", clock, character="yura")
+        alone = everything(other)
         with pytest.raises(ValueError):
             other.import_state(data)
+        kept.append(everything(other) == alone)
         other.import_state(data, allow_other_character=True)
         hers = (other.memories("a"), other.self_memories())
         await other.close()
-        return refusals, unchanged, hers
+        return refusals, kept, hers
 
-    refusals, unchanged, hers = asyncio.run(scenario())
+    refusals, kept, hers = asyncio.run(scenario())
     assert "newer engine" in refusals["newer"]
     assert "memory.jsonl" in refusals["damaged"]
     assert "not a save" in refusals["not a save"]
-    assert unchanged == []
+    assert kept == [True, True, True, True, True]
     assert hers == (["Dawn works at a print shop."], ["Mei likes strong black tea."])
 
 
@@ -331,3 +346,156 @@ def test_what_the_host_knows_is_taken_back_after_a_load_as_before(tmp_path):
     assert "The bridge is intact." not in first_prompt
     assert "The bridge is intact." not in second_prompt
     assert "The bridge is destroyed." in second_prompt
+
+
+
+def test_a_save_whose_manifest_is_not_one_is_refused(tmp_path):
+    clock = GameClock()
+
+    async def scenario():
+        first = lived(tmp_path / "first", clock)
+        await a_day(first, clock)
+        data = await first.export_state()
+        await first.close()
+        current = make(None, clock)
+        refused = []
+        for change in (
+            lambda manifest: {**manifest, "files": list(manifest["files"])},
+            lambda manifest: {**manifest, "format_version": 0},
+        ):
+            save = _rewritten(
+                data,
+                lambda name, content: json.dumps(change(json.loads(content))).encode()
+                if name == "manifest.json"
+                else content,
+            )
+            with pytest.raises(StateFormatError):
+                current.import_state(save)
+            refused.append(True)
+        return refused
+
+    assert asyncio.run(scenario()) == [True, True]
+
+
+class HeldDiary(DiaryWorker):
+    def __init__(self):
+        super().__init__()
+        self.gate = asyncio.Event()
+
+
+def test_a_diary_being_written_is_waited_for_and_keeps_a_save_from_loading(tmp_path):
+    clock = GameClock()
+
+    async def scenario():
+        diary = HeldDiary()
+        first = make(
+            tmp_path / "first",
+            clock,
+            workers={"memory": Worker(dawns_work), "self_memory": Worker(her_tea), "diary": diary},
+            memory_every=1,
+            self_memory_every=1,
+        )
+        await first.reply(DAWN, conversation_id="a")
+        await first.settle()
+        clock.hours(1)
+        writing = asyncio.create_task(first.write_diary())
+        await asyncio.sleep(0.05)
+        with pytest.raises(StateBusy):
+            await first.export_state(timeout=0.05)
+        diary.gate.set()
+        await writing
+        data = await first.export_state()
+        clock.hours(1)
+        await first.reply("good night", conversation_id="a")  # a day for the next entry
+        await first.settle()
+        await first.close()
+
+        held = HeldDiary()
+        before_she_speaks = make(
+            tmp_path / "first", clock, workers={"diary": held}, diary_every_hours=0
+        )
+        clock.hours(25)
+        pending = asyncio.create_task(before_she_speaks.write_diary())
+        await asyncio.sleep(0.05)
+        with pytest.raises(RuntimeError):
+            before_she_speaks.import_state(data)
+        held.gate.set()
+        await pending
+        await before_she_speaks.close()
+        loaded = make(None, clock)
+        loaded.import_state(data)
+        return loaded.diary()
+
+    assert len(asyncio.run(scenario())) == 1
+
+
+def test_her_pending_fix_and_how_the_user_seemed_survive_a_load(tmp_path):
+    from collections import deque
+
+    clock = GameClock()
+
+    async def scenario():
+        first = make(tmp_path / "first", clock)
+        await first.reply("hello", conversation_id="a")
+        first._reply_note = ("a", "Hello there.", ("Say it in fewer words.",))
+        first._emotions = {"a": deque([{"emotion": "tired", "valence": -0.4, "stance": 0.0}], maxlen=8)}
+        data = await first.export_state()
+        await first.close()
+        loaded = make(None, clock)
+        loaded.import_state(data)
+        return loaded._reply_note, {key: list(value) for key, value in loaded._emotions.items()}
+
+    note, emotions = asyncio.run(scenario())
+    assert note == ("a", "Hello there.", ("Say it in fewer words.",))
+    assert emotions == {"a": [{"emotion": "tired", "valence": -0.4, "stance": 0.0}]}
+
+
+def test_how_the_user_has_been_is_not_dated_after_her_clock_on_a_load(tmp_path):
+    clock = GameClock()
+
+    async def scenario():
+        first = make(tmp_path / "first", clock)
+        first.runtime.state.custom["user_state"] = {
+            "energy": "low", "mood_trend": "down", "concerns": [], "evidence": [], "updated_at": clock(),
+        }
+        data = await first.export_state()
+        await first.close()
+        clock.hours(-48)
+        loaded = make(None, clock)
+        loaded.import_state(data)
+        return loaded.snapshot().user_state
+
+    lately = asyncio.run(scenario())
+    assert lately is not None and lately.updated_at == clock()
+
+
+def test_a_save_waits_for_her_line_and_then_her_background_work(tmp_path):
+    clock = GameClock()
+
+    async def scenario():
+        speaking = asyncio.Event()
+        thinking = asyncio.Event()
+        current = make(
+            tmp_path,
+            clock,
+            llm=Foreground(("Hello. ", "Welcome back."), gate=speaking),
+            workers={"memory": GatedWorker(dawns_work, gate=thinking)},
+            memory_every=1,
+        )
+        replying = asyncio.create_task(current.reply(DAWN, conversation_id="a"))
+        await asyncio.sleep(0.02)
+        saving = asyncio.create_task(current.export_state())
+        await asyncio.sleep(0.02)
+        during_her_line = saving.done()
+        speaking.set()
+        await replying
+        await asyncio.sleep(0.02)
+        during_her_work = saving.done()
+        thinking.set()
+        data = await saving
+        later = make(None, clock)
+        later.import_state(data)
+        await current.close()
+        return during_her_line, during_her_work, later.memories("a")
+
+    assert asyncio.run(scenario()) == (False, False, ["Dawn works at a print shop."])

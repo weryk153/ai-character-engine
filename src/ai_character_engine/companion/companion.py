@@ -905,6 +905,31 @@ def _clean(messages: Sequence[Message]) -> list[Message]:
     return cleaned
 
 
+class _DatedByMyClock:
+    """A host's own state policy, whose mood changes are dated by her clock
+    (left undated, the state dates them by the system clock)."""
+
+    def __init__(self, policy: CharacterStatePolicy, clock: Callable[[], float]) -> None:
+        self._policy = policy
+        self._clock = clock
+
+    def _dated(self, patch):
+        if patch is None or patch.mood_updated_at is not None:
+            return patch
+        if patch.emotion is None and patch.mood_intensity is None:
+            return patch
+        return replace(patch, mood_updated_at=self._clock())
+
+    def on_event(self, event, state):
+        return self._dated(self._policy.on_event(event, state))
+
+    def on_tool_result(self, result, state):
+        return self._dated(self._policy.on_tool_result(result, state))
+
+    def __getattr__(self, name: str):
+        return getattr(self._policy, name)
+
+
 def _diary_line(entry: DiaryEntry) -> dict[str, Any]:
     return {
         "date": entry.date,
@@ -1182,6 +1207,8 @@ class CharacterCompanion:
 
     def _policy(self, state_policy: CharacterStatePolicy | None) -> CharacterStatePolicy:
         policy = state_policy or RelationshipStatePolicy()
+        if not isinstance(policy, RelationshipStatePolicy):
+            return _DatedByMyClock(policy, self._clock)
         if isinstance(policy, RelationshipStatePolicy):
             # A copy: the host's instance may serve another companion, whose
             # clock and mood readings these would otherwise overwrite.
@@ -1208,11 +1235,18 @@ class CharacterCompanion:
             except Exception as exc:
                 # A damaged file must not keep the character from starting.
                 logger.warning("state file unreadable, starting fresh: %s", exc)
-        self._date_mood_by_my_clock(state)
+        self._date_by_my_clock(state)
         return state
 
-    def _date_mood_by_my_clock(self, state: CharacterState) -> None:
+    def _date_by_my_clock(self, state: CharacterState) -> None:
+        """Nothing of hers dated after her clock: her mood would not fade,
+        how the user has been would not expire, until it caught up."""
         now = self._clock()
+        lately = state.custom.get("user_state")
+        if isinstance(lately, Mapping):
+            updated = lately.get("updated_at")
+            if isinstance(updated, (int, float)) and not isinstance(updated, bool) and updated > now:
+                state.custom["user_state"] = {**lately, "updated_at": now}
         if state.mood_updated_at is None:
             # A state saved before 1.1.0 does not say when her mood was set:
             # it is as of now.
@@ -2564,8 +2598,12 @@ class CharacterCompanion:
         handle = await background.submit_now(BackgroundCognitionKind.DIARY, {"diary": day})
         self._diary_tasks.add(handle.task_id)
         self._diary_by_hand.add(handle.task_id)
+        # Under way like her other background work: a save waits for it.
+        collecting = asyncio.ensure_future(self._collect(handle))
+        self._pending.add(collecting)
+        collecting.add_done_callback(self._pending.discard)
         try:
-            await self._collect(handle)
+            await collecting
         finally:
             self._diary_by_hand.discard(handle.task_id)
         return self._diary_written.pop(handle.task_id, None)
@@ -2645,6 +2683,8 @@ class CharacterCompanion:
         the game, never by her background work. Her system prompt holds the
         newest ``across_runs_in_context``. Returns its id. Raises
         ``RuntimeError`` without ``meta_dir``."""
+        if self._closed:
+            raise CompanionClosed("companion is closed")
         if self._across_runs is None:
             raise RuntimeError("memories across runs need meta_dir")
         memory = self._across_runs.add(text, tags=tags, created_at=self._clock(), run=run)
@@ -2711,7 +2751,12 @@ class CharacterCompanion:
             save_state.DIARY: _jsonl(_diary_line(entry) for entry in self._diary_entries).encode("utf-8"),
             save_state.DAY_LOG: _jsonl(self._day_log).encode("utf-8"),
             save_state.CONVERSATIONS: save_state.conversations_to_bytes(
-                active=self._active, started=self._started, kept=kept, told=self._told
+                active=self._active,
+                started=self._started,
+                kept=kept,
+                told=self._told,
+                emotions=self._emotions,
+                reply_note=self._reply_note,
             ),
         }
         return save_state.pack(files, character_id=self.character.id, clock=self._clock())
@@ -2724,12 +2769,17 @@ class CharacterCompanion:
         once she has spoken (to load a save, start a new companion),
         ``StateFormatError`` for a damaged save or one made by a newer engine,
         and ``ValueError`` for a save of another character unless
-        ``allow_other_character``. Nothing changes when it raises.
+        ``allow_other_character``. Nothing changes when the save is refused;
+        should the disk fail while it is written, loading it again repairs it.
         """
         if self._closed:
             raise CompanionClosed("companion is closed")
         if self._loop is not None or self._turns:
             raise RuntimeError("a save is loaded before she first speaks; start a new companion")
+        if self._pending:
+            # A diary entry being written (write_diary before her first
+            # turn) would be committed after the save, into it.
+            raise RuntimeError("a save is loaded while nothing of hers is under way; settle() first")
         manifest, files = save_state.unpack(data)
         saved_as = manifest.get("character_id")
         if saved_as != self.character.id and not allow_other_character:
@@ -2745,9 +2795,7 @@ class CharacterCompanion:
             reflections, beliefs = save_state.read_cognition(files[save_state.COGNITION])
             diary = _diary_from_text(files[save_state.DIARY].decode("utf-8"))
             day_log = _day_log_from_text(files[save_state.DAY_LOG].decode("utf-8"))
-            active, started, kept, told = save_state.conversations_from_bytes(
-                files[save_state.CONVERSATIONS]
-            )
+            held_conversations = save_state.conversations_from_bytes(files[save_state.CONVERSATIONS])
         except Exception as exc:
             raise StateFormatError(f"damaged save: {exc}") from exc
         if isinstance(saved_as, str) and saved_as != self.character.id:
@@ -2760,7 +2808,7 @@ class CharacterCompanion:
         save_state.put_goals(self.runtime.goal_manager.store, goals)
         save_state.put_cognition(self.runtime.long_term_cognition.store, reflections, beliefs)
         self.runtime.state.restore(state)
-        self._date_mood_by_my_clock(self.runtime.state)
+        self._date_by_my_clock(self.runtime.state)
         self._mood_read_at.clear()
         self._save_state()
         self._diary_entries = diary
@@ -2779,8 +2827,14 @@ class CharacterCompanion:
 
         for forget in (self._told, self._emotions, self._newest_reply, self._last_turn, self._newest_turn):
             forget.clear()
-        self._told.update(told)
-        held = OrderedDict((conversation, (history, notes)) for conversation, history, notes in kept)
+        active, started = held_conversations["active"], held_conversations["started"]
+        self._told.update(held_conversations["told"])
+        for conversation, readings in held_conversations["emotions"].items():
+            self._emotions[conversation] = deque(readings, maxlen=_EMOTIONS_KEPT)
+        self._reply_note = held_conversations["reply_note"]
+        held = OrderedDict(
+            (conversation, (history, notes)) for conversation, history, notes in held_conversations["kept"]
+        )
         for conversation in held:
             # What the host loaded before is older than the save.
             self._loaded.pop(conversation, None)
