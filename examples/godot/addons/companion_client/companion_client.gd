@@ -7,8 +7,9 @@ extends Node
 ## an NPC; leave it at -1 to use the server's clock.
 ##
 ## Streaming: call `connect_socket()` once, then `say()`; the reply arrives as
-## `delta` signals and ends with `done`. `state_changed` comes when an NPC's
-## mood changed between replies.
+## `delta` signals and ends with `done`, or `failed` (code "disconnected" when
+## there is no connection, or it dropped before her answer). `state_changed`
+## comes when an NPC's mood changed between replies.
 
 signal delta(npc: String, id: String, text: String)
 signal done(npc: String, id: String, text: String, interrupted: bool, state: Dictionary)
@@ -18,12 +19,17 @@ signal failed(npc: String, id: String, code: String, message: String)
 @export var base_url := "http://127.0.0.1:8765"
 @export var token := ""
 @export var slot := "current"
+## Seconds an HTTP call may take; a save may wait up to 120 s for her
+## background work.
+@export var request_timeout := 150.0
 
 var game_time: float = -1.0
 
 var _socket := WebSocketPeer.new()
 var _socket_wanted := false
+var _was_open := false
 var _next_id := 0
+var _pending: Dictionary = {}  # id -> npc, until done or failed
 
 
 func _process(_delta: float) -> void:
@@ -31,13 +37,21 @@ func _process(_delta: float) -> void:
 		return
 	_socket.poll()
 	if _socket.get_ready_state() != WebSocketPeer.STATE_OPEN:
+		if _was_open:
+			_was_open = false
+			for id in _pending.keys():
+				failed.emit(_pending[id], id, "disconnected", "the connection to the service was lost")
+			_pending.clear()
 		return
+	_was_open = true
 	while _socket.get_available_packet_count() > 0:
 		var message = JSON.parse_string(_socket.get_packet().get_string_from_utf8())
 		if typeof(message) != TYPE_DICTIONARY:
 			continue
 		var npc := str(message.get("npc", ""))
 		var id := str(message.get("id", ""))
+		if message.get("type") in ["done", "error"]:
+			_pending.erase(id)
 		match message.get("type"):
 			"delta":
 				delta.emit(npc, id, str(message.get("text", "")))
@@ -74,7 +88,11 @@ func say(npc: String, text: String, conversation_id := "", notes: Array = []) ->
 		message["conversation_id"] = conversation_id
 	if game_time >= 0.0:
 		message["game_time"] = game_time
-	_socket.send_text(JSON.stringify(message))
+	if _socket.get_ready_state() != WebSocketPeer.STATE_OPEN or _socket.send_text(JSON.stringify(message)) != OK:
+		# Told after the caller has had the id back and connected its handlers.
+		failed.emit.call_deferred(npc, id, "disconnected", "no connection to the service")
+		return id
+	_pending[id] = npc
 	return id
 
 
@@ -158,6 +176,7 @@ func _call(method: int, path: String, body = null) -> Dictionary:
 			body["game_time"] = game_time
 		payload = JSON.stringify(body)
 	var http := HTTPRequest.new()
+	http.timeout = request_timeout
 	add_child(http)
 	var started := http.request(base_url + path, headers, method, payload)
 	if started != OK:
@@ -165,6 +184,8 @@ func _call(method: int, path: String, body = null) -> Dictionary:
 		return {"ok": false, "code": "unreachable", "message": "request not sent (%d)" % started}
 	var response: Array = await http.request_completed
 	http.queue_free()
+	if response[0] == HTTPRequest.RESULT_TIMEOUT:
+		return {"ok": false, "code": "timeout", "message": "no answer from %s in %.0f s" % [base_url, request_timeout]}
 	if response[0] != HTTPRequest.RESULT_SUCCESS:
 		return {"ok": false, "code": "unreachable", "message": "no answer from %s (%d)" % [base_url, response[0]]}
 	var text: String = response[3].get_string_from_utf8()

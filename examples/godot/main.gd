@@ -41,6 +41,7 @@ var deeds_done: Dictionary = {}
 var reply_id := ""
 var reply_text := ""
 var mood_line := ""
+var ending := false
 
 var _status := Label.new()
 var _log := RichTextLabel.new()
@@ -64,7 +65,7 @@ func _ready() -> void:
 	client.delta.connect(_on_delta)
 	client.done.connect(_on_done)
 	client.state_changed.connect(func(npc, state): if npc == NPC: _show(state))
-	client.failed.connect(func(_npc, _id, code, message): _system("[color=red]%s[/color] %s" % [code, message]); _busy(false))
+	client.failed.connect(_on_failed)
 	run = _read_run()
 	if not await client.connect_socket():
 		_system("[color=red]No service at %s.[/color] Start it first (see README)." % client.base_url)
@@ -103,10 +104,14 @@ func _end_day() -> void:
 
 
 func _pass(seconds: float) -> void:
+	if ending:
+		return  # the day is already over; a second click does not end the next one
 	day_time += seconds
 	_tick()
 	if day_time >= DAY_LENGTH:
+		ending = true
 		await _end_day()
+		ending = false
 
 
 func _tick() -> void:
@@ -145,6 +150,13 @@ func _on_done(npc: String, id: String, _text: String, interrupted: bool, state: 
 	_busy(false)
 	_show(state)
 	await _pass(TALK_TAKES)
+
+
+func _on_failed(npc: String, id: String, code: String, message: String) -> void:
+	_system("[color=red]%s[/color] %s" % [code, message])
+	if npc == NPC and id == reply_id:
+		reply_id = ""  # she did not answer; the player can speak again
+	_busy(false)
 
 
 func _skip_line() -> void:

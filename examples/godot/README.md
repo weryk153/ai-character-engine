@@ -41,7 +41,9 @@ uv run --extra service python examples/godot/tools/fake_service.py &
 godot --headless --path examples/godot --script res://smoke_test.gd
 ```
 
-It calls every endpoint once and prints `SMOKE OK`.
+It opens an NPC, talks to her over HTTP and the socket, saves and loads the
+slot, starts it over, and writes and removes a memory across runs, then prints
+`SMOKE OK`.
 
 ## Use it in your game
 
@@ -65,4 +67,6 @@ await client.remember_across_runs("mira", "Someone once warned you of the storm.
 ```
 
 Every call returns `{"ok": true, "data": ...}` or `{"ok": false, "code": ...,
-"message": ...}`; the codes are listed in `docs/companion-service.md`.
+"message": ...}`; the codes are listed in `docs/companion-service.md`, plus the
+addon's own `unreachable`, `timeout` (an HTTP call over `request_timeout`) and
+`disconnected` (a `say()` with no connection, or one cut by a dropped socket).
