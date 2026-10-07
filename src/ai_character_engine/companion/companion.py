@@ -106,7 +106,9 @@ from ai_character_engine.tasks.errors import UnknownTaskError
 from ai_character_engine.tools.registry import ToolRegistry
 from ai_character_engine.vision import VisionFrame, VisionPipeline
 
+from . import save_state
 from .access import ModelAccess, PoliteClient
+from .save_state import StateBusy, StateFormatError
 from .settings import CompanionSettings
 
 logger = logging.getLogger(__name__)
@@ -901,6 +903,55 @@ def _clean(messages: Sequence[Message]) -> list[Message]:
     return cleaned
 
 
+def _diary_line(entry: DiaryEntry) -> dict[str, Any]:
+    return {
+        "date": entry.date,
+        "text": entry.text,
+        "evidence": list(entry.evidence),
+        "conversation_ids": list(entry.conversation_ids),
+        "until": entry.until,
+    }
+
+
+def _diary_from_text(text: str) -> list[DiaryEntry]:
+    entries: list[DiaryEntry] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+            until = raw.get("until")
+            entries.append(
+                DiaryEntry(
+                    date=str(raw["date"]),
+                    text=str(raw["text"]),
+                    evidence=tuple(str(item) for item in raw.get("evidence") or ()),
+                    conversation_ids=tuple(raw.get("conversation_ids") or ()),
+                    until=float(until) if isinstance(until, (int, float)) else None,
+                )
+            )
+        except Exception as exc:
+            # A damaged line must not cost her the rest of her diary.
+            logger.warning("diary entry unreadable, skipped: %s", exc)
+    return entries
+
+
+def _day_log_from_text(text: str) -> list[dict[str, Any]]:
+    lines: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        try:
+            raw = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("at"), (int, float)):
+            lines.append(raw)
+    return lines
+
+
+def _jsonl(lines) -> str:
+    return "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines)
+
+
 class CharacterCompanion:
     def __init__(
         self,
@@ -1141,16 +1192,20 @@ class CharacterCompanion:
             except Exception as exc:
                 # A damaged file must not keep the character from starting.
                 logger.warning("state file unreadable, starting fresh: %s", exc)
+        self._date_mood_by_my_clock(state)
+        return state
+
+    def _date_mood_by_my_clock(self, state: CharacterState) -> None:
         now = self._clock()
         if state.mood_updated_at is None:
             # A state saved before 1.1.0 does not say when her mood was set:
             # it is as of now.
             state.mood_updated_at = now
         elif state.mood_updated_at > now:
-            # Set by another machine's clock, or milliseconds read as
-            # seconds: as of now, or her mood would not fade until then.
+            # Set by another machine's clock, milliseconds read as seconds, or
+            # a save loaded after the game turned its clock back: as of now,
+            # or her mood would not fade until then.
             state.mood_updated_at = now
-        return state
 
     def _save_state(self) -> None:
         path = self._state_file()
@@ -2315,43 +2370,16 @@ class CharacterCompanion:
         return self._dir / "diary_log.jsonl" if self._dir is not None else None
 
     def _load_diary(self) -> list[DiaryEntry]:
-        entries: list[DiaryEntry] = []
         path = self._diary_file()
         if path is None or not path.is_file():
-            return entries
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                raw = json.loads(line)
-                until = raw.get("until")
-                entries.append(
-                    DiaryEntry(
-                        date=str(raw["date"]),
-                        text=str(raw["text"]),
-                        evidence=tuple(str(item) for item in raw.get("evidence") or ()),
-                        conversation_ids=tuple(raw.get("conversation_ids") or ()),
-                        until=float(until) if isinstance(until, (int, float)) else None,
-                    )
-                )
-            except Exception as exc:
-                # A damaged line must not cost her the rest of her diary.
-                logger.warning("diary entry unreadable, skipped: %s", exc)
-        return entries
+            return []
+        return _diary_from_text(path.read_text(encoding="utf-8"))
 
     def _load_day_log(self) -> list[dict[str, Any]]:
-        lines: list[dict[str, Any]] = []
         path = self._day_log_file()
         if path is None or not path.is_file():
-            return lines
-        for line in path.read_text(encoding="utf-8").splitlines():
-            try:
-                raw = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(raw, dict) and isinstance(raw.get("at"), (int, float)):
-                lines.append(raw)
-        return lines
+            return []
+        return _day_log_from_text(path.read_text(encoding="utf-8"))
 
     def _log_day(self, line: dict[str, Any]) -> None:
         if self._closed:
@@ -2373,10 +2401,7 @@ class CharacterCompanion:
         path = self._day_log_file()
         if path is not None:
             temporary = path.with_suffix(".jsonl.tmp")
-            temporary.write_text(
-                "".join(json.dumps(line, ensure_ascii=False) + "\n" for line in kept),
-                encoding="utf-8",
-            )
+            temporary.write_text(_jsonl(kept), encoding="utf-8")
             os.replace(temporary, path)
 
     def _diary_in_context(self) -> tuple[str, str] | None:
@@ -2483,15 +2508,8 @@ class CharacterCompanion:
         self._diary_entries.append(entry)
         path = self._diary_file()
         if path is not None:
-            line = {
-                "date": entry.date,
-                "text": entry.text,
-                "evidence": list(entry.evidence),
-                "conversation_ids": list(entry.conversation_ids),
-                "until": entry.until,
-            }
             with path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(line, ensure_ascii=False) + "\n")
+                file.write(_jsonl([_diary_line(entry)]))
         self.runtime.context_builder.diary = self._diary_in_context()
         self._forget_old_days(entry.until)
         return entry
@@ -2582,6 +2600,140 @@ class CharacterCompanion:
     def flush(self) -> None:
         """Save state; the companion keeps running."""
         self._save_state()
+
+    # --- saves -----------------------------------------------------------------
+
+    async def export_state(self, *, timeout: float = 120.0) -> bytes:
+        """Everything she keeps, as bytes for a game's own save: her state,
+        memories, goals, thoughts, diary and the conversations she holds.
+
+        Waits for a reply under way and for her background work to settle,
+        so that the save holds a whole turn. Raises ``StateBusy`` when that
+        takes more than ``timeout`` seconds; nothing is saved then.
+        """
+        if self._closed:
+            raise CompanionClosed("companion is closed")
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        busy = StateBusy(f"her background work did not settle in {timeout} s")
+        while True:
+            # Waited for, never cancelled: her work goes on when the save
+            # gives up.
+            while self._pending:
+                left = deadline - loop.time()
+                if left <= 0:
+                    raise busy
+                await asyncio.wait(tuple(self._pending), timeout=left)
+            try:
+                await asyncio.wait_for(self._turn_lock.acquire(), max(0.0, deadline - loop.time()))
+            except TimeoutError:
+                raise busy from None
+            try:
+                # Nothing below awaits: no turn and no commit can change her
+                # while she is packed.
+                if not self._pending:
+                    return self._pack()
+            finally:
+                self._turn_lock.release()
+
+    def _pack(self) -> bytes:
+        kept = [(conversation, history, notes) for conversation, (history, notes) in self._kept.items()]
+        if self._started:
+            kept.append((self._active, list(self.runtime.history), list(self.runtime.context_notes)))
+        cognition = self.runtime.long_term_cognition.store
+        files = {
+            save_state.STATE: json.dumps(
+                state_to_dict(self.runtime.state.snapshot()), ensure_ascii=False, indent=2
+            ).encode("utf-8"),
+            save_state.MEMORY: save_state.memory_lines(self._memory_store),
+            save_state.GOALS: save_state.goal_lines(self.runtime.goal_manager.store),
+            save_state.COGNITION: save_state.cognition_lines(cognition),
+            save_state.DIARY: _jsonl(_diary_line(entry) for entry in self._diary_entries).encode("utf-8"),
+            save_state.DAY_LOG: _jsonl(self._day_log).encode("utf-8"),
+            save_state.CONVERSATIONS: save_state.conversations_to_bytes(
+                active=self._active, started=self._started, kept=kept
+            ),
+        }
+        return save_state.pack(files, character_id=self.character.id, clock=self._clock())
+
+    def import_state(self, data: bytes, *, allow_other_character: bool = False) -> None:
+        """Make her what ``export_state`` saved, before she first speaks.
+
+        Everything she keeps is replaced, in ``storage_dir`` too; what she
+        remembers across runs (``meta_dir``) is not. Raises ``RuntimeError``
+        once she has spoken (to load a save, start a new companion),
+        ``StateFormatError`` for a damaged save or one made by a newer engine,
+        and ``ValueError`` for a save of another character unless
+        ``allow_other_character``. Nothing changes when it raises.
+        """
+        if self._closed:
+            raise CompanionClosed("companion is closed")
+        if self._loop is not None or self._turns:
+            raise RuntimeError("a save is loaded before she first speaks; start a new companion")
+        manifest, files = save_state.unpack(data)
+        saved_as = manifest.get("character_id")
+        if saved_as != self.character.id and not allow_other_character:
+            raise ValueError(
+                f"a save of {saved_as!r}, not of {self.character.id!r}; "
+                "pass allow_other_character=True to load it anyway"
+            )
+        # Everything is read before anything is replaced.
+        try:
+            state = state_from_dict(json.loads(files[save_state.STATE]))
+            memory = save_state.read_memory(files[save_state.MEMORY])
+            goals = save_state.read_goals(files[save_state.GOALS])
+            reflections, beliefs = save_state.read_cognition(files[save_state.COGNITION])
+            diary = _diary_from_text(files[save_state.DIARY].decode("utf-8"))
+            day_log = _day_log_from_text(files[save_state.DAY_LOG].decode("utf-8"))
+            active, started, kept = save_state.conversations_from_bytes(
+                files[save_state.CONVERSATIONS]
+            )
+        except Exception as exc:
+            raise StateFormatError(f"damaged save: {exc}") from exc
+        if isinstance(saved_as, str) and saved_as != self.character.id:
+            scope = save_state.as_another_character(saved_as, self.character.id)
+            memory, goals = save_state.rescoped(memory, scope), save_state.rescoped(goals, scope)
+            reflections = save_state.rescoped(reflections, scope)
+            beliefs = save_state.rescoped(beliefs, scope)
+
+        save_state.put_memory(self._memory_store, memory)
+        save_state.put_goals(self.runtime.goal_manager.store, goals)
+        save_state.put_cognition(self.runtime.long_term_cognition.store, reflections, beliefs)
+        self.runtime.state.restore(state)
+        self._date_mood_by_my_clock(self.runtime.state)
+        self._mood_read_at.clear()
+        self._save_state()
+        self._diary_entries = diary
+        self._day_log = day_log
+        for path, lines in (
+            (self._diary_file(), [_diary_line(entry) for entry in diary]),
+            (self._day_log_file(), day_log),
+        ):
+            if path is not None:
+                temporary = path.with_suffix(".jsonl.tmp")
+                temporary.write_text(_jsonl(lines), encoding="utf-8")
+                os.replace(temporary, path)
+        self._diary_tried_at = None
+        self._turn_started_at = self._clock()
+        self.runtime.context_builder.diary = self._diary_in_context()
+
+        for forget in (self._told, self._emotions, self._newest_reply, self._last_turn, self._newest_turn):
+            forget.clear()
+        held = OrderedDict((conversation, (history, notes)) for conversation, history, notes in kept)
+        for conversation in held:
+            # What the host loaded before is older than the save.
+            self._loaded.pop(conversation, None)
+        if started:
+            history, notes = held.pop(active, ([], []))
+            self._bridge.restore_history(history)
+            self.runtime.context_notes = notes
+            self.runtime.memory_scope_id = self._scope(active)
+        else:
+            self._bridge.restore_history([])
+        self._kept = held
+        self._active = active
+        self._started = started
+        self._forget_how_the_user_was()
 
     def usable_in_running_loop(self) -> bool:
         """Whether this companion can take a turn where the caller is running.

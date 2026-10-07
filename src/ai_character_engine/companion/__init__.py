@@ -16,6 +16,7 @@ from .companion import (
     TurnInterrupted,
     UserState,
 )
+from .save_state import StateBusy, StateFormatError, load_state_file, save_state_file
 from .settings import CompanionSettings
 
 __all__ = [
@@ -33,6 +34,10 @@ __all__ = [
     "PoliteClient",
     "SELF_MEMORY_KINDS",
     "SELF_MEMORY_LINE",
+    "StateBusy",
+    "StateFormatError",
     "TurnInterrupted",
     "UserState",
+    "load_state_file",
+    "save_state_file",
 ]
