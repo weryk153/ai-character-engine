@@ -4699,12 +4699,17 @@ def test_her_mood_through_the_day_is_part_of_what_happened(tmp_path):
         )
         await current.reply(DAWN, conversation_id="a")
         await current.settle()
+        felt_at = clock()
+        # Her day ends where the entry is written, that moment excluded; on
+        # Windows before Python 3.13 the system clock ticks every 15.6 ms, so
+        # without this the entry could be written at the moment she felt it.
+        clock.ahead += 1
         await current.write_diary()
         await current.close()
-        return diary.prompts[0]
+        return diary.prompts[0], felt_at
 
-    prompt = run(scenario())
-    assert f"- {datetime.fromtimestamp(clock()):%H:%M} happy" in prompt
+    prompt, felt_at = run(scenario())
+    assert f"- {datetime.fromtimestamp(felt_at):%H:%M} happy" in prompt
 
 
 @pytest.mark.parametrize(
