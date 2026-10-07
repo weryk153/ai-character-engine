@@ -8,6 +8,7 @@ Use these references to install, integrate and operate AI Character Engine.
 | [Getting started](getting-started.md) | Install the SDK, verify it and connect a model |
 | [Configuration](configuration.md) | Choose dependencies, endpoints, stores and host settings |
 | [Character companion](companion.md) | Talk to one character through a single object, with memory, state and background cognition wired |
+| [Companion service for games](companion-service.md) | Run a game's NPCs as companions over HTTP and WebSocket, with saves and the game's clock |
 | [Architecture](architecture.md) | Understand state ownership and component boundaries |
 | [API reference](api-reference.md) | Browse all 374 stable root exports and their source definitions |
 | [Extensions](extensions.md) | Integrate providers, plugins, renderers and host services |

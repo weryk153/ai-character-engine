@@ -10,6 +10,7 @@ points; their credentials, stores and host policies must be configured explicitl
 | `companion_chat.py` | Chat with a character that remembers and changes | Running OpenAI-compatible endpoint |
 | `session_runtime.py` | Persist and restore session state | Offline; uses temporary stores |
 | `character_service.py` | HTTP/SSE/WebSocket reference host | `service` extra; offline model |
+| `godot/` | A Godot game whose NPC remembers across days that repeat, and a client addon | Godot 4.3+, `service` extra; a model or `godot/tools/fake_service.py` |
 | `autonomy_host.py` | Host scheduling and shutdown lifecycle | Offline |
 | `providers/ollama_local.py` | Local Ollama connection | Running compatible endpoint |
 | `providers/vllm_local.py` / `providers/vllm_remote.py` | Private inference host | Running endpoint and model |
