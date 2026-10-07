@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ai_character_engine.companion_service import ModelConfig, ServiceConfig, create_app, load_config
-from ai_character_engine.companion_service.registry import GameClock
+from ai_character_engine.companion_service.registry import GameClock, NpcRegistry
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk
 from tests.test_companion import DAWN, dawns_work
 
@@ -341,3 +341,33 @@ def test_a_model_that_cannot_be_reached_is_named_as_such(tmp_path):
             streamed = socket.receive_json()
     assert (response.status_code, response.json()["code"]) == (502, "model_unavailable")
     assert (streamed["type"], streamed["code"]) == ("error", "model_unavailable")
+
+
+def test_a_model_is_told_not_to_think_and_her_background_work_is_kept_short(tmp_path):
+    """A reasoning model (qwen3.5) thinks first unless told not to: with her
+    whole prompt that took over a minute, and the call timed out. Her
+    background work asks for JSON: a low temperature, a cap, the same switch."""
+    path = tmp_path / "game.toml"
+    path.write_text(
+        "[models.foreground]\n"
+        'base_url = "http://127.0.0.1:1234/v1"\n'
+        'model = "qwen/qwen3.5-9b"\n'
+        "temperature = 0.8\n"
+        "[models.foreground.extra_body]\n"
+        'reasoning_effort = "none"\n'
+        "top_k = 20\n",
+        encoding="utf-8",
+    )
+    config = load_config(path)
+    built = []
+    NpcRegistry(config, make_llm=lambda model: built.append(model) or Speaker())
+    foreground, background = built
+    assert foreground.request_options() == {
+        "temperature": 0.8,
+        "extra_body": {"reasoning_effort": "none", "top_k": 20},
+    }
+    assert background.request_options() == {
+        "temperature": 0.1,
+        "max_tokens": 600,
+        "extra_body": {"reasoning_effort": "none"},
+    }

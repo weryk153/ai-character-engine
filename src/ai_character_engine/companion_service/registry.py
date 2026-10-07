@@ -104,7 +104,7 @@ class NpcRegistry:
         elif background is not None:
             self._background = {name: make_llm(model) for name, model in background.items()}
         else:
-            self._background = None
+            self._background = make_llm(config.foreground.for_background())
         self._npcs: dict[tuple[str, str], _Npc] = {}
         self._listeners: dict[str, list[Callable[[str, CompanionSnapshot], None]]] = {}
         self._across_runs: dict[str, AcrossRuns] = {}

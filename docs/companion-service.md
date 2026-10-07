@@ -20,8 +20,8 @@ A TOML file; paths are relative to it.
 | `host`, `port` | `127.0.0.1`, `8765` | Where it listens. Any other host needs a `token` |
 | `token` | none | Asked for as `Authorization: Bearer <token>`, and `?token=` on the WebSocket |
 | `idle_close_seconds` | 600 | An NPC not used this long is closed; it comes back from `data_dir` when used |
-| `[models.foreground]` | required | `base_url`, `model`, optional `api_key`, `temperature`, `max_tokens`: her replies |
-| `[models.background]` | the foreground model | One model for her background work, or one table per worker (`[models.background.memory]`, …) |
+| `[models.foreground]` | required | `base_url`, `model`, optional `api_key`, `temperature`, `max_tokens`, and `[models.foreground.extra_body]` sent as is: her replies. A reasoning model (Qwen 3.5, …) must be told not to think first, e.g. `reasoning_effort = "none"`, or her whole prompt can take longer than the call's 60 s |
+| `[models.background]` | the foreground model, kept short | One model for her background work, or one table per worker (`[models.background.memory]`, …). Left out: the foreground model with temperature 0.1, at most 600 tokens and only the not-thinking keys of its `extra_body` |
 | `[settings]` | | Any [CompanionSettings](companion.md#settings) field |
 
 Every NPC shares one queue for the model: the background work of any of them

@@ -12,8 +12,10 @@ Read from TOML::
     base_url = "http://127.0.0.1:1234/v1"
     model = "qwen/qwen3.5-9b"
     # api_key, temperature, max_tokens
+    [models.foreground.extra_body]    # sent as is; a reasoning model must be told not to think
+    reasoning_effort = "none"
 
-    [models.background]               # optional: the foreground model when left out
+    [models.background]               # optional: the foreground model, kept short, when left out
     base_url = "http://127.0.0.1:1235/v1"
     model = "qwen/qwen3.5-9b"
     # or one table per worker: [models.background.memory] ...
@@ -26,7 +28,7 @@ from __future__ import annotations
 import ipaddress
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,13 @@ from ai_character_engine.companion import CompanionSettings
 from ai_character_engine.companion.companion import _WORKERS
 
 WORKER_NAMES = tuple(worker.name for worker in _WORKERS)
+# What tells a reasoning model not to think first, under the names servers
+# use. Her background work keeps these of the foreground model's extra_body
+# and nothing else: penalties against repeating words punish the keys a JSON
+# answer has to repeat.
+REASONING_KEYS = ("reasoning_effort", "reasoning", "chat_template_kwargs", "enable_thinking", "think")
+WORKER_TEMPERATURE = 0.1
+WORKER_MAX_TOKENS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,20 +52,36 @@ class ModelConfig:
     api_key: str | None = None
     temperature: float | None = None
     max_tokens: int | None = None
+    extra_body: Mapping[str, Any] = field(default_factory=dict)
 
     def request_options(self) -> dict[str, Any]:
-        return {
+        options: dict[str, Any] = {
             name: value
             for name, value in (("temperature", self.temperature), ("max_tokens", self.max_tokens))
             if value is not None
         }
+        if self.extra_body:
+            options["extra_body"] = dict(self.extra_body)
+        return options
+
+    def for_background(self) -> ModelConfig:
+        """The same model for her background work, which answers in JSON: a
+        low temperature, a cap, and only the switch that stops it thinking
+        first (without it a reasoning model thinks until the call times out)."""
+        return replace(
+            self,
+            temperature=WORKER_TEMPERATURE,
+            max_tokens=WORKER_MAX_TOKENS,
+            extra_body={key: value for key, value in self.extra_body.items() if key in REASONING_KEYS},
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class ServiceConfig:
     data_dir: Path
     foreground: ModelConfig
-    # None: the foreground model; one model for every worker; or one per worker.
+    # None: the foreground model, kept short (for_background); one model for
+    # every worker; or one per worker.
     background: ModelConfig | Mapping[str, ModelConfig] | None = None
     host: str = "127.0.0.1"
     port: int = 8765
@@ -97,6 +122,7 @@ def _model(raw: Any, where: str) -> ModelConfig:
         api_key=raw.get("api_key"),
         temperature=raw.get("temperature"),
         max_tokens=raw.get("max_tokens"),
+        extra_body=dict(raw.get("extra_body") or {}),
     )
 
 

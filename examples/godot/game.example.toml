@@ -6,6 +6,9 @@ base_url = "http://127.0.0.1:1234/v1"     # LM Studio, Ollama or any OpenAI-comp
 model = "qwen/qwen3.5-9b"
 temperature = 0.8
 
+[models.foreground.extra_body]            # a reasoning model must not think first
+reasoning_effort = "none"
+
 # [models.background]                     # a second machine or model for her background work
 # base_url = "http://127.0.0.1:1235/v1"
 # model = "qwen/qwen3.5-9b"
