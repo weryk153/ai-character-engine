@@ -34,6 +34,10 @@ jobs:
           --python-version "${{ matrix.python-version }}"
           --source "github-actions:${{ github.run_id }}:${{ github.run_attempt }}:${{ github.sha }}:${{ runner.os }}"
           --output "${{ runner.temp }}/rc-evidence-${{ runner.os }}-py${{ matrix.python-version }}.json"
+      - name: Show failing tests
+        # The evidence step keeps only the pytest summary; print what failed.
+        if: failure()
+        run: python -m pytest -q -rf --tb=short -p no:cacheprovider
       - uses: actions/upload-artifact@v4
         if: always()
         with:
