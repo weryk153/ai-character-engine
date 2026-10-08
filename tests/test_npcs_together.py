@@ -109,3 +109,36 @@ def test_a_rewrite_of_the_same_size_and_time_is_still_seen(tmp_path):
     os.utime(writer.path, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert os.stat(writer.path).st_size == before.st_size
     assert [memory.text for memory in reader.memories] == ["The bell."]
+
+
+def test_a_rewrite_that_reuses_the_inode_is_still_seen(tmp_path, monkeypatch):
+    """ext4 hands a freed inode to the next new file: a rewrite of the same size
+    and mtime can land on the old inode number. Its change time still moves."""
+    import os
+
+    from ai_character_engine.companion import across_runs as module
+
+    reader = module.AcrossRuns(tmp_path)
+    writer = module.AcrossRuns(tmp_path)
+    writer.add("The fire.", tags=(), created_at=0.0, run=1)
+    assert [memory.text for memory in reader.memories] == ["The fire."]
+    first = os.stat(writer.path)
+    writer.forget(writer.memories[0].id)
+    writer.add("The bell.", tags=(), created_at=0.0, run=1)
+    real_stat = os.stat
+
+    def same_inode(path, *args, **kwargs):
+        stat = real_stat(path, *args, **kwargs)
+        if os.fspath(path) != os.fspath(writer.path):
+            return stat
+        class Reused:
+            st_ino, st_mtime_ns, st_size = first.st_ino, first.st_mtime_ns, first.st_size
+            st_ctime_ns = stat.st_ctime_ns + 1
+
+            def __getattr__(self, name):
+                return getattr(stat, name)
+
+        return Reused()
+
+    monkeypatch.setattr(module.os, "stat", same_inode)
+    assert [memory.text for memory in reader.memories] == ["The bell."]

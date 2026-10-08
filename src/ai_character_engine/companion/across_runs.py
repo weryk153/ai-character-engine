@@ -38,7 +38,7 @@ class AcrossRuns:
 
     def __init__(self, directory: str | Path) -> None:
         self.path = Path(directory) / FILE_NAME
-        self._seen: tuple[int, int, int] | None = None
+        self._seen: tuple[int, int, int, int] | None = None
         self._memories: list[AcrossRunsMemory] = []
         self._refresh()
 
@@ -47,14 +47,16 @@ class AcrossRuns:
         self._refresh()
         return self._memories
 
-    def _stamp(self) -> tuple[int, int, int] | None:
+    def _stamp(self) -> tuple[int, int, int, int] | None:
         """Every write moves a new file into place: its inode changes even
-        where the clock is too coarse for the time to."""
+        where the clock is too coarse for the time to, and its change time
+        moves even where the file system hands the freed inode number to the
+        next new file (ext4). Nothing can set the change time back."""
         try:
             stat = self.path.stat()
         except FileNotFoundError:
             return None
-        return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+        return (stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
 
     def _refresh(self) -> None:
         stamp = self._stamp()
