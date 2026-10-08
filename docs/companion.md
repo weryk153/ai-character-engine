@@ -488,6 +488,14 @@ background model of its own is free. Without one, picks share her model and
 run beside her reply, which may slow it; give the picks a model elsewhere
 when that matters.
 
+On a model server that caches prompts in blocks and reports prompt tokens
+(LM Studio: blocks of 256), set `CompanionSettings.actions_cache_block` to
+the block: the first line of an avatar has two short requests find out how
+long the fixed part (instructions and lists) is, and it is padded so that a
+block ends inside it; each line after reads only itself again (on a 9B
+model, about 3 s down to 1.4 s a line). 0, the default, leaves the request
+as it is.
+
 `voice()` is for a voice with one reference per feeling: the first
 expression picked in this reply, else her mood through `mood_faces`, else
 `None`.

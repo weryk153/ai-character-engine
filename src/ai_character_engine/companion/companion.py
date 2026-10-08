@@ -1173,6 +1173,7 @@ class CharacterCompanion:
         clients = self._background_clients(llm if background_llm is None else background_llm)
         # The faces and gestures of her lines (reply_actions): the "actions"
         # client of a mapping, else the one background client, else hers.
+        self._actions_pads: dict[str, Any] = {}
         if actions_llm is not None:
             self._actions_llm = actions_llm
         elif isinstance(background_llm, Mapping):
@@ -2940,6 +2941,8 @@ class CharacterCompanion:
             choices=choices,
             mood=self._mood,
             timeout_seconds=self.settings.actions_timeout_seconds,
+            cache_block=self.settings.actions_cache_block,
+            pads=self._actions_pads,
         )
 
     def snapshot(self) -> CompanionSnapshot:

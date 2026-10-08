@@ -63,6 +63,11 @@ class CompanionSettings:
     # take. The host decides how long its voice waits for one; a pick past
     # this is given up.
     actions_timeout_seconds: float = 6.0
+    # The prompt cache block of the model server that picks them, in tokens
+    # (LM Studio: 256): the fixed part of the request is padded so that a
+    # block ends inside it, and each line then reads only itself again. The
+    # server must report prompt tokens; 0 leaves the request as it is.
+    actions_cache_block: int = 0
     # How many conversations keep their recent messages in memory at once.
     conversations_kept: int = 8
     max_history_messages: int = 40
@@ -155,6 +160,8 @@ class CompanionSettings:
             raise ValueError("foreground_patience_seconds must be > 0")
         if self.actions_timeout_seconds <= 0:
             raise ValueError("actions_timeout_seconds must be > 0")
+        if self.actions_cache_block < 0:
+            raise ValueError("actions_cache_block must be >= 0")
         if self.mood_half_life_seconds <= 0:
             raise ValueError("mood_half_life_seconds must be > 0")
         if not 0 <= self.mood_floor <= 1:

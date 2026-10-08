@@ -237,3 +237,89 @@ def test_a_model_of_its_own_for_the_picks_comes_before_the_background_one(tmp_pa
     )
     assert run(mei.reply_actions(CHOICES).pick("You came!")).expression == "anger"
     assert background.asked == []
+
+
+# --- lining the prompt up with the model server's cache ---------------------------------------
+
+
+class Counting(Model):
+    """A model server that counts a character as a token, plus the end of its chat template."""
+
+    END = 9
+
+    def __init__(self, *args, usage=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.usage = usage
+
+    async def generate(self, messages, *, tools=None):
+        response = await super().generate(messages, tools=tools)
+        if not self.usage:
+            return response
+        tokens = sum(len(m.content) for m in messages) + self.END
+        return LLMResponse(text=response.text, input_tokens=tokens)
+
+
+def shared_part(messages):
+    """What every line's request has in common: all but the mood, the line before and the line."""
+    system, user = messages
+    return len(system.content) + len(user.content.split("Her mood:")[0])
+
+
+def test_the_fixed_part_is_padded_so_a_cache_block_ends_inside_it():
+    model = Counting()
+    picker = ReplyActions(
+        client=model, choices=CHOICES, mood=lambda: ("sad", 0.42), timeout_seconds=6.0, cache_block=128
+    )
+
+    async def lines():
+        await picker.pick("You came!")
+        await asyncio.sleep(0)  # the probes run beside the first line
+        await picker.calibrated
+        await picker.pick("I am tired today.")
+        await picker.pick("Shall we go?")
+
+    asyncio.run(lines())
+    asked = [m for m in model.asked if "Line: " in m[-1].content]
+    for messages in asked[1:]:
+        tokens = sum(len(m.content) for m in messages) + Counting.END
+        assert tokens // 128 * 128 <= shared_part(messages) < tokens  # the block before the line is kept
+    assert len(model.asked) == len(asked) + 2  # two probes, once
+
+
+def test_a_server_that_does_not_count_tokens_gets_no_padding():
+    model = Counting(usage=False)
+    picker = ReplyActions(client=model, choices=CHOICES, mood=lambda: ("sad", 0.42), timeout_seconds=6.0, cache_block=128)
+
+    async def lines():
+        await picker.pick("You came!")
+        await picker.calibrated
+        await picker.pick("I am tired today.")
+
+    asyncio.run(lines())
+    last = model.asked[-1][-1].content
+    assert last.startswith("Expressions:") and "\n." not in last and " . ." not in last
+
+
+def test_without_a_cache_block_nothing_is_probed():
+    model = Counting()
+    asyncio.run(actions(model).pick("You came!"))
+    assert len(model.asked) == 1
+
+
+def test_the_companion_probes_once_for_the_same_avatar(tmp_path):
+    model = Counting()
+    mei = companion(tmp_path, {"actions": model}, actions_cache_block=128)
+
+    async def two_replies():
+        first = mei.reply_actions(CHOICES)
+        await first.pick("You came!")
+        await first.calibrated
+        await mei.reply_actions(CHOICES).pick("Again!")
+
+    run(two_replies())
+    assert len(model.asked) == 4  # two probes, two lines
+
+
+def test_the_cache_block_is_not_negative():
+    with pytest.raises(ValueError, match="actions_cache_block"):
+        CompanionSettings(actions_cache_block=-1)

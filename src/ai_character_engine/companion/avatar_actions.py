@@ -28,12 +28,35 @@ from ai_character_engine.llm.models import Message
 
 SYSTEM_PROMPT = """\
 You direct an animated character's face and body while she speaks. For the line she is saying now, pick the facial expression that fits the feeling of that line, and a gesture only when the line clearly calls for one (a greeting, agreeing, pointing something out); most lines have no gesture. Use the previous line and her current mood only as context: the expression follows the line she is saying now. Pick only from the lists given. intensity is how strongly the expression shows, from 0 (barely) to 1 (fully).
+
+How to read a line:
+- Follow how she feels while saying it, not what it is about: telling of a rainy day cheerfully is still a happy face, and a joke about something sad is not a sad one.
+- A question asked out of curiosity or to keep the talk going is a light, friendly face, not surprise. Surprise is for something unexpected she has just heard or noticed, often with "!" or "?!".
+- Teasing, boasting and playful lines take a playful or smug face when the list has one, else a happy one.
+- Apologies, worry, missing someone and small disappointments take a sad or worried face at a low intensity; only crying or real grief is strong.
+- Shyness, being praised or caught out takes an embarrassed face when the list has one.
+- Plain explanations, agreeing and calm statements take the neutral or relaxed face at a low intensity, or null when nothing fits.
+- Keep most intensities between 0.3 and 0.7. Use 0.8 to 1 only for lines that are clearly strong: shouting, laughing out loud, crying.
+- When the previous line had the same feeling, keep the same expression instead of switching back and forth.
+- Gestures: a greeting or a goodbye may wave, agreeing may nod, cheering or praise may clap, pointing at something may point; ordinary talk has none (null). Use the descriptions in brackets to know what each motion is.
+
+Examples, for an avatar whose lists are joy, sadness, surprise, neutral and a wave:
+Line: Good morning! You came! -> {"expression":"joy","motion":"wave","intensity":0.8}
+Line: I see, so that is how it works. -> {"expression":"neutral","motion":null,"intensity":0.3}
+Line: Wait, you did that all by yourself?! -> {"expression":"surprise","motion":null,"intensity":0.8}
+Line: It is a little lonely when you are away. -> {"expression":"sadness","motion":null,"intensity":0.4}
+
 Reply with JSON only, on one line without spaces:
 {"expression":"<one of the expressions, or null>","motion":"<one of the motions, or null>","intensity":<0 to 1>}"""
 
 _THINK = re.compile(r"<think>.*?</think>", re.S)
 _FENCE = re.compile(r"```(?:json)?")
 _NOTHING = {"", "null", "none", "nil", "n/a", "-"}
+# Lining the prompt up with a model server's cache (cache_block): the fixed
+# part is padded with this, so that a block ends a little before the line.
+PAD_UNIT = " ."
+_PROBE_UNITS = 16
+_MARGIN = 32  # tokens between the last block of the fixed part and its end
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,8 +147,14 @@ class ReplyActions:
         choices: AvatarChoices,
         mood: Callable[[], tuple[str, float]],
         timeout_seconds: float,
+        cache_block: int = 0,
+        pads: dict[str, Any] | None = None,
     ) -> None:
         self.choices = choices
+        self._block = cache_block
+        # The padding of each fixed part, or the task finding it; shared by
+        # the pickers of one companion so that it is found once per avatar.
+        self._pads = pads if pads is not None else {}
         self._client = client
         self._mood = mood
         self._timeout = timeout_seconds
@@ -138,19 +167,27 @@ class ReplyActions:
         """Whether a line can get anything at all: a model, and something to pick."""
         return self._client is not None and bool(self.choices.expressions or self.choices.motions)
 
-    def _messages(self, line: str, previous: str) -> list[Message]:
+    def _fixed(self) -> str:
+        """The part of every request that is the same for each line of this avatar."""
+        motions = ", ".join(
+            f"{key} ({label})" if label else key for key, label in self.choices.motions.items()
+        )
+        return "\n".join(
+            [
+                f"Expressions: {', '.join(self.choices.expressions) or '(none)'}",
+                f"Motions: {motions or '(none)'}",
+            ]
+        )
+
+    def _messages(self, line: str, previous: str, pad: str = "") -> list[Message]:
         try:
             mood, intensity = self._mood()
             feeling = f"{mood} ({intensity:.2f})"
         except Exception:
             feeling = "unknown"
-        motions = ", ".join(
-            f"{key} ({label})" if label else key for key, label in self.choices.motions.items()
-        )
         user = "\n".join(
             [
-                f"Expressions: {', '.join(self.choices.expressions) or '(none)'}",
-                f"Motions: {motions or '(none)'}",
+                self._fixed() + (f"\n{pad}" if pad else ""),
                 f"Her mood: {feeling}",
                 f"Previous line: {previous.strip() or '(none)'}",
                 f"Line: {line.strip()}",
@@ -169,7 +206,7 @@ class ReplyActions:
         self._asking = True
         try:
             response = await asyncio.wait_for(
-                self._client.generate(self._messages(line, previous)), timeout=self._timeout
+                self._client.generate(self._messages(line, previous, self._pad())), timeout=self._timeout
             )
             picked = read_pick(getattr(response, "text", "") or "", self.choices)
         except Exception:  # noqa: BLE001 - a pick that fails is a line without a face
@@ -179,6 +216,58 @@ class ReplyActions:
         if picked is not None and picked.expression and self._first_expression is None:
             self._first_expression = picked.expression
         return picked
+
+    def _pad(self) -> str:
+        """The padding of this avatar's fixed part: "" until it is found, and
+        with no cache_block. The first line asked starts finding it."""
+        if not self._block or self._client is None:
+            return ""
+        key = self._fixed()
+        found = self._pads.get(key)
+        if isinstance(found, str):
+            return found
+        if found is None or found.get_loop() is not asyncio.get_running_loop():
+            task = asyncio.get_running_loop().create_task(self._find_pad())
+            task.add_done_callback(lambda done: self._keep(key, done))
+            self._pads[key] = task
+        return ""
+
+    def _keep(self, key: str, done: asyncio.Task) -> None:
+        if self._pads.get(key) is done:
+            self._pads[key] = "" if done.cancelled() or done.exception() else done.result()
+
+    async def _find_pad(self) -> str:
+        """Ask the server how many tokens the fixed part is, with and without
+        some padding, and pad it until a block ends _MARGIN tokens before its
+        end. No padding when the server does not say."""
+        fixed = self._fixed()
+
+        async def tokens(user: str) -> int | None:
+            messages = [Message(role="system", content=SYSTEM_PROMPT), Message(role="user", content=user)]
+            response = await asyncio.wait_for(self._client.generate(messages), timeout=self._timeout)
+            count = getattr(response, "input_tokens", None)
+            return count if isinstance(count, int) and count > 0 else None
+
+        bare = await tokens(fixed)
+        padded = await tokens(f"{fixed}\n{PAD_UNIT * _PROBE_UNITS}") if bare else None
+        if not bare or not padded or padded <= bare:
+            return ""
+        unit = (padded - bare) / _PROBE_UNITS
+        for count in range(int(self._block / unit) + 2):
+            if _MARGIN <= (bare + count * unit) % self._block < _MARGIN + unit + 1:
+                return PAD_UNIT * count
+        return ""
+
+    @property
+    def calibrated(self) -> Any:
+        """Awaitable: done when the padding of this avatar is known (or not looked for)."""
+        found = self._pads.get(self._fixed())
+
+        async def wait() -> None:
+            if isinstance(found, asyncio.Task):
+                await asyncio.wait({found})
+
+        return wait()
 
     def voice(self) -> str | None:
         """The tone of the next line, as one of the host's expressions: the
