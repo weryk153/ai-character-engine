@@ -323,3 +323,60 @@ def test_the_companion_probes_once_for_the_same_avatar(tmp_path):
 def test_the_cache_block_is_not_negative():
     with pytest.raises(ValueError, match="actions_cache_block"):
         CompanionSettings(actions_cache_block=-1)
+
+
+class LongEnd(Counting):
+    END = 40  # a chat template that closes with more tokens than the old margin
+
+
+def test_a_long_chat_template_end_still_leaves_the_block_inside_the_fixed_part():
+    model = LongEnd()
+    picker = ReplyActions(
+        client=model, choices=CHOICES, mood=lambda: ("sad", 0.42), timeout_seconds=6.0, cache_block=128
+    )
+
+    async def lines():
+        await picker.pick("Hi.")
+        await picker.calibrated
+        await picker.pick("Hm.")
+
+    asyncio.run(lines())
+    messages = model.asked[-1]
+    tokens = sum(len(m.content) for m in messages) + LongEnd.END
+    assert tokens // 128 * 128 <= shared_part(messages)
+
+
+def test_a_probe_that_fails_is_tried_again_later(monkeypatch):
+    from ai_character_engine.companion import avatar_actions
+
+    monkeypatch.setattr(avatar_actions, "PROBE_RETRY_SECONDS", 0.0)
+
+    class Flaky(Counting):
+        failures = 1
+
+        async def generate(self, messages, *, tools=None):
+            if "Line: " not in messages[-1].content and Flaky.failures:
+                Flaky.failures -= 1
+                raise RuntimeError("model is loading")
+            return await super().generate(messages, tools=tools)
+
+    model = Flaky()
+    picker = ReplyActions(client=model, choices=CHOICES, mood=lambda: ("sad", 0.42), timeout_seconds=6.0, cache_block=128)
+
+    async def lines():
+        await picker.pick("You came!")
+        await picker.calibrated  # failed
+        await picker.pick("I am tired today.")
+        await picker.calibrated  # tried again
+        await picker.pick("Shall we go?")
+
+    asyncio.run(lines())
+    assert " . ." in model.asked[-1][-1].content
+
+
+def test_a_line_skipped_by_the_host_is_still_the_line_before_the_next():
+    model = Model()
+    picker = actions(model)
+    picker.skip("You came!")
+    asyncio.run(picker.pick("I am tired today."))
+    assert "Previous line: You came!" in model.asked[0][-1].content

@@ -56,7 +56,13 @@ _NOTHING = {"", "null", "none", "nil", "n/a", "-"}
 # part is padded with this, so that a block ends a little before the line.
 PAD_UNIT = " ."
 _PROBE_UNITS = 16
-_MARGIN = 32  # tokens between the last block of the fixed part and its end
+# Tokens between the last block of the fixed part and its end. The probes
+# also count the end of the chat template (about 10 tokens on Qwen), which a
+# real request does not share; the margin keeps the block before the line.
+_MARGIN = 48
+# A probe that failed (the model loading, the server busy) is tried again
+# after this long; until then the request goes unpadded.
+PROBE_RETRY_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,15 +232,23 @@ class ReplyActions:
         found = self._pads.get(key)
         if isinstance(found, str):
             return found
-        if found is None or found.get_loop() is not asyncio.get_running_loop():
+        loop = asyncio.get_running_loop()
+        if isinstance(found, float) and loop.time() < found:
+            return ""
+        if not isinstance(found, asyncio.Task) or found.get_loop() is not loop:
             task = asyncio.get_running_loop().create_task(self._find_pad())
             task.add_done_callback(lambda done: self._keep(key, done))
             self._pads[key] = task
         return ""
 
     def _keep(self, key: str, done: asyncio.Task) -> None:
-        if self._pads.get(key) is done:
-            self._pads[key] = "" if done.cancelled() or done.exception() else done.result()
+        if self._pads.get(key) is not done:
+            return
+        if done.cancelled() or done.exception() is not None:
+            # Not an answer about the server: try again later.
+            self._pads[key] = done.get_loop().time() + PROBE_RETRY_SECONDS
+        else:
+            self._pads[key] = done.result()
 
     async def _find_pad(self) -> str:
         """Ask the server how many tokens the fixed part is, with and without
@@ -248,15 +262,23 @@ class ReplyActions:
             count = getattr(response, "input_tokens", None)
             return count if isinstance(count, int) and count > 0 else None
 
-        bare = await tokens(fixed)
-        padded = await tokens(f"{fixed}\n{PAD_UNIT * _PROBE_UNITS}") if bare else None
+        # Both with the new line before the padding, so that only the units differ.
+        bare = await tokens(f"{fixed}\n{PAD_UNIT}")
+        padded = await tokens(f"{fixed}\n{PAD_UNIT * (_PROBE_UNITS + 1)}") if bare else None
         if not bare or not padded or padded <= bare:
             return ""
         unit = (padded - bare) / _PROBE_UNITS
-        for count in range(int(self._block / unit) + 2):
-            if _MARGIN <= (bare + count * unit) % self._block < _MARGIN + unit + 1:
+        if unit < 0.5:  # not a count of tokens this can work with
+            return ""
+        for count in range(1, int(self._block / unit) + 3):
+            if _MARGIN <= (bare + (count - 1) * unit) % self._block < _MARGIN + unit + 1:
                 return PAD_UNIT * count
         return ""
+
+    def skip(self, line: str) -> None:
+        """A line the host did not ask about (it gave up waiting): it is still
+        the line before the next one."""
+        self._previous = line
 
     @property
     def calibrated(self) -> Any:
