@@ -438,6 +438,8 @@ def create_app(
         outbox: asyncio.Queue[dict] = asyncio.Queue()
         turns = RecentTurns()
         running: dict[str, str] = {}  # request -> what the player saw of it, once interrupted
+        pickers: set[LinePicks] = set()  # stopped when the socket goes
+        gone = False
 
         def told(npc: str, snapshot: CompanionSnapshot) -> None:
             outbox.put_nowait({"type": "state", "npc": npc, "state": state_of(snapshot)})
@@ -454,6 +456,7 @@ def create_app(
         async def one_reply(request: str, npc: str, message: dict) -> None:
             running[request] = ""
             picks: LinePicks | None = None
+            ended = False  # her whole reply was said: its last line still gets a pick
             try:
                 try:
                     body = ReplyIn.model_validate(message)
@@ -464,7 +467,7 @@ def create_app(
                 companion = npcs.companion(slot, npc, body.game_time)
                 entry = npcs.entry(slot, npc)
                 turns.add(request, npc, body.conversation_id)
-                if entry.avatar is not None:
+                if entry.avatar is not None and not gone:
                     picks = LinePicks(
                         companion.reply_actions(entry.avatar),
                         lambda message: outbox.put_nowait({"type": "actions", "id": request, "npc": npc, **message}),
@@ -472,6 +475,8 @@ def create_app(
                     # Picks may be made after her reply has ended: kept by the app.
                     replies.add(picks.task)
                     picks.task.add_done_callback(replies.discard)
+                    pickers.add(picks)
+                    picks.task.add_done_callback(lambda _, picks=picks: pickers.discard(picks))
 
                 def delta(text: str) -> None:
                     outbox.put_nowait({"type": "delta", "id": request, "npc": npc, "text": text})
@@ -495,6 +500,7 @@ def create_app(
                         "state": state_of(companion.snapshot()),
                     }
                 )
+                ended = not interrupted
             except ServiceError as exc:
                 fail(request, npc, exc.code, exc.message)
             except Exception as exc:
@@ -503,7 +509,10 @@ def create_app(
             finally:
                 running.pop(request, None)
                 if picks is not None:
-                    picks.finish()
+                    if ended:
+                        picks.finish()
+                    else:  # cut short or failed: the player is not shown the rest
+                        picks.stop()
 
         def interrupt(request: str, message: dict) -> None:
             npc, conversation = turns.get(request) or (str(message.get("npc", "")), None)
@@ -549,7 +558,10 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
+            gone = True
             stop_listening()
             sender.cancel()
+            for picks in list(pickers):
+                picks.stop()
 
     return app

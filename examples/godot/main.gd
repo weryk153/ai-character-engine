@@ -39,6 +39,7 @@ var run := 1
 var day_time := 0.0
 var deeds_done: Dictionary = {}
 var reply_id := ""
+var face_id := ""  # the latest reply: its picks may come after it is done
 var reply_text := ""
 var mood_line := ""
 var ending := false
@@ -73,7 +74,7 @@ func _ready() -> void:
 	client.done.connect(_on_done)
 	client.state_changed.connect(func(npc, state): if npc == NPC: _show(state))
 	client.failed.connect(_on_failed)
-	client.actions.connect(func(npc, _id, picked): if npc == NPC: _face(picked))
+	client.actions.connect(func(npc, id, picked): if npc == NPC and id == face_id: _face(picked, id == reply_id))
 	run = _read_run()
 	if not await client.connect_socket():
 		_system("[color=red]No service at %s.[/color] Start it first (see README)." % client.base_url)
@@ -141,6 +142,7 @@ func _talk(text: String, notes: Array = []) -> void:
 	_log.append_text("\n[b]You:[/b] %s\n[b]%s:[/b] " % [text, character.name])
 	reply_text = ""
 	reply_id = client.say(NPC, text, CONVERSATION, notes)
+	face_id = reply_id
 
 
 func _on_delta(npc: String, id: String, text: String) -> void:
@@ -221,10 +223,10 @@ func _show(state: Dictionary) -> void:
 	_tick()
 
 
-func _face(picked: Dictionary) -> void:
+func _face(picked: Dictionary, speaking: bool) -> void:
 	face = str(picked.get("expression", "")) if picked.get("expression") != null else face
 	var motion = picked.get("motion")
-	if motion != null:
+	if motion != null and speaking:  # a gesture is shown beside the line still being said
 		_log.append_text(" [i](%s)[/i]" % motion)
 	_tick()
 

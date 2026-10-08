@@ -483,8 +483,10 @@ slower than `CompanionSettings.actions_timeout_seconds` (6), failing or
 answering no JSON, and a line asked while the picker is still on another of
 the same reply (one at a time; nothing queues) are `None`. How long a voice
 waits for a pick is the host's choice. The call goes straight to the model,
-not through `ModelAccess`: while she speaks her workers wait, so the
-background model is free.
+not through `ModelAccess`: while she speaks her workers wait, so a
+background model of its own is free. Without one, picks share her model and
+run beside her reply, which may slow it; give the picks a model elsewhere
+when that matters.
 
 `voice()` is for a voice with one reference per feeling: the first
 expression picked in this reply, else her mood through `mood_faces`, else

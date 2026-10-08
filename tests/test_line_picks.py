@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 from fastapi.testclient import TestClient
 
 from ai_character_engine.companion import LineActions
 from ai_character_engine.companion_service import ModelConfig, ServiceConfig, create_app
 from ai_character_engine.companion_service.line_picks import LinePicks, cut_lines
-from ai_character_engine.llm.models import LLMResponse
+from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk
 from tests.test_companion_service import MIRA, Speaker
 
 AVATAR = {
@@ -84,6 +85,14 @@ def test_lines_end_at_sentence_marks_and_new_lines():
     assert cut_lines("The end.") == ([], "The end.")
     assert cut_lines("「好！」她說。然後") == (["「好！」", "她說。"], "然後")
     assert cut_lines("真的？") == ([], "真的？")    # ？！ or 」 may still come
+
+
+def test_a_quote_closed_after_a_full_stop_ends_the_line_and_titles_do_not():
+    assert cut_lines('He said "Go." Then') == (['He said "Go."'], " Then")
+    assert cut_lines("Mr. Smith and Dr. Lee came, e.g. today. Then") == (
+        ["Mr. Smith and Dr. Lee came, e.g. today."],
+        " Then",
+    )
 
 
 def test_lines_are_picked_in_order_and_a_line_without_words_is_skipped():
@@ -219,3 +228,91 @@ def test_a_reply_over_http_waits_for_its_picks_only_so_long(tmp_path):
         took = time.monotonic() - began
     assert reply["text"] == "Good morning. I am tired. It rained. Good night."
     assert 1 <= len(reply["actions"]) < 4 and took < 1.0
+
+
+# --- a reply cut short ----------------------------------------------------------------------------
+
+
+class SlowDirector(Director):
+    async def generate(self, messages, *, tools=None):
+        if "Line: " in messages[-1].content:
+            await asyncio.sleep(0.3)
+        return await super().generate(messages, tools=tools)
+
+
+class Breaking(Speaker):
+    """Her model: one line, then it fails."""
+
+    async def stream_generate(self, messages, *, tools=None):
+        yield LLMStreamChunk(text="Good morning. I am tired. ")
+        raise RuntimeError("model is down")
+
+
+def slow_service(tmp_path, speaker):
+    director = SlowDirector()
+    config = ServiceConfig(
+        data_dir=tmp_path / "data",
+        foreground=ModelConfig(base_url="http://speaker", model="speaker"),
+        background=ModelConfig(base_url="http://director", model="director"),
+        settings={"emotion_every": 0, "reply_check_every": 0, "mood_every": 0, "memory_every": 0,
+                  "memory_conflicts": False, "self_memory_every": 0, "goal_every": 0,
+                  "reflection_every": 0, "user_state_every": 0, "diary_every_hours": 0},
+    )
+    models = {"speaker": speaker, "director": director}
+    app = create_app(config, make_llm=lambda model: models[model.model])
+    return TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False), director
+
+
+def after(socket, kind):
+    """Every message up to and including the first of ``kind``."""
+    messages = []
+    while not messages or messages[-1]["type"] != kind:
+        messages.append(socket.receive_json())
+    return messages
+
+
+def later(socket):
+    """Every message the socket sends in the next second (closed by an error asked for)."""
+    time.sleep(1.0)
+    socket.send_json({"type": "reply", "id": "probe", "npc": "nobody", "text": "hi"})
+    return after(socket, "error")
+
+
+def test_no_picks_come_after_her_reply_failed(tmp_path):
+    client, director = slow_service(tmp_path, Breaking())
+    with client:
+        opened(client, avatar=AVATAR)
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi"})
+            after(socket, "error")
+            rest = later(socket)
+    assert [m for m in rest if m["type"] == "actions"] == []
+    assert len(director.lines) <= 1
+
+
+def test_no_picks_come_after_the_player_cut_her_off(tmp_path):
+    from tests.test_companion_service import Slow
+
+    speaker = Slow()
+    client, _ = slow_service(tmp_path, speaker)
+    with client:
+        opened(client, avatar=AVATAR)
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi"})
+            after(socket, "delta")
+            socket.send_json({"type": "interrupt", "id": "r1", "npc": "mira", "heard": "Good morning."})
+            done = after(socket, "done")[-1]
+            rest = later(socket)
+    assert done["interrupted"] is True
+    assert [m for m in rest if m["type"] == "actions"] == []
+
+
+def test_no_picks_are_made_for_a_socket_that_is_gone(tmp_path):
+    client, director = slow_service(tmp_path, Speaker("Good morning. I am tired. It rained. Good night."))
+    with client:
+        opened(client, avatar=AVATAR)
+        with client.websocket_connect("ws://127.0.0.1/slots/s1/ws") as socket:
+            socket.send_json({"type": "reply", "id": "r1", "npc": "mira", "text": "hi"})
+            after(socket, "done")
+        time.sleep(1.5)
+    assert len(director.lines) <= 2

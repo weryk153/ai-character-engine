@@ -87,8 +87,10 @@ and receives
   "intensity", "voice"}` for an NPC opened with an `avatar`: a face and a
   gesture for one line of her reply, picked from the avatar's lists by her
   background model, her mood and the line before. Lines end at `。！？!?…`, a
-  new line, or a full stop before a space; `index` counts them from 0. A line
-  that gets nothing is skipped, and picks may come after `done`. `voice` is
+  new line, or a full stop before a space (or a closing quote and a space),
+  but not after a title such as `Mr.`; `index` counts them from 0. A line
+  that gets nothing is skipped, and picks may come after `done`; a reply
+  interrupted or failed, or a socket closed, gets no more. `voice` is
   the tone of the line (the first expression picked in the reply, else her
   mood through `mood_faces`), for a voice with one reference per feeling.
 

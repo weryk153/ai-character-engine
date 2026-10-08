@@ -2921,8 +2921,9 @@ class CharacterCompanion:
         actions.pick(line)``): her background model picks from ``choices``
         by the line, the one before it and her mood. The call goes straight
         to the model, not through ModelAccess, which would hold it until she
-        has finished speaking; while she speaks her workers wait, so the
-        background model is free. One line at a time per reply; a pick that
+        has finished speaking; while she speaks her workers wait, so a
+        background model of its own is free (without one, picks share her
+        model and may slow her reply). One line at a time per reply; a pick that
         cannot be made is ``None``. ``actions.voice()`` is the tone of a line
         for a voice with one reference per feeling.
         """
