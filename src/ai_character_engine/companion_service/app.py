@@ -36,8 +36,8 @@ from ai_character_engine.companion import (
     StateBusy,
     StateFormatError,
     TurnInterrupted,
+    save_state,
 )
-from ai_character_engine.companion import save_state
 from ai_character_engine.llm.errors import LLMError
 
 from .config import LOOPBACK_NAMES, ModelConfig, ServiceConfig, _loopback
@@ -497,7 +497,7 @@ def create_app(
                 )
             except ServiceError as exc:
                 fail(request, npc, exc.code, exc.message)
-            except Exception as exc:  # noqa: BLE001 - reported to the game, the socket stays open
+            except Exception as exc:
                 logger.exception("reply %s of %s failed", request, npc)
                 fail(request, npc, "internal_error", str(exc))
             finally:

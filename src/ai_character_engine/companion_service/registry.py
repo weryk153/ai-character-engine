@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any
 
 from ai_character_engine import CharacterProfile
-from ai_character_engine.companion import AvatarChoices, CharacterCompanion, CompanionSnapshot, ModelAccess
+from ai_character_engine.companion import (
+    AvatarChoices,
+    CharacterCompanion,
+    CompanionSnapshot,
+    ModelAccess,
+)
 from ai_character_engine.companion.across_runs import AcrossRuns
 from ai_character_engine.llm.local import OpenAICompatibleChatClient
 
