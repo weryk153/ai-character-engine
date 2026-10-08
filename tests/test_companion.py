@@ -4736,3 +4736,45 @@ def test_what_her_days_were_made_of_is_let_go_after_eight_days(tmp_path):
     lines = (tmp_path / "engine" / "diary_log.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["conversation"] for line in lines] == ["a"]
     assert json.loads(lines[0])["at"] > clock() - 86400
+
+
+def test_her_remarks_the_user_has_not_answered_are_counted(tmp_path):
+    """She spoke up and nobody answered: the next time she speaks up she must
+    not take her own last remark for the user's question."""
+
+    async def scenario():
+        llm = Foreground(("Hello there.",))
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        counts = [current.unanswered_remarks("a")]
+        llm.parts = ("Shall we talk about games?",)
+        await current.speak_up("a")
+        counts.append(current.unanswered_remarks("a"))
+        await current.remember_remark("a", "Anyone there?")
+        counts.append(current.unanswered_remarks("a"))
+        counts.append(current.unanswered_remarks("b"))
+        await current.reply("sorry, I was away", conversation_id="a")
+        counts.append(current.unanswered_remarks("a"))
+        await current.close()
+        return counts
+
+    assert run(scenario()) == [0, 1, 2, 0, 0]
+
+
+def test_speaking_up_again_unanswered_she_is_told_her_last_remark_was_hers(tmp_path):
+    async def scenario():
+        llm = Foreground(("Hello there.",))
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        llm.parts = ("Shall we talk about games?",)
+        await current.speak_up("a")
+        first = llm.calls[-1][-1].content
+        llm.parts = ("I found a new game.",)
+        await current.speak_up("a")
+        second = llm.calls[-1][-1].content
+        await current.close()
+        return first, second
+
+    first, second = run(scenario())
+    assert "not answered" not in first
+    assert "1 time" in second and "not answered" in second

@@ -401,6 +401,14 @@ REMARK_ATTEMPTS = 3
 LINES_CHECKED = 8
 # What stays in the conversation before a remark she made on her own.
 REMARK_EVENT = "The user had been quiet for a while; you spoke up on your own."
+# Added to her instruction when she speaks up again and the user has not
+# answered her last remark: she took that remark for the user's question.
+UNANSWERED_NOTE = (
+    "You have already spoken up {n} {times} since the user last said anything, and they have "
+    "not answered. The last thing in the conversation is your own remark, not something they "
+    "asked: do not answer it as if they had, and do not talk as if they just spoke. Carry on "
+    "from it in your own words, or call out to them."
+)
 # After every worker: the workers are ranked by their place in _WORKERS.
 _HOST_RANK = 1_000
 # How the user seemed on the turns of a conversation since its user state was
@@ -1057,6 +1065,8 @@ class CharacterCompanion:
         self._told: dict[str | None, frozenset[str]] = {}
         # Per conversation: the turn that made its newest reply, and the reply.
         self._newest_reply: dict[str | None, tuple[Any, Message]] = {}
+        # Per conversation: her remarks since the user last said anything.
+        self._unanswered: dict[str | None, int] = {}
         # Per conversation: the serial of its last turn, whatever came of it,
         # and of the turn that made the newest reply. A turn that failed or
         # was kept out of memory leaves the reply before it in place, and
@@ -1531,7 +1541,9 @@ class CharacterCompanion:
         that filters what she says and keeps what was spoken itself with
         remember_remark(). ``instruction`` replaces the engine's own, for a
         host that asks in the language she speaks; what she said the last time
-        she spoke up is added to either.
+        she spoke up is added to either. When the user has not answered her
+        last remark, the engine's own instruction says so (UNANSWERED_NOTE); a
+        host with its own reads unanswered_remarks() and says it in its words.
 
         What she says is checked before any of it is passed on. A sentence
         that repeats one of her latest lines, quotes her own words back, talks
@@ -1542,8 +1554,13 @@ class CharacterCompanion:
         Otherwise she is asked again, up to REMARK_ATTEMPTS times, and then
         stays quiet.
         """
+        text = instruction or SPEAK_UP_INSTRUCTION
+        unanswered = self._unanswered.get(conversation_id, 0)
+        if unanswered and instruction is None:
+            times = "time" if unanswered == 1 else "times"
+            text = f"{text}\n\n{UNANSWERED_NOTE.format(n=unanswered, times=times)}"
         return await self._run(
-            instruction or SPEAK_UP_INSTRUCTION,
+            text,
             conversation_id=conversation_id,
             frames=frames,
             on_text_delta=on_text_delta,
@@ -1593,6 +1610,8 @@ class CharacterCompanion:
                     self._last_turn[conversation_id] = next(self._serial)
                     self._record_interrupted(conversation_id, text, turn.heard, remark)
                     raise TurnInterrupted("The reply was interrupted.")
+                if remark is None:  # the user said something
+                    self._unanswered.pop(conversation_id, None)
                 self._unfinished = None
                 self._turn_started_at = self._clock()
                 if before_turn is not None:
@@ -1706,6 +1725,12 @@ class CharacterCompanion:
         newest = self._newest_reply.get(self._active)
         if newest and before is not None and newest[1] is before and history[-1] is not before:
             self._newest_reply[self._active] = (newest[0], history[-1])
+
+    def unanswered_remarks(self, conversation_id: str | None = None) -> int:
+        """How many times she has spoken up in this conversation since the user
+        last said anything. speak_up tells her so in its own instruction; a host
+        with its own instruction can tell her in its words."""
+        return self._unanswered.get(conversation_id, 0)
 
     async def remember_remark(self, conversation_id: str | None, remark: str) -> None:
         """Keep a remark she made on her own in the conversation.
@@ -1852,6 +1877,7 @@ class CharacterCompanion:
         )
         reply = Message("assistant", remark)
         self.runtime.history.extend([event, reply])
+        self._unanswered[conversation_id] = self._unanswered.get(conversation_id, 0) + 1
         serial = next(self._serial)
         self._last_turn[conversation_id] = serial
         self._newest_turn[conversation_id] = serial
