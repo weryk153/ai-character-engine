@@ -22,7 +22,7 @@ A TOML file; paths are relative to it.
 | `idle_close_seconds` | 600 | An NPC not used this long, and with no background work under way, is closed; it comes back from `data_dir` when used |
 | `allowed_origins` | none | Web pages allowed to open the WebSocket (a game exported to the web). A browser sends `Origin`; a desktop game does not, and any `Origin` not listed is refused |
 | `[models.foreground]` | required | `base_url`, `model`, optional `api_key`, `temperature`, `max_tokens`, and `[models.foreground.extra_body]` sent as is: her replies. A reasoning model (Qwen 3.5, …) must be told not to think first, e.g. `reasoning_effort = "none"`, or her whole prompt can take longer than the call's 60 s |
-| `[models.background]` | the foreground model, kept short | One model for her background work, or one table per worker (`[models.background.memory]`, …). Left out: the foreground model with temperature 0.1, at most 600 tokens and only the not-thinking keys of its `extra_body` |
+| `[models.background]` | the foreground model, kept short | One model for her background work, or one table per worker (`[models.background.memory]`, …; `[models.background.actions]` picks the faces and gestures of her lines, and without it a per-worker table gets none). Left out: the foreground model with temperature 0.1, at most 600 tokens and only the not-thinking keys of its `extra_body` |
 | `[settings]` | | Any [CompanionSettings](companion.md#settings) field |
 
 Every NPC shares one queue for the model: the background work of any of them

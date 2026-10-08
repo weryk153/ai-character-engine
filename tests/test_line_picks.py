@@ -167,3 +167,24 @@ def test_a_new_avatar_comes_with_a_new_persona_and_none_takes_it_away(tmp_path):
         opened(client)
         reply = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"}).json()
     assert "actions" not in reply and director.lines == []
+
+
+def test_a_background_model_per_worker_names_its_actions_model(tmp_path):
+    director = Director()
+    config = ServiceConfig(
+        data_dir=tmp_path / "data",
+        foreground=ModelConfig(base_url="http://speaker", model="speaker"),
+        background={
+            "memory": ModelConfig(base_url="http://director", model="director"),
+            "actions": ModelConfig(base_url="http://director", model="director"),
+        },
+        settings={"emotion_every": 0, "reply_check_every": 0, "mood_every": 0, "memory_every": 0,
+                  "memory_conflicts": False, "self_memory_every": 0, "goal_every": 0,
+                  "reflection_every": 0, "user_state_every": 0, "diary_every_hours": 0},
+    )
+    models = {"speaker": Speaker("Good morning."), "director": director}
+    client = TestClient(create_app(config, make_llm=lambda model: models[model.model]), base_url="http://127.0.0.1")
+    with client:
+        opened(client, avatar=AVATAR)
+        reply = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"}).json()
+    assert [m["expression"] for m in reply["actions"]] == ["smile"]

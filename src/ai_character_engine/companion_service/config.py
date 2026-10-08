@@ -98,7 +98,8 @@ class ServiceConfig:
         if self.idle_close_seconds <= 0:
             raise ValueError("idle_close_seconds must be > 0")
         if isinstance(self.background, Mapping):
-            unknown = set(self.background) - set(WORKER_NAMES)
+            # "actions" picks the faces and gestures of her lines (reply_actions).
+            unknown = set(self.background) - set(WORKER_NAMES) - {"actions"}
             if unknown:
                 raise ValueError(f"unknown background workers: {', '.join(sorted(unknown))}")
         self.companion_settings()  # fails here, not on the first NPC
