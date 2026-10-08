@@ -334,8 +334,12 @@ def create_app(
             picks.task.cancel()
             raise
         picks.finish()
-        await picks.task
-        return {"text": result.text, "state": state_of(companion.snapshot()), "actions": picks.picked}
+        # Her text is ready: the picks still to come may hold it only so long
+        # (actions_timeout_seconds); the lines not picked by then go without.
+        done, _ = await asyncio.wait({picks.task}, timeout=companion.settings.actions_timeout_seconds)
+        if not done:
+            picks.task.cancel()
+        return {"text": result.text, "state": state_of(companion.snapshot()), "actions": list(picks.picked)}
 
     @app.get("/slots/{slot}/npcs/{npc}/state", dependencies=guarded)
     async def state(slot: str, npc: str):

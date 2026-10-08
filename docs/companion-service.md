@@ -45,7 +45,7 @@ directory on macOS and Windows):
 | Request | Body | Answer |
 |---|---|---|
 | `PUT` | `character`: `name`, `description`, `personality[]`, `speaking_style[]`, `background`, `rules[]`; `avatar` (optional): `expressions[]`, `motions{keyword: description}`, `mood_faces{mood: expression}` | `{opened}`; again: her persona (and avatar) is replaced from her next turn |
-| `POST …/reply` | `text`, `conversation_id`, `notes[]` | `{text, state}`; with an `avatar`, also `actions[]` (see below) |
+| `POST …/reply` | `text`, `conversation_id`, `notes[]` | `{text, state}`; with an `avatar`, also `actions[]` (see below): the reply waits for its picks at most `actions_timeout_seconds` (6) after her text is ready, and lines not picked by then are left out; the WebSocket sends every pick as it comes |
 | `GET …/state` | | `state`: `emotion`, `mood_intensity`, `trust`, `favorability`, `relationship_stage`, `goals`, `thoughts`, `user_state`, … |
 | `GET …/inspect?conversation_id=` | | `state`, `memories`, `self_memories`, `diary`, `across_runs`, `clock` |
 | `POST …/save` | | `{data}`: everything she keeps, base64 |

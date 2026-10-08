@@ -188,3 +188,34 @@ def test_a_background_model_per_worker_names_its_actions_model(tmp_path):
         opened(client, avatar=AVATAR)
         reply = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"}).json()
     assert [m["expression"] for m in reply["actions"]] == ["smile"]
+
+
+def test_a_reply_over_http_waits_for_its_picks_only_so_long(tmp_path):
+    import time
+
+    class Slow(Director):
+        async def generate(self, messages, *, tools=None):
+            if "Line: " in messages[-1].content:
+                await asyncio.sleep(0.3)
+            return await super().generate(messages, tools=tools)
+
+    director = Slow()
+    config = ServiceConfig(
+        data_dir=tmp_path / "data",
+        foreground=ModelConfig(base_url="http://speaker", model="speaker"),
+        background=ModelConfig(base_url="http://director", model="director"),
+        settings={"emotion_every": 0, "reply_check_every": 0, "mood_every": 0, "memory_every": 0,
+                  "memory_conflicts": False, "self_memory_every": 0, "goal_every": 0,
+                  "reflection_every": 0, "user_state_every": 0, "diary_every_hours": 0,
+                  "actions_timeout_seconds": 0.5},
+    )
+    speaker = Speaker("Good morning. I am tired. It rained. Good night.")
+    models = {"speaker": speaker, "director": director}
+    client = TestClient(create_app(config, make_llm=lambda model: models[model.model]), base_url="http://127.0.0.1")
+    with client:
+        opened(client, avatar=AVATAR)
+        began = time.monotonic()
+        reply = client.post("/slots/s1/npcs/mira/reply", json={"text": "hi"}).json()
+        took = time.monotonic() - began
+    assert reply["text"] == "Good morning. I am tired. It rained. Good night."
+    assert 1 <= len(reply["actions"]) < 4 and took < 1.0
