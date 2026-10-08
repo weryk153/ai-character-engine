@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ai_character_engine import CharacterProfile
-from ai_character_engine.companion import CharacterCompanion, CompanionSnapshot, ModelAccess
+from ai_character_engine.companion import AvatarChoices, CharacterCompanion, CompanionSnapshot, ModelAccess
 from ai_character_engine.companion.across_runs import AcrossRuns
 from ai_character_engine.llm.local import OpenAICompatibleChatClient
 
@@ -85,6 +85,9 @@ def openai_client(model: ModelConfig) -> Any:
 class _Npc:
     character: CharacterProfile
     clock: GameClock = field(default_factory=GameClock)
+    # What the game's avatar of her can do: her lines get faces and gestures
+    # (line_picks). None: the game asked for none.
+    avatar: AvatarChoices | None = None
     companion: CharacterCompanion | None = None
     used_at: float = field(default_factory=time.monotonic)
     # Held while she is replaced: two loads at once must not leave one of
@@ -147,8 +150,15 @@ class NpcRegistry:
 
     # --- NPCs -----------------------------------------------------------------------
 
-    def open(self, slot: str, npc: str, character: CharacterProfile, game_time: float | None = None) -> bool:
-        """Open an NPC in a slot, or give it a new persona. True when it was not open."""
+    def open(
+        self,
+        slot: str,
+        npc: str,
+        character: CharacterProfile,
+        game_time: float | None = None,
+        avatar: AvatarChoices | None = None,
+    ) -> bool:
+        """Open an NPC in a slot, or give it a new persona (and avatar). True when it was not open."""
         self.storage_dir(slot, npc)  # checks both names
         entry = self._npcs.get((slot, npc))
         opened = entry is None
@@ -158,6 +168,7 @@ class NpcRegistry:
             entry.character = character
             if entry.companion is not None and not entry.companion.busy:
                 entry.take_character()
+        entry.avatar = avatar
         entry.clock.set(game_time)
         return opened
 

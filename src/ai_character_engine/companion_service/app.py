@@ -29,6 +29,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from ai_character_engine import CharacterProfile
 from ai_character_engine._version import VERSION
 from ai_character_engine.companion import (
+    AvatarChoices,
     CharacterCompanion,
     CompanionClosed,
     CompanionSnapshot,
@@ -40,6 +41,7 @@ from ai_character_engine.companion import save_state
 from ai_character_engine.llm.errors import LLMError
 
 from .config import LOOPBACK_NAMES, ModelConfig, ServiceConfig, _loopback
+from .line_picks import LinePicks
 
 logger = logging.getLogger(__name__)
 from .registry import InvalidRequest as InvalidRequestError
@@ -91,9 +93,18 @@ class CharacterIn(BaseModel):
     rules: list[str] = []
 
 
+class AvatarIn(BaseModel):
+    """What the game's avatar of her can do; her lines then get faces and gestures."""
+
+    expressions: list[str] = []
+    motions: dict[str, str] = {}
+    mood_faces: dict[str, str] = {}
+
+
 class OpenIn(BaseModel):
     character: CharacterIn
     game_time: GameTime | None = None
+    avatar: AvatarIn | None = None
 
 
 class ReplyIn(BaseModel):
@@ -306,13 +317,25 @@ def create_app(
     @app.put("/slots/{slot}/npcs/{npc}", dependencies=guarded)
     async def open_npc(slot: str, npc: str, body: OpenIn):
         character = CharacterProfile(id=checked(npc, "npc"), **body.character.model_dump())
-        return {"opened": npcs.open(slot, npc, character, body.game_time)}
+        avatar = AvatarChoices(**body.avatar.model_dump()) if body.avatar is not None else None
+        return {"opened": npcs.open(slot, npc, character, body.game_time, avatar=avatar)}
 
     @app.post("/slots/{slot}/npcs/{npc}/reply", dependencies=guarded)
     async def reply(slot: str, npc: str, body: ReplyIn):
         companion = npcs.companion(slot, npc, body.game_time)
-        result = await _reply(companion, npcs.entry(slot, npc), body)
-        return {"text": result.text, "state": state_of(companion.snapshot())}
+        entry = npcs.entry(slot, npc)
+        if entry.avatar is None:
+            result = await _reply(companion, entry, body)
+            return {"text": result.text, "state": state_of(companion.snapshot())}
+        picks = LinePicks(companion.reply_actions(entry.avatar), lambda message: None)
+        try:
+            result = await _reply(companion, entry, body, on_text_delta=picks.feed)
+        except BaseException:
+            picks.task.cancel()
+            raise
+        picks.finish()
+        await picks.task
+        return {"text": result.text, "state": state_of(companion.snapshot()), "actions": picks.picked}
 
     @app.get("/slots/{slot}/npcs/{npc}/state", dependencies=guarded)
     async def state(slot: str, npc: str):
@@ -426,6 +449,7 @@ def create_app(
 
         async def one_reply(request: str, npc: str, message: dict) -> None:
             running[request] = ""
+            picks: LinePicks | None = None
             try:
                 try:
                     body = ReplyIn.model_validate(message)
@@ -434,10 +458,21 @@ def create_app(
                         "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors())
                     ) from exc
                 companion = npcs.companion(slot, npc, body.game_time)
+                entry = npcs.entry(slot, npc)
                 turns.add(request, npc, body.conversation_id)
+                if entry.avatar is not None:
+                    picks = LinePicks(
+                        companion.reply_actions(entry.avatar),
+                        lambda message: outbox.put_nowait({"type": "actions", "id": request, "npc": npc, **message}),
+                    )
+                    # Picks may be made after her reply has ended: kept by the app.
+                    replies.add(picks.task)
+                    picks.task.add_done_callback(replies.discard)
 
                 def delta(text: str) -> None:
                     outbox.put_nowait({"type": "delta", "id": request, "npc": npc, "text": text})
+                    if picks is not None:
+                        picks.feed(text)
 
                 try:
                     result = await _reply(
@@ -463,6 +498,8 @@ def create_app(
                 fail(request, npc, "internal_error", str(exc))
             finally:
                 running.pop(request, None)
+                if picks is not None:
+                    picks.finish()
 
         def interrupt(request: str, message: dict) -> None:
             npc, conversation = turns.get(request) or (str(message.get("npc", "")), None)

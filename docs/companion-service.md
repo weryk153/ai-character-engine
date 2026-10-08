@@ -44,8 +44,8 @@ directory on macOS and Windows):
 
 | Request | Body | Answer |
 |---|---|---|
-| `PUT` | `character`: `name`, `description`, `personality[]`, `speaking_style[]`, `background`, `rules[]` | `{opened}`; again: her persona is replaced from her next turn |
-| `POST …/reply` | `text`, `conversation_id`, `notes[]` | `{text, state}` |
+| `PUT` | `character`: `name`, `description`, `personality[]`, `speaking_style[]`, `background`, `rules[]`; `avatar` (optional): `expressions[]`, `motions{keyword: description}`, `mood_faces{mood: expression}` | `{opened}`; again: her persona (and avatar) is replaced from her next turn |
+| `POST …/reply` | `text`, `conversation_id`, `notes[]` | `{text, state}`; with an `avatar`, also `actions[]` (see below) |
 | `GET …/state` | | `state`: `emotion`, `mood_intensity`, `trust`, `favorability`, `relationship_stage`, `goals`, `thoughts`, `user_state`, … |
 | `GET …/inspect?conversation_id=` | | `state`, `memories`, `self_memories`, `diary`, `across_runs`, `clock` |
 | `POST …/save` | | `{data}`: everything she keeps, base64 |
@@ -82,7 +82,15 @@ and receives
 - `{"type": "delta", "id", "npc", "text"}` as she speaks,
 - `{"type": "done", "id", "npc", "text", "interrupted", "state"}`,
 - `{"type": "error", "id", "npc", "code", "message"}`,
-- `{"type": "state", "npc", "state"}` when her mood changed between replies.
+- `{"type": "state", "npc", "state"}` when her mood changed between replies,
+- `{"type": "actions", "id", "npc", "index", "line", "expression", "motion",
+  "intensity", "voice"}` for an NPC opened with an `avatar`: a face and a
+  gesture for one line of her reply, picked from the avatar's lists by her
+  background model, her mood and the line before. Lines end at `。！？!?…`, a
+  new line, or a full stop before a space; `index` counts them from 0. A line
+  that gets nothing is skipped, and picks may come after `done`. `voice` is
+  the tone of the line (the first expression picked in the reply, else her
+  mood through `mood_faces`), for a voice with one reference per feeling.
 
 `id` is the game's own name for the request, required on every message.
 Messages are JSON in text frames. One NPC answers one line at a time; the
