@@ -54,6 +54,10 @@ class NotingWorker:
     async def generate(self, messages, *, tools=None):
         prompt = messages[1].content
         payload: dict = {}
+        if "Line: " in prompt:  # a face and a gesture for one of her lines
+            line = prompt.split("Line: ", 1)[1].lower()
+            payload = {"expression": "thoughtful" if "?" in line else "smile",
+                       "motion": "point" if "logbook" in line else None, "intensity": 0.7}
         if USER_LINES in prompt:
             lines = [line.strip() for line in prompt.split(USER_LINES, 1)[1].splitlines() if line.strip()]
             said = lines[0].removeprefix("- ") if lines else ""

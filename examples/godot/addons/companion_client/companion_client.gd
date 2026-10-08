@@ -15,6 +15,9 @@ signal delta(npc: String, id: String, text: String)
 signal done(npc: String, id: String, text: String, interrupted: bool, state: Dictionary)
 signal state_changed(npc: String, state: Dictionary)
 signal failed(npc: String, id: String, code: String, message: String)
+## A face and a gesture for one line of her reply (NPCs opened with an avatar):
+## index, line, expression, motion, intensity, voice. May come after `done`.
+signal actions(npc: String, id: String, picked: Dictionary)
 
 @export var base_url := "http://127.0.0.1:8765"
 @export var token := ""
@@ -59,6 +62,8 @@ func _process(_delta: float) -> void:
 				done.emit(npc, id, str(message.get("text", "")), bool(message.get("interrupted", false)), message.get("state", {}))
 			"state":
 				state_changed.emit(npc, message.get("state", {}))
+			"actions":
+				actions.emit(npc, id, message)
 			"error":
 				failed.emit(npc, id, str(message.get("code", "")), str(message.get("message", "")))
 
@@ -103,8 +108,14 @@ func interrupt(npc: String, id: String, heard: String) -> void:
 
 # --- one NPC -------------------------------------------------------------------------
 
-func open_npc(npc: String, character: Dictionary) -> Dictionary:
-	return await _call(HTTPClient.METHOD_PUT, _npc(npc), {"character": character})
+## `avatar`: what the game's avatar of her can do — {"expressions": [...],
+## "motions": {keyword: description}, "mood_faces": {mood: expression}}. With
+## one, her lines bring `actions`.
+func open_npc(npc: String, character: Dictionary, avatar: Dictionary = {}) -> Dictionary:
+	var body := {"character": character}
+	if not avatar.is_empty():
+		body["avatar"] = avatar
+	return await _call(HTTPClient.METHOD_PUT, _npc(npc), body)
 
 
 func reply(npc: String, text: String, conversation_id := "", notes: Array = []) -> Dictionary:

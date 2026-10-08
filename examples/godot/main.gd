@@ -43,6 +43,13 @@ var reply_text := ""
 var mood_line := ""
 var ending := false
 
+# What Mira's avatar could do; the example has no art, so her face is shown as a word.
+const AVATAR := {
+	"expressions": ["smile", "frown", "surprised", "thoughtful"],
+	"motions": {"nod": "agreeing", "shrug": "unsure", "point": "pointing something out"},
+	"mood_faces": {"happy": "smile", "sad": "frown", "angry": "frown", "surprised": "surprised", "worried": "thoughtful"},
+}
+var face := ""
 var _status := Label.new()
 var _log := RichTextLabel.new()
 var _input := LineEdit.new()
@@ -66,6 +73,7 @@ func _ready() -> void:
 	client.done.connect(_on_done)
 	client.state_changed.connect(func(npc, state): if npc == NPC: _show(state))
 	client.failed.connect(_on_failed)
+	client.actions.connect(func(npc, _id, picked): if npc == NPC: _face(picked))
 	run = _read_run()
 	if not await client.connect_socket():
 		_system("[color=red]No service at %s.[/color] Start it first (see README)." % client.base_url)
@@ -79,7 +87,7 @@ func _begin_day() -> void:
 	day_time = 0.0
 	deeds_done.clear()
 	_tick()
-	var opened: Dictionary = await client.open_npc(NPC, character)
+	var opened: Dictionary = await client.open_npc(NPC, character, AVATAR)
 	if not opened.ok:
 		_system("[color=red]%s[/color] %s" % [opened.code, opened.message])
 		return
@@ -193,7 +201,7 @@ func _load() -> void:
 	day_time = float(save.day_time)
 	deeds_done = save.deeds
 	_tick()
-	await client.open_npc(NPC, character)
+	await client.open_npc(NPC, character, AVATAR)
 	var loaded: Dictionary = await client.load_slot(save.npcs)
 	if not loaded.ok:
 		_system("[color=red]Not loaded:[/color] %s" % loaded.message)
@@ -208,6 +216,16 @@ func _load() -> void:
 
 func _show(state: Dictionary) -> void:
 	mood_line = "%s — %s | trust %.0f | favor %.0f" % [character.name, state.emotion, state.trust, state.favorability]
+	if face != "":
+		mood_line += " | face %s" % face
+	_tick()
+
+
+func _face(picked: Dictionary) -> void:
+	face = str(picked.get("expression", "")) if picked.get("expression") != null else face
+	var motion = picked.get("motion")
+	if motion != null:
+		_log.append_text(" [i](%s)[/i]" % motion)
 	_tick()
 
 

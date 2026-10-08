@@ -49,7 +49,8 @@ func _run() -> void:
 	await client.new_game()
 	client.game_time = MORNING
 	var npc := {"name": "Mira", "description": "The keeper of the lighthouse."}
-	var opened: Dictionary = await client.open_npc("mira", npc)
+	var avatar := {"expressions": ["smile", "thoughtful"], "motions": {"point": ""}, "mood_faces": {}}
+	var opened: Dictionary = await client.open_npc("mira", npc, avatar)
 	_check("open", opened.ok and opened.data.opened, opened)
 
 	var answer: Dictionary = await client.reply("mira", "The tide is high today", "smoke")
@@ -59,9 +60,16 @@ func _run() -> void:
 	_check("socket", connected)
 	var deltas := []
 	client.delta.connect(func(_npc, _id, text): deltas.append(text))
+	var faces := []
+	client.actions.connect(func(_npc, _id, picked): faces.append(picked))
 	var id: String = client.say("mira", "Is the lamp lit?", "smoke")
 	var finished := await _done_within(60.0)
 	_check("streamed reply", finished.size() == 5 and finished[1] == id and deltas.size() > 0 and not finished[3], finished)
+	for _wait in range(50):
+		if not faces.is_empty():
+			break
+		await create_timer(0.1).timeout
+	_check("line actions", not faces.is_empty() and faces[0].get("expression") in ["smile", "thoughtful"], faces)
 
 	var saved: Dictionary = await client.save_slot()
 	_check("save slot", saved.ok and saved.data.npcs.has("mira"), saved)
