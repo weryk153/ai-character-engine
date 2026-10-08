@@ -217,3 +217,23 @@ def test_a_closed_companion_picks_nothing(tmp_path):
 def test_the_timeout_must_be_positive():
     with pytest.raises(ValueError, match="actions_timeout_seconds"):
         CompanionSettings(actions_timeout_seconds=0)
+
+
+def test_a_model_of_its_own_for_the_picks_comes_before_the_background_one(tmp_path):
+    from ai_character_engine import CharacterProfile
+    from ai_character_engine.companion import CharacterCompanion
+
+    background, picker = Model('{"expression":"sadness"}'), Model('{"expression":"anger"}')
+    mei = CharacterCompanion(
+        character=CharacterProfile(id="mei", name="Mei", description="A researcher."),
+        llm=Foreground(),
+        background_llm=background,
+        actions_llm=picker,
+        storage_dir=tmp_path,
+        settings=CompanionSettings(
+            emotion_every=0, memory_every=0, goal_every=0, reflection_every=0, summary_every=0,
+            self_memory_every=0, mood_every=0, reply_check_every=0,
+        ),
+    )
+    assert run(mei.reply_actions(CHOICES).pick("You came!")).expression == "anger"
+    assert background.asked == []

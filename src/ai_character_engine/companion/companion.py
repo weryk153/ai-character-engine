@@ -997,6 +997,7 @@ class CharacterCompanion:
         clock: Callable[[], float] | None = None,
         meta_dir: str | Path | None = None,
         model_access: ModelAccess | None = None,
+        actions_llm: Any | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, reply_check,
@@ -1019,6 +1020,11 @@ class CharacterCompanion:
         one model share one (a game server with several NPCs): background
         work of every one of them waits while any of them replies. Each
         companion has its own when not given.
+
+        ``actions_llm`` picks the faces and gestures of her lines
+        (reply_actions); a short answer at temperature 0 serves it best.
+        Without it: the ``"actions"`` client of a ``background_llm``
+        mapping, else the one ``background_llm``, else ``llm``.
         """
         self.settings = settings or CompanionSettings()
         self._clock: Callable[[], float] = clock or time.time
@@ -1167,7 +1173,9 @@ class CharacterCompanion:
         clients = self._background_clients(llm if background_llm is None else background_llm)
         # The faces and gestures of her lines (reply_actions): the "actions"
         # client of a mapping, else the one background client, else hers.
-        if isinstance(background_llm, Mapping):
+        if actions_llm is not None:
+            self._actions_llm = actions_llm
+        elif isinstance(background_llm, Mapping):
             self._actions_llm = background_llm.get("actions")
         else:
             self._actions_llm = llm if background_llm is None else background_llm

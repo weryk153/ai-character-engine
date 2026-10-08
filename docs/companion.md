@@ -492,8 +492,9 @@ when that matters.
 expression picked in this reply, else her mood through `mood_faces`, else
 `None`.
 
-The model is the `"actions"` client of a `background_llm` mapping, else the
-one `background_llm`, else `llm`. A mapping without `"actions"` picks
+The model is `CharacterCompanion(actions_llm=...)` (a short answer at
+temperature 0 serves it best), else the `"actions"` client of a
+`background_llm` mapping, else the one `background_llm`, else `llm`. A mapping without `"actions"` picks
 nothing (`actions.can_pick` is false).
 
 ## Pictures
