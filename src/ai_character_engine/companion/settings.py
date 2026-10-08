@@ -59,6 +59,10 @@ class CompanionSettings:
     thoughts_shown: int = 2
     # Background work resumes after this long without an end-of-reply signal.
     foreground_patience_seconds: float = 120.0
+    # The longest a pick of a line's face and gesture (reply_actions) may
+    # take. The host decides how long its voice waits for one; a pick past
+    # this is given up.
+    actions_timeout_seconds: float = 6.0
     # How many conversations keep their recent messages in memory at once.
     conversations_kept: int = 8
     max_history_messages: int = 40
@@ -149,6 +153,8 @@ class CompanionSettings:
             raise ValueError("call_timeout_seconds must be > 0")
         if self.foreground_patience_seconds <= 0:
             raise ValueError("foreground_patience_seconds must be > 0")
+        if self.actions_timeout_seconds <= 0:
+            raise ValueError("actions_timeout_seconds must be > 0")
         if self.mood_half_life_seconds <= 0:
             raise ValueError("mood_half_life_seconds must be > 0")
         if not 0 <= self.mood_floor <= 1:

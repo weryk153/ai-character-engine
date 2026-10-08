@@ -457,6 +457,43 @@ under the lock; such tasks are not awaited or cancelled by `close()`. `clock`, a
 function returning seconds since the epoch, replaces the system clock for all of
 this.
 
+## Her face and gestures, line by line
+
+The host knows what its avatar can do; she knows how she feels. Give a
+picker the avatar's expressions and motions, and ask it about each line as
+the line is spoken:
+
+```
+from ai_character_engine.companion import AvatarChoices
+
+choices = AvatarChoices(
+    expressions=("joy", "sadness", "anger"),       # the avatar's expressions
+    motions={"nod": "agreeing", "wave": ""},        # keyword -> a short description
+    mood_faces={"happy": "joy", "sad": "sadness"},  # her moods -> the avatar's expressions
+)
+actions = companion.reply_actions(choices)          # one per reply
+picked = await actions.pick("I am tired today.")    # LineActions(expression, motion, intensity) or None
+tone = actions.voice()                              # the tone of a line, as one of the expressions
+```
+
+Her background model picks from the lists by the line, the line before it
+(the picker keeps it) and her mood; anything not on the lists is dropped.
+`pick` never raises: an empty line, nothing to pick from, no model, a model
+slower than `CompanionSettings.actions_timeout_seconds` (6), failing or
+answering no JSON, and a line asked while the picker is still on another of
+the same reply (one at a time; nothing queues) are `None`. How long a voice
+waits for a pick is the host's choice. The call goes straight to the model,
+not through `ModelAccess`: while she speaks her workers wait, so the
+background model is free.
+
+`voice()` is for a voice with one reference per feeling: the first
+expression picked in this reply, else her mood through `mood_faces`, else
+`None`.
+
+The model is the `"actions"` client of a `background_llm` mapping, else the
+one `background_llm`, else `llm`. A mapping without `"actions"` picks
+nothing (`actions.can_pick` is false).
+
 ## Pictures
 
 Give the companion a `VisionPipeline` and pass `frames` to `reply()`. Each

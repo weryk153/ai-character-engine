@@ -108,6 +108,7 @@ from ai_character_engine.vision import VisionFrame, VisionPipeline
 
 from . import save_state
 from .access import ModelAccess, PoliteClient
+from .avatar_actions import AvatarChoices, ReplyActions
 from .across_runs import AcrossRuns, AcrossRunsMemory
 from .across_runs import section as across_runs_section
 from .save_state import StateBusy, StateFormatError
@@ -1164,6 +1165,12 @@ class CharacterCompanion:
         self._bridge = CharacterHostBridge(self.runtime, vision=vision, config=bridge_config)
 
         clients = self._background_clients(llm if background_llm is None else background_llm)
+        # The faces and gestures of her lines (reply_actions): the "actions"
+        # client of a mapping, else the one background client, else hers.
+        if isinstance(background_llm, Mapping):
+            self._actions_llm = background_llm.get("actions")
+        else:
+            self._actions_llm = llm if background_llm is None else background_llm
         # Who gets the model is decided by ModelAccess, not by the number of
         # slots. With a single slot, a job waiting to be redone after the
         # character spoke would hold up everything behind it.
@@ -2905,6 +2912,25 @@ class CharacterCompanion:
             now=self._clock(),
             half_life_seconds=self.settings.mood_half_life_seconds,
             floor=self.settings.mood_floor,
+        )
+
+    def reply_actions(self, choices: AvatarChoices) -> ReplyActions:
+        """A picker of faces and gestures for the lines of one reply.
+
+        Ask it about each line as the line is spoken (``await
+        actions.pick(line)``): her background model picks from ``choices``
+        by the line, the one before it and her mood. The call goes straight
+        to the model, not through ModelAccess, which would hold it until she
+        has finished speaking; while she speaks her workers wait, so the
+        background model is free. One line at a time per reply; a pick that
+        cannot be made is ``None``. ``actions.voice()`` is the tone of a line
+        for a voice with one reference per feeling.
+        """
+        return ReplyActions(
+            client=None if self._closed else self._actions_llm,
+            choices=choices,
+            mood=self._mood,
+            timeout_seconds=self.settings.actions_timeout_seconds,
         )
 
     def snapshot(self) -> CompanionSnapshot:
