@@ -419,3 +419,28 @@ async def test_she_is_told_the_picture_is_background():
     llm = LLM()
     await make_bridge(llm, vision=vision).process("tired today", frames=(frame(),))
     assert "It is background" in llm.messages[-2].content
+
+
+async def test_saying_something_said_before_keeps_the_prompt_extending():
+    """Notes go back in front of the message they were written for, found by what
+    it says. Searched from the start, the note of "haha" said again landed in
+    front of the first "haha" of the conversation, and from there on the next
+    prompt no longer extended this one: read again on every repeated line."""
+
+    llm = LLM()
+    bridge = make_bridge(llm)
+    turns = []
+    for text in ("haha", "what now", "haha", "ok"):
+        bridge.runtime.state.apply(
+            StatePatch(emotion="happy" if len(turns) % 2 else "calm", reason="test")
+        )
+        await bridge.process(text)
+        turns.append(list(llm.messages))
+        if len(turns) < 3:
+            # The turns before have no notes of their own, as in a conversation
+            # restored from before notes were kept.
+            bridge.runtime.context_notes.clear()
+    # Once notes are kept again, the next prompt extends the one before it,
+    # also though "haha" was said again.
+    sent_again = turns[2][:-1]
+    assert turns[3][: len(sent_again)] == sent_again

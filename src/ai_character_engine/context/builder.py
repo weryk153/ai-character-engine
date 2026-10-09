@@ -681,17 +681,19 @@ class ContextBuilder:
     ) -> None:
         """Each note in front of the message it was written for.
 
-        Matched in order and by what the message says: hosts restore and copy
-        histories, so the message may be another object by now. Where the same
-        line was said twice a note can land in front of the wrong one; that
-        costs the server one prompt it cannot reuse, nothing else.
+        Matched by what the message says (hosts restore and copy histories, so
+        the message may be another object by now), from the newest back: the
+        newest note was written for the newest message. Searched from the start,
+        the note of a line said before ("haha", "ok") landed in front of the
+        first time it was said whenever that one had no note of its own, and
+        the prompt read again from there on every such turn.
         """
-        position = 0
-        for anchor, note in notes:
-            for index in range(position, len(cycles)):
+        position = len(cycles)
+        for anchor, note in reversed(notes):
+            for index in range(position - 1, -1, -1):
                 if cycles[index][0] == anchor:
                     cycles[index].insert(0, note)
-                    position = index + 1
+                    position = index
                     break
 
 
