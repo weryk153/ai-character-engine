@@ -159,10 +159,9 @@ class CharacterHostBridge:
                 self.runtime.context_notes = notes
             else:
                 # Visual facts are transient: the description of the picture is
-                # taken out of the conversation. Everything else stays exactly
-                # as it was sent (the same message objects, so the turn's note
-                # stays with the user's words), and the next prompt extends
-                # this one.
+                # not in the conversation (the runtime keeps the turn from the
+                # user's words on). Everything else stays exactly as it was sent,
+                # the same message objects, so the turn's note stays with them.
                 if frames:
                     self.runtime.history = [
                         message
@@ -233,8 +232,8 @@ class CharacterHostBridge:
             else {}
         )
         if frames and not proactive:
-            # The user's words, then what the picture shows as the last message
-            # of the turn (ContextBuilder), taken out again afterwards.
+            # What the picture shows, in a message of its own before the user's
+            # words (ContextBuilder); it is not kept in the conversation.
             payload[PICTURE_DESCRIPTION_KEY] = "\n\n".join(seen)
         else:
             # A remark of her own is not kept in the conversation (skip_memory),

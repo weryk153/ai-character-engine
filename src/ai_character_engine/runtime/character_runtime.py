@@ -268,17 +268,18 @@ class CharacterRuntime:
             # that the next prompt extends this one; the whole context of the
             # "turn" placement is not, it would be sent again on every turn.
             event_index = len(turn_messages) - 1
-            # A picture's description comes after the event it was sent with.
-            while event_index > 0 and is_picture_description(turn_messages[event_index]):
-                event_index -= 1
+            # A picture's description sits between the note and the event.
+            note_index = event_index - 1
+            while note_index > 0 and is_picture_description(turn_messages[note_index]):
+                note_index -= 1
             if (
                 self.context_builder.context_placement == "transcript"
-                and event_index > 0
-                and is_turn_context(turn_messages[event_index - 1])
-                and not any(turn_messages[event_index - 1] is note for _, note in self.context_notes)
+                and note_index > 0
+                and is_turn_context(turn_messages[note_index])
+                and not any(turn_messages[note_index] is note for _, note in self.context_notes)
             ):
                 self.context_notes.append(
-                    (turn_messages[event_index], turn_messages[event_index - 1])
+                    (turn_messages[event_index], turn_messages[note_index])
                 )
             total_input_tokens = 0
             total_output_tokens = 0

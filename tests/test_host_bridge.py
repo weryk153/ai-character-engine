@@ -74,7 +74,8 @@ async def test_vision_is_transient_and_one_character_turn():
     assert result.event.type == "multimodal_user_message"
     assert len(result.event.payload["vision"]) == 2
     assert result.event.payload["vision_memory"] == "ephemeral"
-    assert "red mug" in llm.messages[-1].content
+    assert "red mug" in llm.messages[-2].content
+    assert llm.messages[-1].content == "看到了什麼？"
     assert all("red mug" not in m.content for m in bridge.runtime.history)
     assert len(bridge.runtime.history) == 2
     await bridge.process("同一张圖呢？", frames=(frame(),))
@@ -352,11 +353,12 @@ async def test_a_turn_that_is_taken_back_takes_its_note_with_it():
 
 
 async def test_the_turn_after_a_picture_extends_the_prompt_of_the_picture_turn():
-    """The picture's description is said last and left out afterwards; what came
-    before it (the note, the user's words) stays as it was sent. An inference
-    server that continues from the end of the previous prompt then reads only
-    what is new. Rewriting the user's message after the turn made it read the
-    conversation again on every turn with a camera on."""
+    """The picture's description comes right before the user's words, which stay
+    the last message (said last, the picture was answered instead of them), and
+    is left out afterwards; everything before it stays as it was sent. An
+    inference server that continues from the end of the previous prompt then
+    reads again only from the description on. Rewriting the user's message after
+    the turn made it read the conversation again on every turn with a camera on."""
     llm = LLM()
     vision = VisionPipeline(
         provider=CallableVisionProvider(
@@ -368,10 +370,10 @@ async def test_the_turn_after_a_picture_extends_the_prompt_of_the_picture_turn()
     await bridge.process("hello")
     await bridge.process("look", frames=(frame(),))
     picture_turn = list(llm.messages)
-    assert "red mug" in picture_turn[-1].content
-    assert picture_turn[-2] == Message("user", "look")
+    assert picture_turn[-1] == Message("user", "look")
+    assert "red mug" in picture_turn[-2].content
 
     await bridge.process("and now?")
-    sent_again = picture_turn[:-1]
+    sent_again = picture_turn[:-2]
     assert llm.messages[: len(sent_again)] == sent_again
     assert all("red mug" not in m.content for m in llm.messages)

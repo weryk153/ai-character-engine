@@ -101,11 +101,13 @@ def user_lately(value: object) -> str:
     )
 
 
-# A picture the user sent with their words is described after them, as the last
-# message of the turn, and left out of the conversation afterwards (see
-# CharacterHostBridge). Put anywhere earlier, or folded into the user's message,
-# the next turn would no longer extend this one and a server that continues from
-# the end of the previous prompt would read the conversation again.
+# A picture the user sent with their words is described in a message of its own
+# right before them, and left out of the conversation afterwards. The user's
+# words stay the last message (said last, the description was answered instead
+# of them), and the next prompt differs from this one only from the description
+# on. Folded into the user's message, which was then rewritten after the turn,
+# the next prompt diverged right after the system prompt and a server that
+# continues from the end of the previous prompt read the conversation again.
 _PICTURE_OPENING = "type: what_you_see\n"
 PICTURE_DESCRIPTION_KEY = "vision_observation"
 
@@ -525,9 +527,13 @@ class ContextBuilder:
         else:
             system_prompt = "\n\n".join([base_system_prompt, *selected_context])
         system_message = Message(role="system", content=system_prompt)
-        messages = [system_message, *selected_history, *turn_context, event_message]
-        if picture is not None:
-            messages.append(picture)
+        messages = [
+            system_message,
+            *selected_history,
+            *turn_context,
+            *([picture] if picture is not None else []),
+            event_message,
+        ]
 
         # Re-estimate the final built prompt so trace numbers match what will be sent.
         system_tokens = self.token_estimator.estimate_message(system_message)
@@ -810,7 +816,7 @@ class ContextBuilder:
         if event.type == "user_message":
             return Message(role="user", content=event.content)
         if event.type == "multimodal_user_message" and PICTURE_DESCRIPTION_KEY in event.payload:
-            # The user's words alone; what the picture shows follows them.
+            # The user's words alone; what the picture shows comes before them.
             return Message(role="user", content=event.content or "[Image supplied]")
 
         details = [

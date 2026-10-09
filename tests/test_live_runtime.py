@@ -153,8 +153,10 @@ async def test_recent_frame_is_attached_to_next_turn_only_as_ephemeral_vision_co
     events = await live.run_once()
     assert vision_provider.calls
     assert events[-1].data["frames"] == 1
-    prompt = llm.messages[-1][-1].content
+    # What the picture shows, then the user's words, as the last two messages.
+    prompt = "\n".join(message.content for message in llm.messages[-1][-2:])
     assert "Visual observation (camera): a red cup on the desk" in prompt
+    assert llm.messages[-1][-1].content == "what do you see?"
     assert "PNG" not in prompt
 
 
