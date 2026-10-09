@@ -7,7 +7,7 @@
 <p align="center"><strong>Um SDK Python para personagens de IA com memória, ferramentas e conversas contínuas.</strong></p>
 
 <p align="center">
-  <a href="pyproject.toml"><img src="docs/assets/badge-version.svg" alt="Version 1.3.0" /></a>
+  <a href="pyproject.toml"><img src="docs/assets/badge-version.svg" alt="Version 1.3.1" /></a>
   <a href="LICENSE"><img src="docs/assets/badge-license.svg" alt="License: Apache-2.0" /></a>
   <a href="docs/getting-started.md"><img src="docs/assets/badge-python.svg" alt="Python 3.11–3.13" /></a>
   <a href="https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml"><img src="docs/assets/badge-platforms.svg" alt="Linux, macOS, Windows" /></a>
@@ -160,6 +160,6 @@ Um host que conversa com um único personagem — uma janela de chat, um aplicat
 
 ## Desenvolvimento e licença
 
-Versão atual: **1.3.0**. CI cobre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilidade da API, replay de persistência, injeção de falhas, desempenho no mesmo ambiente e instalação de pacotes. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validação](VALIDATION.md) · [Compatibilidade](docs/compatibility.md).
+Versão atual: **1.3.1**. CI cobre Linux/macOS/Windows × Python 3.11/3.12/3.13, compatibilidade da API, replay de persistência, injeção de falhas, desempenho no mesmo ambiente e instalação de pacotes. [CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [Validação](VALIDATION.md) · [Compatibilidade](docs/compatibility.md).
 
 Relatos de problemas e correções são bem-vindos; consulte [CONTRIBUTING](CONTRIBUTING.md). Licença [Apache-2.0](LICENSE). Modelos, vozes e recursos de terceiros mantêm suas próprias licenças.

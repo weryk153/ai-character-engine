@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1
+
+- A turn with a picture no longer costs the next turn its prompt cache. The description of a picture sent with the user's words is a message of its own right before them (`type: what_you_see`, `ContextBuilder`; `is_picture_description(message)` tells it apart) and the only thing left out of the conversation afterwards. Before, the host bridge rewrote the turn into a fresh plain user message, which also dropped the turn's note: the next prompt diverged right after the system prompt, and on LM Studio a local 9B read about 2300 tokens again on every turn with a camera on (6–7 s).
+- The user's words stay the last message of a turn with a picture: said after them, the description was answered instead of what the user said.
+- The description says it is background: answer what the user said, bring up what you see when it matters or has clearly changed. Told only what the camera showed, a local 9B commented on it in every reply (a ceiling, three of three); told this, in two of three.
+- `CharacterHostBridge` reuses the last description of a source for a frame whose `metadata["unchanged"]` is true, without calling the vision model (about 2 s on a local 9B). The host has the pixels and can tell; a small grayscale fingerprint is enough.
+
 ## 1.3.0
 
 - Saves (`ai_character_engine.companion`): `await CharacterCompanion.export_state(timeout=120.0)` gives everything she keeps as bytes for a game's own save (a zip with `manifest.json`: format 1, engine version, character id, her clock, sha256 of each file; her state, `memory.jsonl`, `goals.jsonl`, `cognition.jsonl`, `diary.jsonl`, `diary_log.jsonl`, and the conversations she holds with their notes). It waits for a reply under way and for background work to settle, and raises `StateBusy` after `timeout` without saving and without cancelling that work. `import_state(data, allow_other_character=False)` replaces all of it, in `storage_dir` too, before she first speaks (`RuntimeError` after); `StateFormatError` for a damaged save or a newer format, `ValueError` for another character's. Everything is read before anything is replaced; each file is replaced whole. `save_state_file(companion, path)` and `load_state_file(companion, path)` write and read one.

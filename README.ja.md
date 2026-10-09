@@ -7,7 +7,7 @@
 <p align="center"><strong>記憶を持ち、ツールを使い、対話を続ける AI キャラクターのための Python SDK。</strong></p>
 
 <p align="center">
-  <a href="pyproject.toml"><img src="docs/assets/badge-version.svg" alt="Version 1.3.0" /></a>
+  <a href="pyproject.toml"><img src="docs/assets/badge-version.svg" alt="Version 1.3.1" /></a>
   <a href="LICENSE"><img src="docs/assets/badge-license.svg" alt="License: Apache-2.0" /></a>
   <a href="docs/getting-started.md"><img src="docs/assets/badge-python.svg" alt="Python 3.11–3.13" /></a>
   <a href="https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml"><img src="docs/assets/badge-platforms.svg" alt="Linux, macOS, Windows" /></a>
@@ -160,6 +160,6 @@ asyncio.run(main())
 
 ## 開発とライセンス
 
-現在のバージョンは **1.3.0**。CI は Linux/macOS/Windows × Python 3.11/3.12/3.13 に加え、API 互換性、永続化リプレイ、障害注入、同一環境での性能、パッケージのインストールを検証します。[CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [検証](VALIDATION.md) · [互換性](docs/compatibility.md)。
+現在のバージョンは **1.3.1**。CI は Linux/macOS/Windows × Python 3.11/3.12/3.13 に加え、API 互換性、永続化リプレイ、障害注入、同一環境での性能、パッケージのインストールを検証します。[CI](https://github.com/weryk153/ai-character-engine/actions/workflows/ci.yml) · [検証](VALIDATION.md) · [互換性](docs/compatibility.md)。
 
 問題報告や修正を歓迎します。参加方法は [CONTRIBUTING](CONTRIBUTING.md) を参照してください。[Apache-2.0](LICENSE) で提供しています。第三者のモデル、音声、素材にはそれぞれのライセンスが適用されます。

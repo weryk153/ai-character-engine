@@ -1,6 +1,6 @@
 # Integration
 
-For SDK 1.3.0. `ENGINE_ROOT` is the engine checkout; the host has its own working directory and virtual environment.
+For SDK 1.3.1. `ENGINE_ROOT` is the engine checkout; the host has its own working directory and virtual environment.
 
 ## One character for a host
 
