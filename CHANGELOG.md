@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.2
+
+- A line said again no longer costs the prompt cache. Notes go back in front of the message they were written for, found by what it says; searched from the start of the conversation, the note of a line said before ("haha", "ok") landed in front of its first saying whenever that one had no note of its own, and from there on the next prompt no longer extended this one (on LM Studio a local 9B read 1700–2100 tokens again every turn, 5–8 s). They are now searched from the newest back.
+
 ## 1.3.1
 
 - A turn with a picture no longer costs the next turn its prompt cache. The description of a picture sent with the user's words is a message of its own right before them (`type: what_you_see`, `ContextBuilder`; `is_picture_description(message)` tells it apart) and the only thing left out of the conversation afterwards. Before, the host bridge rewrote the turn into a fresh plain user message, which also dropped the turn's note: the next prompt diverged right after the system prompt, and on LM Studio a local 9B read about 2300 tokens again on every turn with a camera on (6–7 s).

@@ -43,7 +43,7 @@ versions and import locations.
 Aggregate the nine matrix records, final receipts and all four artifacts:
 
 ```sh
-python -m ai_character_engine.release_candidate check --project-root . --evidence-dir /outside/matrix --acceptance-evidence-dir /outside/final/acceptance --artifact /outside/final/distributions/core/ai_character_engine-1.3.1-py3-none-any.whl --artifact /outside/final/distributions/core/ai_character_engine-1.3.1.tar.gz --artifact /outside/final/distributions/vrm/ai_character_engine_vrm-1.3.1-py3-none-any.whl --artifact /outside/final/distributions/vrm/ai_character_engine_vrm-1.3.1.tar.gz --output /outside/report.json --fail-on-blocker
+python -m ai_character_engine.release_candidate check --project-root . --evidence-dir /outside/matrix --acceptance-evidence-dir /outside/final/acceptance --artifact /outside/final/distributions/core/ai_character_engine-1.3.2-py3-none-any.whl --artifact /outside/final/distributions/core/ai_character_engine-1.3.2.tar.gz --artifact /outside/final/distributions/vrm/ai_character_engine_vrm-1.3.2-py3-none-any.whl --artifact /outside/final/distributions/vrm/ai_character_engine_vrm-1.3.2.tar.gz --output /outside/report.json --fail-on-blocker
 ```
 
 Exit zero and `ready_for_v1=true` require every gate to pass. API checks compare
