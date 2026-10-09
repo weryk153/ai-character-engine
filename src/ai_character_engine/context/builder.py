@@ -101,6 +101,20 @@ def user_lately(value: object) -> str:
     )
 
 
+# A picture the user sent with their words is described after them, as the last
+# message of the turn, and left out of the conversation afterwards (see
+# CharacterHostBridge). Put anywhere earlier, or folded into the user's message,
+# the next turn would no longer extend this one and a server that continues from
+# the end of the previous prompt would read the conversation again.
+_PICTURE_OPENING = "type: what_you_see\n"
+PICTURE_DESCRIPTION_KEY = "vision_observation"
+
+
+def is_picture_description(message: Message) -> bool:
+    """Whether a message is the description of a picture sent with a turn."""
+    return message.role == "event" and message.content.startswith(_PICTURE_OPENING)
+
+
 def is_turn_context(message: Message) -> bool:
     """Whether a message is the engine's own context for a turn, not speech.
 
@@ -384,11 +398,14 @@ class ContextBuilder:
         if not with_event:
             base_system_prompt = "\n\n".join([base_system_prompt, *turn_notes])
         event_message = self.event_to_message(event)
+        picture = self._picture_message(event)
         tool_tokens = self.token_estimator.estimate_tools(tools)
         system_base_tokens = self.token_estimator.estimate_message(
             Message(role="system", content=base_system_prompt)
         )
         event_tokens = self.token_estimator.estimate_message(event_message)
+        if picture is not None:
+            event_tokens += self.token_estimator.estimate_message(picture)
         if with_event and turn_notes:
             # Counted as part of the mandatory turn so the budget sees the notes.
             event_tokens += self.token_estimator.estimate_message(
@@ -509,6 +526,8 @@ class ContextBuilder:
             system_prompt = "\n\n".join([base_system_prompt, *selected_context])
         system_message = Message(role="system", content=system_prompt)
         messages = [system_message, *selected_history, *turn_context, event_message]
+        if picture is not None:
+            messages.append(picture)
 
         # Re-estimate the final built prompt so trace numbers match what will be sent.
         system_tokens = self.token_estimator.estimate_message(system_message)
@@ -790,6 +809,9 @@ class ContextBuilder:
     def event_to_message(self, event: CharacterEvent) -> Message:
         if event.type == "user_message":
             return Message(role="user", content=event.content)
+        if event.type == "multimodal_user_message" and PICTURE_DESCRIPTION_KEY in event.payload:
+            # The user's words alone; what the picture shows follows them.
+            return Message(role="user", content=event.content or "[Image supplied]")
 
         details = [
             f"type: {event.type}",
@@ -804,6 +826,15 @@ class ContextBuilder:
                 + json.dumps(event.payload, ensure_ascii=False, sort_keys=True)
             )
         return Message(role="event", content="\n".join(details))
+
+    @staticmethod
+    def _picture_message(event: CharacterEvent) -> Message | None:
+        if event.type != "multimodal_user_message":
+            return None
+        seen = event.payload.get(PICTURE_DESCRIPTION_KEY)
+        if not isinstance(seen, str) or not seen.strip():
+            return None
+        return Message(role="event", content=_PICTURE_OPENING + "content: " + seen.strip())
 
     def _history_cycles(self, history: Sequence[Message]) -> list[list[Message]]:
         cycles: list[list[Message]] = []

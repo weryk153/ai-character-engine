@@ -349,3 +349,29 @@ async def test_a_turn_that_is_taken_back_takes_its_note_with_it():
     await bridge.process("a remark of her own", skip_memory=True, proactive=True)
 
     assert bridge.runtime.context_notes == kept
+
+
+async def test_the_turn_after_a_picture_extends_the_prompt_of_the_picture_turn():
+    """The picture's description is said last and left out afterwards; what came
+    before it (the note, the user's words) stays as it was sent. An inference
+    server that continues from the end of the previous prompt then reads only
+    what is new. Rewriting the user's message after the turn made it read the
+    conversation again on every turn with a camera on."""
+    llm = LLM()
+    vision = VisionPipeline(
+        provider=CallableVisionProvider(
+            lambda image, prompt: VisionAnalysis("red mug", "fake")
+        ),
+        frame_gate=FrameGate(min_interval_seconds=0, deduplicate=False),
+    )
+    bridge = make_bridge(llm, vision=vision)
+    await bridge.process("hello")
+    await bridge.process("look", frames=(frame(),))
+    picture_turn = list(llm.messages)
+    assert "red mug" in picture_turn[-1].content
+    assert picture_turn[-2] == Message("user", "look")
+
+    await bridge.process("and now?")
+    sent_again = picture_turn[:-1]
+    assert llm.messages[: len(sent_again)] == sent_again
+    assert all("red mug" not in m.content for m in llm.messages)

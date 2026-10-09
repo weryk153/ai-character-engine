@@ -15,6 +15,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from ai_character_engine.context.budget import ContextBudgetExceededError
+from ai_character_engine.context.builder import (
+    PICTURE_DESCRIPTION_KEY,
+    is_picture_description,
+)
 from ai_character_engine.events.models import CharacterEvent
 from ai_character_engine.llm.models import Message
 from ai_character_engine.observability import TraceContext
@@ -154,12 +158,16 @@ class CharacterHostBridge:
                 self.runtime.state = state
                 self.runtime.context_notes = notes
             else:
-                # Visual facts are transient. Keep the user's words and the reply,
-                # never raw images or the VLM observation in conversational history.
+                # Visual facts are transient: the description of the picture is
+                # taken out of the conversation. Everything else stays exactly
+                # as it was sent (the same message objects, so the turn's note
+                # stays with the user's words), and the next prompt extends
+                # this one.
                 if frames:
-                    self.runtime.history = history + [
-                        Message("user", text.strip() or "[Image supplied]"),
-                        Message("assistant", result.text),
+                    self.runtime.history = [
+                        message
+                        for message in self.runtime.history
+                        if not is_picture_description(message)
                     ]
                     self._trim_history()
                 if (
@@ -206,11 +214,12 @@ class CharacterHostBridge:
     async def _process(self, text, frames, proactive, lease, on_text_delta=None):
         trace = TraceContext.create().child(character_id=self.runtime.character.id)
         parts = [text] if text.strip() else []
+        seen = []
         observations = []
         for frame in frames:
             result = await self.vision.analyze_frame(frame, trace_context=trace)
             if result is not None:
-                parts.append(result.event_content)
+                seen.append(result.event_content)
                 observations.append(result.event_payload["vision"])
         if frames and not observations:
             raise HostBridgeError("No visual frame was accepted; try again.")
@@ -223,6 +232,14 @@ class CharacterHostBridge:
             if frames
             else {}
         )
+        if frames and not proactive:
+            # The user's words, then what the picture shows as the last message
+            # of the turn (ContextBuilder), taken out again afterwards.
+            payload[PICTURE_DESCRIPTION_KEY] = "\n\n".join(seen)
+        else:
+            # A remark of her own is not kept in the conversation (skip_memory),
+            # so what she saw can stay with the prompt that asked for it.
+            parts.extend(seen)
         event = CharacterEvent(
             type="proactive_observation"
             if proactive

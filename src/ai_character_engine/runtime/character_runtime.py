@@ -14,6 +14,7 @@ from ai_character_engine.context.builder import (
     USER_SEEMS_LINE,
     ContextBuilder,
     belief_line,
+    is_picture_description,
     is_turn_context,
     one_line,
     without_lines,
@@ -267,6 +268,9 @@ class CharacterRuntime:
             # that the next prompt extends this one; the whole context of the
             # "turn" placement is not, it would be sent again on every turn.
             event_index = len(turn_messages) - 1
+            # A picture's description comes after the event it was sent with.
+            while event_index > 0 and is_picture_description(turn_messages[event_index]):
+                event_index -= 1
             if (
                 self.context_builder.context_placement == "transcript"
                 and event_index > 0

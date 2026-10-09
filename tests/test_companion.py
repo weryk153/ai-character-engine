@@ -485,7 +485,8 @@ def test_a_picture_is_described_to_her_and_not_kept(tmp_path):
         blind = companion(tmp_path)
         frame = VisionFrame(image=ImageInput.from_bytes(PNG, mime_type="image/png"))
         await current.reply("what is this", conversation_id="a", frames=(frame,))
-        seen = llm.calls[-1][-1].content
+        # Her words, then what the picture shows, as the last two messages.
+        seen = "\n".join(message.content for message in llm.calls[-1][-2:])
         await current.reply("and now", conversation_id="a")
         await current.close()
         await blind.close()
