@@ -404,3 +404,18 @@ async def test_a_picture_the_host_says_is_unchanged_reuses_the_last_description(
 
     await bridge.process("and now?", frames=(frame(),))
     assert len(calls) == 2
+
+
+async def test_she_is_told_the_picture_is_background():
+    """Told what the camera shows with nothing more, a local 9B commented on it in
+    every reply (a ceiling, three replies out of three); told it is background,
+    in two of three."""
+    vision = VisionPipeline(
+        provider=CallableVisionProvider(
+            lambda image, prompt: VisionAnalysis("a ceiling", "fake")
+        ),
+        frame_gate=FrameGate(min_interval_seconds=0, deduplicate=False),
+    )
+    llm = LLM()
+    await make_bridge(llm, vision=vision).process("tired today", frames=(frame(),))
+    assert "It is background" in llm.messages[-2].content

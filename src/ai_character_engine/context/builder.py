@@ -110,6 +110,13 @@ def user_lately(value: object) -> str:
 # continues from the end of the previous prompt read the conversation again.
 _PICTURE_OPENING = "type: what_you_see\n"
 PICTURE_DESCRIPTION_KEY = "vision_observation"
+# Told only what the camera shows, a local 9B commented on it in every reply
+# (a ceiling, three replies out of three); told this, in two of three.
+_PICTURE_GUIDE = (
+    "This is what the camera shows right now. It is background, not something the user "
+    "asked about: answer what they said. Mention what you see only when it matters to what "
+    "you are talking about, or when it has clearly changed."
+)
 
 
 def is_picture_description(message: Message) -> bool:
@@ -840,7 +847,10 @@ class ContextBuilder:
         seen = event.payload.get(PICTURE_DESCRIPTION_KEY)
         if not isinstance(seen, str) or not seen.strip():
             return None
-        return Message(role="event", content=_PICTURE_OPENING + "content: " + seen.strip())
+        return Message(
+            role="event",
+            content=_PICTURE_OPENING + "content: " + seen.strip() + "\nnote: " + _PICTURE_GUIDE,
+        )
 
     def _history_cycles(self, history: Sequence[Message]) -> list[list[Message]]:
         cycles: list[list[Message]] = []
