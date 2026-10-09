@@ -377,3 +377,30 @@ async def test_the_turn_after_a_picture_extends_the_prompt_of_the_picture_turn()
     sent_again = picture_turn[:-2]
     assert llm.messages[: len(sent_again)] == sent_again
     assert all("red mug" not in m.content for m in llm.messages)
+
+
+async def test_a_picture_the_host_says_is_unchanged_reuses_the_last_description():
+    """A camera mostly shows the same thing turn after turn. When the host marks a
+    frame unchanged, the last description of that source is told again instead of
+    asking the vision model (about two seconds on a local 9B)."""
+    calls = []
+
+    def look(image, prompt):
+        calls.append(1)
+        return VisionAnalysis(f"red mug {len(calls)}", "fake")
+
+    llm = LLM()
+    vision = VisionPipeline(
+        provider=CallableVisionProvider(look),
+        frame_gate=FrameGate(min_interval_seconds=0, deduplicate=False),
+    )
+    bridge = make_bridge(llm, vision=vision)
+    await bridge.process("look", frames=(frame(),))
+    unchanged = frame()
+    unchanged.metadata["unchanged"] = True
+    await bridge.process("still?", frames=(unchanged,))
+    assert len(calls) == 1
+    assert "red mug 1" in llm.messages[-2].content
+
+    await bridge.process("and now?", frames=(frame(),))
+    assert len(calls) == 2

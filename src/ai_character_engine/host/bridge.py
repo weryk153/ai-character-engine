@@ -85,6 +85,9 @@ class CharacterHostBridge:
         self._task: asyncio.Task | None = None
         self._closed = False
         self._last_reply: Message | None = None
+        # The last description of each source (camera, screenshot, ...), told
+        # again for a frame the host marks unchanged (metadata["unchanged"]).
+        self._last_seen: dict[str, tuple[str, dict]] = {}
 
     @property
     def busy(self) -> bool:
@@ -216,10 +219,21 @@ class CharacterHostBridge:
         seen = []
         observations = []
         for frame in frames:
+            # A camera mostly shows the same thing turn after turn; the host can
+            # tell (it has the pixels) and spares a call to the vision model.
+            last = self._last_seen.get(frame.source_type)
+            if frame.metadata.get("unchanged") and last is not None:
+                seen.append(last[0])
+                observations.append(last[1])
+                continue
             result = await self.vision.analyze_frame(frame, trace_context=trace)
             if result is not None:
                 seen.append(result.event_content)
                 observations.append(result.event_payload["vision"])
+                self._last_seen[frame.source_type] = (
+                    result.event_content,
+                    result.event_payload["vision"],
+                )
         if frames and not observations:
             raise HostBridgeError("No visual frame was accepted; try again.")
         payload = (
