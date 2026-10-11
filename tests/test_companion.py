@@ -3469,17 +3469,41 @@ def test_her_silence_is_kept_as_silence_not_as_an_empty_line(tmp_path):
     assert history[-1] == ("assistant", "……")
 
 
-def test_a_reply_with_nothing_left_to_pass_on_is_kept_as_silence(tmp_path):
+def test_a_reply_asked_again_is_said_even_if_it_repeats_again(tmp_path):
+    """She was asked again, and said the same thing again: left out a second
+    time, the user said something and got no answer at all (6 turns in 42 in
+    a host's test). Asked again once, what she says then is said."""
+
     async def scenario():
-        llm = Scripted(*(["Mind the load on Amadeus, or your time machine breaks too."] * 3))
+        line = "Mind the load on Amadeus, or your time machine breaks too."
+        llm = Scripted(line, line, line)
         current = companion(tmp_path, llm=llm)
         await current.speak_up("a")
-        result = await current.reply("ok", conversation_id="a")
+        heard: list[str] = []
+        result = await current.reply("ok", conversation_id="a", on_text_delta=heard.append)
         newest = current.runtime.history[-1]
         await current.close()
-        return result.text, (newest.role, newest.content)
+        return result.text, "".join(heard), (newest.role, newest.content), len(llm.calls)
 
-    assert run(scenario()) == ("", ("assistant", "……"))
+    text, heard, newest, calls = run(scenario())
+    line = "Mind the load on Amadeus, or your time machine breaks too."
+    assert text == heard == line
+    assert newest == ("assistant", line)
+    assert calls == 3  # her remark, the reply, and the reply asked again
+
+
+def test_a_reply_asked_again_is_said_even_if_it_is_assistant_talk(tmp_path):
+    async def scenario():
+        llm = Scripted(
+            "Is there anything else I can help you with?",
+            "Is there anything else I can help you with?",
+        )
+        current = companion(tmp_path, llm=llm)
+        result = await current.reply("ok", conversation_id="a")
+        await current.close()
+        return result.text
+
+    assert run(scenario()) == "Is there anything else I can help you with?"
 
 
 def test_a_host_can_tell_what_this_engine_offers():

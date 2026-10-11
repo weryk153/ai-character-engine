@@ -666,8 +666,10 @@ class _SentenceGate:
     closing that talks like an assistant. A sentence that may be such a
     closing waits until two more have come, or the reply has ended."""
 
-    def __init__(self, lines: Sequence[str], forward) -> None:
-        self._lines = lines
+    def __init__(self, lines: Sequence[str], forward, *, keep_all: bool = False) -> None:
+        # keep_all: only sentences of nothing but punctuation are left out.
+        self._lines = () if keep_all else lines
+        self._keep_all = keep_all
         self._forward = forward
         self._pending = ""
         self.passed = ""
@@ -699,7 +701,7 @@ class _SentenceGate:
         if _only_punctuation(sentence):
             self._leave_out("")
             return
-        if not self._held and not _sounds_like_an_assistant(sentence):
+        if self._keep_all or (not self._held and not _sounds_like_an_assistant(sentence)):
             await self._pass(sentence)
             return
         self._held.append(sentence)
@@ -1759,7 +1761,11 @@ class CharacterCompanion:
         repeat one of her latest lines, talk like an assistant or are nothing
         but punctuation; what is kept is what was passed on. A reply that was
         nothing but repetition or assistant talk, and used no tool, is asked
-        again once. One of nothing but punctuation is her silence: it is not."""
+        again once. One of nothing but punctuation is her silence: it is not.
+
+        What she says when asked again is said, repetition and all: left out a
+        second time, the user got no answer at all (6 turns in 42 in a host's
+        test). A remark of her own may still end in silence."""
         mine = [
             message.content
             for message in self.runtime.history
@@ -1768,7 +1774,8 @@ class CharacterCompanion:
         notes = self._notes
         for attempt in range(2):
             before = self.runtime.history[-1] if self.runtime.history else None
-            gate = _SentenceGate(mine, on_text_delta)
+            last_try = attempt == 1 and not proactive
+            gate = _SentenceGate(mine, on_text_delta, keep_all=last_try)
             result = await self._tasks.run_foreground_turn(
                 lambda: self._bridge.process(
                     text,
