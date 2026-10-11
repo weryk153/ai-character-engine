@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.3
+
+- A reply asked again is said. When everything she was about to say repeated what she had said (or sounded like an assistant), she was asked again; when the second answer was left out too, the user got no answer at all, 6 turns in 42 in a host's test. What she says when asked again is now passed on as it is. A remark of her own may still end in silence.
+
 ## 1.3.2
 
 - A line said again no longer costs the prompt cache. Notes go back in front of the message they were written for, found by what it says; searched from the start of the conversation, the note of a line said before ("haha", "ok") landed in front of its first saying whenever that one had no note of its own, and from there on the next prompt no longer extended this one (on LM Studio a local 9B read 1700–2100 tokens again every turn, 5–8 s). They are now searched from the newest back.
