@@ -389,6 +389,17 @@ conversation the companion has already seen is not replaced;
 The companion keeps the history of the `conversations_kept` most recent
 conversations in memory and does not store transcripts on disk.
 
+When a conversation opens (a new one, one switched to, the first after
+starting), `await companion.warm_up(conversation_id)` has her model read what
+her next reply there starts with: the system prompt, the tools and the
+conversation so far, without the turn's own part. LM Studio keeps cache points
+near the end of each prompt, and a new conversation parts from the last prompt
+right after the system prompt, where none was kept; its first reply then read
+some 2100 tokens again (6 s on a local 9B). The warm-up streams and stops at
+the first token, keeps nothing and changes no state; a model that cannot
+stream is not warmed up, and a failure only returns `False`. It takes the turn
+lock, so a reply asked for meanwhile waits for it and starts from what it read.
+
 ## Her mood
 
 Her mood is one of eight words, `CHARACTER_MOODS` in

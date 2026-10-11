@@ -1424,6 +1424,23 @@ class CharacterCompanion:
         if not seen and conversation_id not in self._kept:
             self._loaded[conversation_id] = _clean(messages)
 
+    async def warm_up(self, conversation_id: str | None = None) -> bool:
+        """Have her model read what her next reply in ``conversation_id``
+        starts with, so that the reply does not (see CharacterRuntime.warm_up).
+        For a host to call when a conversation opens: a new one, one switched
+        to, or the first after starting. Waits for a reply under way; a reply
+        asked for meanwhile waits for it, and then starts from what it read.
+        ``False`` when nothing was read; never raises."""
+        async with self._turn_lock:
+            if self._closed:
+                return False
+            try:
+                self._switch_to(conversation_id)
+                return await self.runtime.warm_up()
+            except Exception:  # noqa: BLE001 - a warm-up is never worth an error
+                logger.debug("warm-up failed", exc_info=True)
+                return False
+
     def _switch_to(self, conversation_id: str | None) -> None:
         """Call with the turn lock held."""
         if conversation_id != self._active or not self._started:

@@ -123,6 +123,58 @@ class CharacterRuntime:
         result = await self.process_event(CharacterEvent.user_message(user_message))
         return result.response
 
+    async def warm_up(self) -> bool:
+        """Have the model read what the next prompt starts with: the system
+        prompt, the tools and the conversation so far, without the next turn's
+        own part. On LM Studio the server keeps cache points near the end of
+        each prompt; a new conversation parts from the last prompt right after
+        the system prompt, where none was kept, and its first turn read some
+        2100 tokens again (6 s on a local 9B). A prompt ending there leaves one.
+
+        Streams and stops at the first token: the prompt is read by then. No
+        model that streams, nothing known, or a failure: ``False``, and nothing
+        happened. Keeps no history and changes no state.
+        """
+        stream = getattr(self.llm, "stream_generate", None)
+        if stream is None:
+            return False
+        tools = self.tool_registry.definitions() or None
+        messages = list(
+            self.context_builder.build_for_event_with_trace(
+                character=self.character,
+                history=self.history,
+                event=CharacterEvent.user_message("."),
+                state=self.state,
+                tools=tools,
+                notes=self.context_notes,
+            ).messages
+        )
+        # The turn's own part: the event, a picture's description, and a note
+        # made for this turn (one kept from an earlier turn stays).
+        cut = len(messages) - 1
+        while cut > 0 and (
+            is_picture_description(messages[cut - 1])
+            or (
+                is_turn_context(messages[cut - 1])
+                and not any(messages[cut - 1] is note for _, note in self.context_notes)
+            )
+        ):
+            cut -= 1
+        known = messages[:cut]
+        if not known:
+            return False
+        reading = stream([*known, Message(role="user", content=".")], tools=tools)
+        try:
+            await reading.__anext__()
+        except StopAsyncIteration:
+            pass
+        except Exception:  # noqa: BLE001 - a warm-up that fails is no warm-up
+            logger.debug("warm-up failed", exc_info=True)
+            return False
+        finally:
+            await reading.aclose()
+        return True
+
     async def process_event(
         self,
         event: CharacterEvent,

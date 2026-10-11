@@ -4803,3 +4803,90 @@ def test_speaking_up_again_unanswered_she_is_told_her_last_remark_was_hers(tmp_p
     first, second = run(scenario())
     assert "not answered" not in first
     assert "1 time" in second and "not answered" in second
+
+
+# --- warming up the model's prompt cache ------------------------------------------------
+
+
+def test_a_warm_up_reads_what_the_next_turn_starts_with(tmp_path):
+    """The first turn of a new conversation read some 2100 tokens again on
+    LM Studio (6 s on a local 9B): the server keeps cache points near the end
+    of each prompt, and a new conversation leaves the last one right after the
+    system prompt, where none was kept. A warm-up sends what the next prompt
+    starts with, ending there, so that one is."""
+
+    async def scenario():
+        llm = Scripted("Hello there.", "", "Fine, thanks.")
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        history = [(m.role, m.content) for m in current.runtime.history]
+        warmed = await current.warm_up("a")
+        after = [(m.role, m.content) for m in current.runtime.history]
+        await current.reply("how are you", conversation_id="a")
+        await current.close()
+        return warmed, llm.calls[1], llm.calls[2], history, after
+
+    warmed, warm_call, next_turn, history, after = run(scenario())
+    assert warmed is True
+    assert warm_call[-1].role == "user" and warm_call[-1].content == "."
+    known = warm_call[:-1]
+    assert [(m.role, m.content) for m in next_turn[: len(known)]] == [
+        (m.role, m.content) for m in known
+    ]
+    # Nothing of the turn itself: the next message is where they part.
+    assert len(next_turn) > len(known)
+    assert after == history
+
+
+def test_a_new_conversation_is_warmed_up_with_her_system_prompt_only(tmp_path):
+    async def scenario():
+        llm = Scripted("Hello there.", "")
+        current = companion(tmp_path, llm=llm)
+        await current.reply("hi", conversation_id="a")
+        await current.warm_up("b")
+        await current.close()
+        return llm.calls[1]
+
+    warm_call = run(scenario())
+    assert [m.role for m in warm_call] == ["system", "user"]
+
+
+def test_a_model_that_cannot_stream_is_not_warmed_up(tmp_path):
+    """Without streaming there is no stopping after the first token: a warm-up
+    would cost a whole reply."""
+
+    class Plain:
+        def __init__(self):
+            self.calls = []
+
+        async def generate(self, messages, *, tools=None):
+            self.calls.append(list(messages))
+            return LLMResponse(text="Hello.", model="plain")
+
+    async def scenario():
+        llm = Plain()
+        current = companion(tmp_path, llm=llm)
+        warmed = await current.warm_up("a")
+        await current.close()
+        return warmed, llm.calls
+
+    warmed, calls = run(scenario())
+    assert warmed is False
+    assert calls == []
+
+
+def test_a_failed_warm_up_is_no_turn_and_raises_nothing(tmp_path):
+    class Broken(Scripted):
+        async def stream_generate(self, messages, *, tools=None):
+            self.calls.append(list(messages))
+            raise RuntimeError("server gone")
+            yield  # pragma: no cover
+
+    async def scenario():
+        llm = Broken()
+        current = companion(tmp_path, llm=llm)
+        warmed = await current.warm_up("a")
+        await current.close()
+        return warmed, len(current.runtime.history)
+
+    assert run(scenario()) == (False, 0)
