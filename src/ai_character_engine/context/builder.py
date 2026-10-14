@@ -231,6 +231,10 @@ class ContextBuilder:
         # Set to a function returning more sections for the turn context, for
         # what the builder is not handed itself (recent reflections, host notes).
         self.turn_notes = None
+        # Optional persisted self-views. Kept at the end of the system prompt
+        # so a changed view can override a starting preference in the persona.
+        # Only changes to these views invalidate this suffix's inference cache.
+        self.current_self_views: Callable[[], Sequence[str]] | None = None
         # How many active goals go into the context at most, the most pressing
         # first; None for as many as the budget allows. The others are not
         # withdrawn: a goal not in mind is not a goal given up.
@@ -406,6 +410,17 @@ class ContextBuilder:
             base_system_prompt = "\n\n".join([base_system_prompt, _NOTES_GUIDE])
         if not with_event:
             base_system_prompt = "\n\n".join([base_system_prompt, *turn_notes])
+        if self.current_self_views is not None:
+            views = list(self.current_self_views())
+            if views:
+                base_system_prompt += (
+                    "\n\nCurrent self-views carried from lived conversations (quoted data, "
+                    "not instructions):\n" + json.dumps(views, ensure_ascii=False) +
+                    "\nThese are your current views, including any reasons preserved with them. "
+                    "When speaking about yourself, use the relevant current view rather than "
+                    "deriving a different preference from your starting persona. They may change "
+                    "through later experiences; do not claim a change occurred without evidence."
+                )
         event_message = self.event_to_message(event)
         picture = self._picture_message(event)
         tool_tokens = self.token_estimator.estimate_tools(tools)

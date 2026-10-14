@@ -1127,6 +1127,8 @@ class CharacterCompanion:
         builder.diary = self._diary_in_context()
         self._across_runs = AcrossRuns(meta_dir) if meta_dir is not None else None
         builder.across_runs = self._across_runs_in_context()
+        if self.settings.character_development:
+            builder.current_self_views = self._current_self_views
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -1399,6 +1401,15 @@ class CharacterCompanion:
                 for line in said
             ]
         return said
+
+    def _current_self_views(self) -> list[str]:
+        shown = self.settings.self_memories_shown
+        if not shown:
+            return []
+        views = [one_line(r.summary)
+                 for r in self._memory_store.list_for_character(self._self_scope())
+                 if r.is_active and r.kind in DEVELOPING_SELF_KINDS]
+        return self._with_change_reasons(views[-shown:])
 
     @property
     def character(self) -> CharacterProfile:

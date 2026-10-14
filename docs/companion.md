@@ -687,6 +687,11 @@ propose revisions of an existing **taste, habit, or opinion**. It must name an
 active earlier record of the same kind and quote the character's new statement
 of the change and its reason. Unknown ids, missing quotes, protected kinds, and
 records already revised by another result cannot replace the earlier view.
+Before retiring any view, an independent model reading compares the old and new
+views. Reaffirmations, different subjects, uncertain readings and failed calls
+do not replace earlier views; compatible additions can be kept without retiring
+them. A confirmed change still needs exact quotes for both the change and its
+reason. This adds a model call only when the extractor proposes a replacement.
 The setting defaults to `False`; evaluate complete conversations with your
 model before enabling it.
 
@@ -700,6 +705,13 @@ evidence survive a restart. The profile itself is
 never rewritten. Identity, biography, physical traits, and views of a particular
 user are outside this revision mechanism. Models still judge the meaning of
 quotes: exact-source checks cannot prove that a stated experience really happened.
+
+With development enabled, currently active tastes, habits and opinions also
+appear as quoted data at the end of the system prompt. They are the current
+state; initial persona preferences are the starting state. This keeps the
+original system prefix intact, but a changed view invalidates the cache after
+that suffix, including subsequent conversation text. Evaluate the latency
+tradeoff with the same model as well as the quality of the replies.
 
 `await companion.speak_up(allow_silence=True)` gives the character the choice to
 stay quiet. An exact `<stay_quiet>` response becomes empty text without another

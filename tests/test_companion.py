@@ -153,6 +153,13 @@ def test_opted_in_silence_is_not_retried_streamed_or_remembered(tmp_path):
     run(scenario())
 
 
+def confirmed_change(quote, *, confirmed=True):
+    return {"relation": "compatible" if confirmed == "compatible" else
+            ("changed" if confirmed else "same"),
+            "change_quote": quote, "reason_quote": quote}
+
+
+@pytest.mark.parametrize("confirmed", [True, False, "compatible"])
 @pytest.mark.parametrize("enabled,valid_evidence,kind,unknown_id", [
     (True, True, "taste", False),
     (False, True, "taste", False),
@@ -162,7 +169,7 @@ def test_opted_in_silence_is_not_retried_streamed_or_remembered(tmp_path):
     (True, True, "taste", True),
 ])
 def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
-    tmp_path, enabled, valid_evidence, kind, unknown_id
+    tmp_path, enabled, valid_evidence, kind, unknown_id, confirmed
 ):
     async def scenario():
         old = "I avoid bitter tea."
@@ -171,6 +178,8 @@ def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
         current = None
 
         def extract(messages):
+            if messages[0].content.startswith("Verify a proposed self-view change"):
+                return confirmed_change(new, confirmed=confirmed)
             if new not in messages[1].content:
                 return {"items": [{"summary": "Mei avoids bitter tea.", "kind": kind,
                                    "evidence": old, "confidence": 1.0}]}
@@ -187,16 +196,17 @@ def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
         await current.reply("Here is some roasted tea to try.", conversation_id="a")
         await current.settle()
         await current.close()
-        reopened = companion(tmp_path, character_development=enabled)
+        reopened_llm = Foreground()
+        reopened = companion(tmp_path, character_development=enabled, llm=reopened_llm)
         records = reopened.runtime.memory_manager.store.list_for_character("mei#self")
-        if enabled and (not valid_evidence or kind != "taste" or unknown_id):
+        if enabled and (not valid_evidence or kind != "taste" or unknown_id or not confirmed):
             assert len(records) == 1
             assert records[0].is_active
             await reopened.close()
             return
         assert len(records) == 2
         first, second = records
-        if enabled and valid_evidence:
+        if enabled and valid_evidence and confirmed is True:
             assert first.status == "superseded"
             assert first.superseded_by == second.id
             assert second.supersedes == (first.id,)
@@ -206,6 +216,12 @@ def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
             inspection = reopened.self_memory_history()
             inspection[1].metadata["change_evidence"] = "changed by inspector"
             assert reopened.self_memory_history()[1].metadata["change_evidence"] == new
+            await reopened.reply("What do you like now?", conversation_id="new-conversation")
+            system = reopened_llm.calls[-1][0].content
+            assert "Current self-views carried from lived conversations" in system
+            assert new in system
+            assert second.summary in system
+            assert first.summary not in system
         else:
             assert all(r.is_active for r in records)
             assert second.supersedes == ()
@@ -231,6 +247,8 @@ def test_delayed_development_cannot_overwrite_a_view_edited_while_it_was_read(tm
 
         class DelayedReader:
             async def generate(self, messages, *, tools=None):
+                if messages[0].content.startswith("Verify a proposed self-view change"):
+                    return LLMResponse(text=json.dumps(confirmed_change(new)))
                 if new in messages[1].content:
                     started.set()
                     await release.wait()
@@ -267,6 +285,8 @@ def test_reaffirming_a_learned_view_keeps_its_change_reason(tmp_path):
         current = None
 
         def extract(messages):
+            if messages[0].content.startswith("Verify a proposed self-view change"):
+                return confirmed_change(changed)
             lines = _listed_for_her(messages)
             if repeated in lines:
                 return {"items": [{"summary": "Mei enjoys bitter tea!", "kind": "taste",
@@ -296,6 +316,18 @@ def test_reaffirming_a_learned_view_keeps_its_change_reason(tmp_path):
         await reopened.close()
 
     run(scenario())
+
+
+@pytest.mark.parametrize("relation", ["same", "compatible", "unrelated", "uncertain", None])
+def test_self_change_confirmation_requires_a_change_and_exact_quotes(relation):
+    from ai_character_engine.cognition.background import _self_change_confirmed
+
+    quote = "The story changed my mind; I now prefer open endings."
+    answer = confirmed_change(quote)
+    assert _self_change_confirmed(answer, [quote])
+    assert not _self_change_confirmed({**answer, "relation": relation}, [quote])
+    assert not _self_change_confirmed({**answer, "reason_quote": "invented"}, [quote])
+    assert not _self_change_confirmed({**answer, "change_quote": ""}, [quote])
 
 
 # --- the foreground turn -------------------------------------------------------
