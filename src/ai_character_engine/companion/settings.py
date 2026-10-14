@@ -45,6 +45,10 @@ class CompanionSettings:
     # Candidate: evidence-backed changes to tastes, habits and opinions retain
     # a link to the superseded view. Off until a host has evaluated its model.
     character_development: bool = False
+    # Experience-backed interaction lessons. Requires character_development and
+    # an explicit user_id on reply(); no identity is inferred from dialogue.
+    interaction_every: int = 1
+    interaction_topics_shown: int = 4
     # One model call. The engine's own worker defaults (12 s for emotion, 20 s
     # for a summary) time out on the hardware above.
     call_timeout_seconds: float = 60.0
@@ -139,6 +143,8 @@ class CompanionSettings:
             "reflection_every",
             "summary_every",
             "self_memory_every",
+            "interaction_every",
+            "interaction_topics_shown",
             "user_state_every",
             "max_turns_late",
             "goal_max_age_days",

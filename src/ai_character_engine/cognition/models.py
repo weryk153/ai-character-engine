@@ -41,6 +41,7 @@ class CognitiveRole(str, Enum):
     USER_STATE = "user_state"
     # Her day, in her words, once a day.
     DIARY = "diary"
+    INTERACTION = "interaction"
 
 
 class CognitiveOptimization(str, Enum):

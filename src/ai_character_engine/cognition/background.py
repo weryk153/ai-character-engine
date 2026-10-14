@@ -25,6 +25,11 @@ from ai_character_engine.memory.conflicts import (
     says_a_change,
 )
 from ai_character_engine.memory.evidence import classify_user_text
+from ai_character_engine.memory.experience import (
+    EXPERIENCE_TARGET,
+    experience_messages,
+    normalize_experience,
+)
 from ai_character_engine.memory.models import MemoryRecord
 from ai_character_engine.memory.self_kinds import (
     DEVELOPING_SELF_KINDS,
@@ -71,6 +76,7 @@ class BackgroundCognitionKind(str, Enum):
     MEMORY_CONFLICT = "memory_conflict"
     USER_STATE = "user_state"
     DIARY = "diary"
+    INTERACTION_LEARNING = "interaction_learning"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -86,6 +92,7 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.MEMORY_CONFLICT: CognitiveRole.MEMORY_CONFLICT,
     BackgroundCognitionKind.USER_STATE: CognitiveRole.USER_STATE,
     BackgroundCognitionKind.DIARY: CognitiveRole.DIARY,
+    BackgroundCognitionKind.INTERACTION_LEARNING: CognitiveRole.INTERACTION,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
@@ -364,6 +371,11 @@ class StructuredBackgroundWorker:
             )
 
     def _messages(self, context: TaskContext) -> list[Message]:
+        if self.spec.kind is BackgroundCognitionKind.INTERACTION_LEARNING:
+            return experience_messages(
+                context.request.payload.get("interaction", {}),
+                str(context.request.payload.get("output_language") or ""),
+            )
         if self.spec.kind is BackgroundCognitionKind.CHARACTER_MOOD:
             return _mood_messages(context, self.history_messages)
         if self.spec.kind is BackgroundCognitionKind.REPLY_CHECK:
@@ -692,6 +704,21 @@ class StructuredBackgroundWorker:
             "evidence": list(evidence),
         }
         proposals: list[TaskProposal] = []
+
+        if kind is BackgroundCognitionKind.INTERACTION_LEARNING:
+            source = context.request.payload.get("interaction", {})
+            value = normalize_experience(data, source)
+            user_id = source.get("user_id")
+            if value is None or not isinstance(user_id, str) or not user_id.strip():
+                return None, confidence, (), []
+            evidence = (value["character_quote"], value["user_quote"])
+            proposals.append(context.proposal(
+                EXPERIENCE_TARGET, value, confidence=confidence,
+                provenance={**provenance, "evidence": list(evidence),
+                            "evidence_type": "interaction_observation",
+                            "user_id": user_id, "interaction": dict(source)},
+            ))
+            return value, confidence, evidence, proposals
 
         if kind is BackgroundCognitionKind.MEMORY_EXTRACTION:
             items = data.get("items", [])

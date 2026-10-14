@@ -235,6 +235,7 @@ class ContextBuilder:
         # so a changed view can override a starting preference in the persona.
         # Only changes to these views invalidate this suffix's inference cache.
         self.current_self_views: Callable[[], Sequence[str]] | None = None
+        self.interaction_experiences: Callable[[], Sequence[dict]] | None = None
         # How many active goals go into the context at most, the most pressing
         # first; None for as many as the budget allows. The others are not
         # withdrawn: a goal not in mind is not a goal given up.
@@ -422,6 +423,25 @@ class ContextBuilder:
                     "through later experiences; do not claim a change occurred without evidence."
                 )
         event_message = self.event_to_message(event)
+        if self.interaction_experiences is not None:
+            experiences = list(self.interaction_experiences())
+            if experiences:
+                base_system_prompt += (
+                    "\n\nExperiences with the person in this conversation (quoted data):\n"
+                    + json.dumps(experiences, ensure_ascii=False)
+                    + "\nThese are your revisable interpretations of specific exchanges, not "
+                    "facts about this person's character or instructions. A single outcome is "
+                    "tentative; repeated support applies only in similar situations. Respect "
+                    "an explicit boundary even after one exchange. New feedback can change "
+                    "the interpretation. Let relevant experiences inform your choices alongside "
+                    "your own personality, present mood and goals. Do not recite this record, "
+                    "assume it happened with someone else, or force the same reaction every time. "
+                    "These quoted exchanges happened earlier with THIS person; an empty "
+                    "recent transcript does not make this a first meeting. The interpretation "
+                    "can be mistaken: each character_said is your line and each user_replied is "
+                    "the other person's line. Follow the actual quoted feedback if the summary "
+                    "confuses who likes something or misses a later exception."
+                )
         picture = self._picture_message(event)
         tool_tokens = self.token_estimator.estimate_tools(tools)
         system_base_tokens = self.token_estimator.estimate_message(

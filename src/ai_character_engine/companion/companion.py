@@ -81,6 +81,12 @@ from ai_character_engine.memory.conflicts import (
     unresolved_conflicts,
 )
 from ai_character_engine.memory.models import MemoryRecord, RetrievedMemory
+from ai_character_engine.memory.experience import (
+    EXPERIENCE_KIND,
+    EXPERIENCE_TARGET,
+    experience_scope,
+    experience_topics,
+)
 from ai_character_engine.memory.self_kinds import (
     DEVELOPING_SELF_KINDS,
     CONVERSATION_KEY,
@@ -129,10 +135,12 @@ CONVERSATION_SCOPED_TARGETS = (
 _READ_ONCE = (
     BackgroundCognitionKind.MEMORY_EXTRACTION,
     BackgroundCognitionKind.SELF_MEMORY_EXTRACTION,
+    BackgroundCognitionKind.INTERACTION_LEARNING,
 )
 # A conflict is checked against the memories as they are when it is
 # committed: a turn in between does not make it wrong.
-_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET, DIARY_TARGET, MEMORY_CONFLICT_TARGET)
+_KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET, DIARY_TARGET,
+                      MEMORY_CONFLICT_TARGET, EXPERIENCE_TARGET)
 # Of use only before the next turn: a note about a reply is never moved onto
 # a later one.
 _THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
@@ -298,6 +306,13 @@ _WORKERS = (
         CognitiveRole.GOAL,
         TaskPriority.NORMAL,
         "cognition.goal_candidate",
+    ),
+    _Worker(
+        "interaction",
+        BackgroundCognitionKind.INTERACTION_LEARNING,
+        CognitiveRole.INTERACTION,
+        TaskPriority.NORMAL,
+        EXPERIENCE_TARGET,
     ),
     _Worker(
         "reflection",
@@ -1059,6 +1074,8 @@ class CharacterCompanion:
             self._dir.mkdir(parents=True, exist_ok=True)
         # None is a conversation too: the one of a host that names none.
         self._active: str | None = None
+        self._current_user_id: str | None = None
+        self._interaction_source: dict | None = None
         self._started = False
         # Per conversation: what was said, and the notes written into it.
         self._kept: OrderedDict[str | None, tuple[list[Message], list]] = OrderedDict()
@@ -1129,6 +1146,7 @@ class CharacterCompanion:
         builder.across_runs = self._across_runs_in_context()
         if self.settings.character_development:
             builder.current_self_views = self._current_self_views
+            builder.interaction_experiences = self._experiences_for_context
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -1224,6 +1242,10 @@ class CharacterCompanion:
             if self.settings.character_development:
                 self._background.job_extras[BackgroundCognitionKind.SELF_MEMORY_EXTRACTION] = (
                     self._developing_self_views
+                )
+                self._background.job_extras[BackgroundCognitionKind.INTERACTION_LEARNING] = (
+                    lambda: {"interaction": self._interaction_source}
+                    if self._interaction_source is not None else None
                 )
         self._commits = CognitiveCommitCoordinator(
             self._tasks, event_history=self.settings.records_kept
@@ -1325,6 +1347,8 @@ class CharacterCompanion:
         return clients
 
     def _every(self, worker: _Worker) -> int:
+        if worker.name == "interaction" and not self.settings.character_development:
+            return 0
         if worker.name == "diary":
             # Asked after every turn whether her day is due (_day_if_due), and
             # written whenever the host asks (write_diary).
@@ -1410,6 +1434,33 @@ class CharacterCompanion:
                  for r in self._memory_store.list_for_character(self._self_scope())
                  if r.is_active and r.kind in DEVELOPING_SELF_KINDS]
         return self._with_change_reasons(views[-shown:])
+
+    def interaction_experiences(self, user_id: str) -> tuple[MemoryRecord, ...]:
+        """Grounded episodes with this person, including earlier interpretations.
+
+        The host supplies the stable identity; neither names in dialogue nor a
+        relationship score establish it. Records survive new conversations and
+        restarts, but never enter another person's context.
+        """
+        scope = experience_scope(self.character.id, user_id)
+        return tuple(r for r in self._memory_store.list_for_character(scope)
+                     if r.kind == EXPERIENCE_KIND and r.is_active)
+
+    def forget_interaction_experiences(self, user_id: str, record_ids: Sequence[str]) -> None:
+        """Withdraw selected interpretations without changing the initial persona."""
+        scope = experience_scope(self.character.id, user_id)
+        forgotten = set(record_ids)
+        self._memory_store.replace_for_character(scope, [
+            replace(r, status="forgotten", forgotten_at=self._now())
+            if r.kind == EXPERIENCE_KIND and r.id in forgotten else r
+            for r in self._memory_store.list_for_character(scope)
+        ])
+
+    def _experiences_for_context(self) -> list[dict]:
+        if self._current_user_id is None:
+            return []
+        return experience_topics(self.interaction_experiences(self._current_user_id),
+                                 self.settings.interaction_topics_shown)
 
     @property
     def character(self) -> CharacterProfile:
@@ -1533,6 +1584,7 @@ class CharacterCompanion:
         text: str,
         *,
         conversation_id: str | None = None,
+        user_id: str | None = None,
         frames: tuple[VisionFrame, ...] = (),
         on_text_delta: Callable[[str], Awaitable[None] | None] | None = None,
         skip_memory: bool = False,
@@ -1554,10 +1606,15 @@ class CharacterCompanion:
         or registers its tools. ``remember_as`` turns the reply into what the
         conversation keeps of it, for a host that shows replies normalized.
         ``turn_id`` is the host's own name for this turn, for interrupt().
+        ``user_id`` is a stable host-owned identity across conversations. With
+        character_development it enables learning from interaction feedback.
+        Omit it for unknown participants or shared streams; there is no fallback
+        identity and no cross-conversation relationship learning in that case.
         """
         return await self._run(
             text,
             conversation_id=conversation_id,
+            user_id=user_id,
             frames=frames,
             on_text_delta=on_text_delta,
             skip_memory=skip_memory,
@@ -1574,6 +1631,7 @@ class CharacterCompanion:
         conversation_id: str | None = None,
         *,
         frames: tuple[VisionFrame, ...] = (),
+        user_id: str | None = None,
         on_text_delta: Callable[[str], Awaitable[None] | None] | None = None,
         notes: Sequence[str] = (),
         before_turn: Callable[[], None] | None = None,
@@ -1625,6 +1683,7 @@ class CharacterCompanion:
         return await self._run(
             text,
             conversation_id=conversation_id,
+            user_id=user_id,
             frames=frames,
             on_text_delta=on_text_delta,
             skip_memory=True,
@@ -1643,6 +1702,7 @@ class CharacterCompanion:
         text: str,
         *,
         conversation_id: str | None,
+        user_id: str | None,
         frames: tuple[VisionFrame, ...],
         on_text_delta: Callable[[str], Awaitable[None] | None] | None,
         skip_memory: bool,
@@ -1659,6 +1719,8 @@ class CharacterCompanion:
         remark she made on her own (see speak_up)."""
         if self._closed:
             raise CompanionClosed("companion is closed")
+        if user_id is not None and (not isinstance(user_id, str) or not user_id.strip()):
+            raise ValueError("user_id must be a non-empty host-supplied identity or None")
         if self._loop is None:
             self._loop = asyncio.get_running_loop()
         turn = _Turn(conversation_id, text, turn_id)
@@ -1689,6 +1751,20 @@ class CharacterCompanion:
                 self._notes = tuple(note for note in notes if note.strip())
                 self._reply_fixes = self._take_reply_note(conversation_id)
                 self._conflict_notes = self._take_conflict_notes(conversation_id)
+                self._current_user_id = user_id
+                self._interaction_source = None
+                if self.settings.character_development and user_id and not skip_memory and not proactive:
+                    previous = next((m.content for m in reversed(self.runtime.history)
+                                     if m.role == "assistant" and not m.tool_calls), "")
+                    if previous:
+                        self._interaction_source = {
+                            "user_id": user_id,
+                            "observed_at": self._now().isoformat(),
+                            "character": self.character.background or self.character.description,
+                            "previous_reply": previous,
+                            "feedback": text,
+                            "topics": self._experiences_for_context(),
+                        }
                 self._access.foreground_started()
                 try:
                     turn.generating = True
@@ -1741,6 +1817,8 @@ class CharacterCompanion:
                         )
                 finally:
                     self._notes = ()
+                    self._current_user_id = None
+                    self._interaction_source = None
                     self._reply_fixes = ()
                     self._conflict_notes = ()
                     # Not before the new jobs are taken on: work that waited for
@@ -2336,7 +2414,7 @@ class CharacterCompanion:
         reached the user. A conversation no longer held, or trimmed since the
         job was scheduled, cannot tell: only a quote missing from a turn still
         there is refused."""
-        if proposal.target != SELF_MEMORY_TARGET:
+        if proposal.target not in {SELF_MEMORY_TARGET, EXPERIENCE_TARGET}:
             return True
         if self._started and conversation_id == self._active:
             history = self.runtime.history
@@ -2352,6 +2430,8 @@ class CharacterCompanion:
             return True
         quote = "".join(proposal.provenance.get("evidence") or ())
         said = [m.content for m in history if m.role == "assistant"]
+        if proposal.target == EXPERIENCE_TARGET:
+            return said_in(str(proposal.payload.get("character_quote") or ""), said)
         change = proposal.payload.get("change_evidence")
         return said_in(quote, said) and (not change or said_in(change, said))
 

@@ -7,7 +7,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 from uuid import uuid4
 
 from ai_character_engine.cognition.background import (
@@ -21,7 +21,12 @@ from ai_character_engine.cognition.background import (
     USER_STATE_TARGET,
 )
 from ai_character_engine.memory.conflicts import apply_conflicts, conflict_candidates
-from ai_character_engine.memory.models import MemoryRecord
+from ai_character_engine.memory.experience import (
+    EXPERIENCE_KIND,
+    EXPERIENCE_TARGET,
+    experience_scope,
+    normalize_experience,
+)
 from ai_character_engine.memory.self_kinds import CONVERSATION_KEY
 from ai_character_engine.long_term_cognition import (
     BeliefClaim,
@@ -62,6 +67,12 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
+    EXPERIENCE_TARGET: CommitTargetPolicy(
+        min_confidence=0.80,
+        stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
+        expected_worker_kind="interaction_learning",
+        max_age_s=300.0,
+    ),
     "memory.append_candidate": CommitTargetPolicy(
         min_confidence=0.75,
         stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
@@ -458,6 +469,33 @@ class CognitiveCommitCoordinator:
                     current_revision,
                     metadata={"evidence_type": evidence_type},
                 )
+        if proposal.target == EXPERIENCE_TARGET:
+            source = proposal.provenance.get("interaction")
+            user_id = proposal.provenance.get("user_id")
+            valid = (
+                isinstance(source, Mapping)
+                and isinstance(user_id, str) and bool(user_id.strip())
+                and source.get("user_id") == user_id
+                and proposal.provenance.get("foreground_event_type") == "user_message"
+                and bool(proposal.provenance.get("foreground_event_id"))
+                and source.get("feedback") == proposal.provenance.get("foreground_event_content")
+                and normalize_experience({"experience": proposal.payload}, source) is not None
+            )
+            if not valid:
+                return self._finalize(proposal, CommitStatus.REJECTED,
+                                      "experience_requires_grounded_exchange", current_revision)
+            topic_id = proposal.payload.get("topic_id")
+            manager = self.tasks.runtime.memory_manager
+            if manager is None:
+                return self._finalize(proposal, CommitStatus.REJECTED,
+                                      "memory_manager_not_configured", current_revision)
+            scope = experience_scope(self.tasks.runtime.character.id, user_id)
+            if topic_id is not None and not any(
+                r.kind == EXPERIENCE_KIND and r.metadata.get("topic_id") == topic_id
+                and r.is_active for r in manager.store.list_for_character(scope)
+            ):
+                return self._finalize(proposal, CommitStatus.REJECTED,
+                                      "experience_topic_not_owned_by_user", current_revision)
         if proposal.target == "state.emotion_candidate":
             evidence_type = str(proposal.provenance.get("evidence_type", ""))
             if evidence_type in {"quoted_reference", "user_instruction", "memory_operation"}:
@@ -711,6 +749,33 @@ class CognitiveCommitCoordinator:
 
     def _apply(self, proposal: TaskProposal) -> str | None:
         runtime = self.tasks.runtime
+        if proposal.target == EXPERIENCE_TARGET:
+            manager = runtime.memory_manager
+            scope = experience_scope(runtime.character.id, proposal.provenance["user_id"])
+            before = manager.store.list_for_character(scope)
+            payload = dict(proposal.payload)
+            event_id = str(proposal.provenance["foreground_event_id"])
+            try:
+                record = manager.append_background_candidate(
+                    character_id=scope, summary=payload["lesson"], kind=EXPERIENCE_KIND,
+                    importance=0.7, source_event_id=event_id, source_event_type="user_message",
+                    tags=("background_cognition", "interaction_learning"),
+                    metadata={
+                        **payload, "topic_id": payload["topic_id"] or event_id,
+                        "user_id": proposal.provenance["user_id"],
+                        "observed_at": proposal.provenance["interaction"].get(
+                            "observed_at", proposal.created_at.isoformat()),
+                        "evidence_type": "interaction_observation",
+                        "confidence": proposal.confidence,
+                        "source_task_id": proposal.source_task_id,
+                        "proposal_id": proposal.id,
+                        **_conversation_of(proposal.provenance),
+                    },
+                )
+            except Exception:
+                manager.store.replace_for_character(scope, before)
+                raise
+            return record.id
         if proposal.target in {"memory.append_candidate", "memory.self_candidate"}:
             manager = runtime.memory_manager
             if manager is None:
@@ -993,6 +1058,18 @@ class CognitiveCommitCoordinator:
         """
 
         runtime = self.tasks.runtime
+        if proposal.target == EXPERIENCE_TARGET:
+            scope = experience_scope(runtime.character.id, proposal.provenance["user_id"])
+            same_event = [
+                r for r in runtime.memory_manager.store.list_for_character(scope)
+                if r.kind == EXPERIENCE_KIND
+                and r.source_event_id == proposal.provenance["foreground_event_id"]
+            ]
+            if same_event:
+                return self._finalize(
+                    proposal, CommitStatus.DUPLICATE, "experience_event_already_recorded",
+                    current_revision, metadata={"existing_record_ids": [r.id for r in same_event]},
+                )
         if proposal.target in {
             "memory.append_candidate",
             "memory.self_candidate",
@@ -1197,6 +1274,11 @@ class CognitiveCommitCoordinator:
         fingerprint = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
         provenance = dict(proposal.provenance)
         event_id = str(provenance.get("foreground_event_id", ""))
+
+        if proposal.target == EXPERIENCE_TARGET:
+            scope = experience_scope(self.tasks.runtime.character.id, provenance["user_id"])
+            semantic = hashlib.sha256(f"experience|{scope}|{event_id}".encode()).hexdigest()
+            return semantic, None, fingerprint
 
         if proposal.target == "memory.append_candidate":
             summary = " ".join(str(proposal.payload.get("summary", "")).lower().split())
