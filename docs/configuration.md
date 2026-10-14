@@ -84,3 +84,23 @@ even when the quotations were valid. This candidate remains off by default.
 Do not treat an accepted record or passing mechanism tests as evidence that a
 model has learned the right lesson; inspect complete conversations and records
 before enabling it in a host.
+
+Interaction candidates now require a separate evidence-review call before commit.
+The reviewer receives the exchange and proposed interpretation, without the
+character's persona. It checks speaker attribution, explicit feedback, support
+for the lesson and outcome, scope, and the proposed topic revision. Unsupported
+lessons stay out of context. When the outcome and all other checks pass, the
+verified outcome can be retained without the lesson; the rejected lesson is
+kept only in audit metadata. Missing, malformed, or uncertain required checks
+produce no interaction memory. This is
+a fresh call to the configured interaction model, not an independent model vendor
+or a guarantee of semantic correctness.
+
+The coordinator requires a positive review bound to the exact candidate and
+feedback, and persists that review with the quotations. A later change cannot
+reuse the earlier review. Existing records without a valid review are preserved
+for inspection/withdrawal but excluded from context and from the prior topics
+used for new learning. `interaction_experiences` still exposes those historical
+records; the presence of a record alone does not mean it is used in prompts.
+Each valid candidate adds one background model call, under the existing job
+limit and timeout. Review failure leaves the conversation reply intact.

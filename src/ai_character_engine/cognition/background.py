@@ -28,6 +28,8 @@ from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.memory.experience import (
     EXPERIENCE_TARGET,
     experience_messages,
+    experience_review_messages,
+    experience_review_proof,
     normalize_experience,
 )
 from ai_character_engine.memory.models import MemoryRecord
@@ -342,9 +344,23 @@ class StructuredBackgroundWorker:
                     context, data, proposals[0]
                 )
             if self.spec.kind is BackgroundCognitionKind.MEMORY_CONFLICT and proposals:
-                value, proposals = await self._confirmed_conflicts(context, proposals[0])
-            if self.spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION and proposals:
+                value, proposals = await self._confirmed_conflicts(
+                    context, proposals[0]
+                )
+            if (
+                self.spec.kind is BackgroundCognitionKind.SELF_MEMORY_EXTRACTION
+                and proposals
+            ):
                 proposals = await self._confirmed_self_changes(context, proposals)
+                value = tuple(dict(proposal.payload) for proposal in proposals)
+            interaction_review = None
+            if (
+                self.spec.kind is BackgroundCognitionKind.INTERACTION_LEARNING
+                and proposals
+            ):
+                proposals, interaction_review = await self._confirmed_interaction(
+                    context, proposals[0]
+                )
                 value = tuple(dict(proposal.payload) for proposal in proposals)
             return TaskOutput(
                 value=BackgroundCognitionResult(
@@ -358,6 +374,11 @@ class StructuredBackgroundWorker:
                 ),
                 proposals=tuple(proposals),
                 metadata={
+                    **(
+                        {"interaction_review": interaction_review}
+                        if interaction_review is not None
+                        else {}
+                    ),
                     "background_cognition": {
                         "kind": self.spec.kind.value,
                         "role": _ROLE_BY_KIND[self.spec.kind].value,
@@ -553,6 +574,34 @@ class StructuredBackgroundWorker:
                 )
             ],
         )
+
+    async def _confirmed_interaction(
+        self, context: TaskContext, proposal: TaskProposal
+    ):
+        source = context.request.payload["interaction"]
+        try:
+            response = await self.models.generate(
+                _ROLE_BY_KIND[self.spec.kind],
+                experience_review_messages(source, proposal.payload),
+                requirements=self.spec.requirements,
+            )
+            review = _parse_json_object(response.text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return [], {"accepted": False, "reason": "review_unavailable"}
+        proof = experience_review_proof(
+            proposal.payload, review, str(source["feedback"])
+        )
+        audit = {"accepted": proof is not None, "review": review}
+        if proof is None:
+            return [], audit
+        return [
+            replace(
+                proposal,
+                provenance={**proposal.provenance, "interpretation_review": proof},
+            )
+        ], audit
 
     async def _confirmed_self_changes(
         self, context: TaskContext, proposals: list[TaskProposal]
@@ -1923,7 +1972,6 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
         ),
     }
 )
-
 
 
 def _json_safe(value: Any) -> Any:

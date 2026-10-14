@@ -7,13 +7,30 @@ import pytest
 from ai_character_engine.memory.experience import (
     experience_topics,
     normalize_experience,
+    experience_review_proof,
 )
 from tests.fakes import system_context
 from tests.test_companion import Foreground, Worker, companion
 
 
+def approving_review(source):
+    return {
+        "literal_user_meaning": "The user is stating an interaction preference.",
+        "explicit_feedback": True,
+        "correct_speakers": True,
+        "supported_lesson": True,
+        "supported_outcome": True,
+        "correct_topic_update": True,
+        "preserves_scope": True,
+        "supporting_user_quote": source["user_feedback"],
+        "reason": "Supported.",
+    }
+
+
 def lesson(messages):
     source = json.loads(messages[1].content)
+    if "candidate" in source:
+        return approving_review(source)
     topics = source["topics"]
     return {
         "experience": {
@@ -89,6 +106,8 @@ async def test_opt_in_identity_and_kept_dialogue_required(
 async def test_repeated_support_and_revision_keep_original_episodes(tmp_path):
     def changing(messages):
         result = lesson(messages)
+        if "experience" not in result:
+            return result
         if "changed my mind" in result["experience"]["user_quote"]:
             result["experience"].update(
                 lesson="They now welcome this nickname when we are alone.",
@@ -197,6 +216,11 @@ async def test_replayed_event_is_not_new_support_and_cannot_cross_partner_scope(
             "user_id": "alice",
             "interaction": source,
             "foreground_event_content": source["feedback"],
+            "interpretation_review": experience_review_proof(
+                data["experience"],
+                approving_review({"user_feedback": source["feedback"]}),
+                source["feedback"],
+            ),
         },
     )
     commits = CognitiveCommitCoordinator(MultiTaskRuntime(engine))
@@ -223,6 +247,17 @@ async def test_replayed_event_is_not_new_support_and_cannot_cross_partner_scope(
                 "user_id": "bob",
                 "topics": [{"topic_id": topic}],
             },
+        },
+    )
+    forged = replace(
+        forged,
+        provenance={
+            **forged.provenance,
+            "interpretation_review": experience_review_proof(
+                forged.payload,
+                approving_review({"user_feedback": source["feedback"]}),
+                source["feedback"],
+            ),
         },
     )
     outcome = await commits.commit(forged)
@@ -263,3 +298,188 @@ async def test_export_import_carries_only_the_matching_partners_experience(tmp_p
     assert len(restored.interaction_experiences("alice")) == 1
     assert restored.interaction_experiences("bob") == ()
     await restored.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failed_check",
+    [
+        "explicit_feedback",
+        "correct_speakers",
+        "supported_outcome",
+        "correct_topic_update",
+        "preserves_scope",
+        "supporting_user_quote",
+        "unavailable",
+    ],
+)
+async def test_unconfirmed_interpretation_never_becomes_memory(tmp_path, failed_check):
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "candidate" not in source:
+            return lesson(messages)
+        if failed_check == "unavailable":
+            raise RuntimeError("review endpoint unavailable")
+        answer = approving_review(source)
+        answer[failed_check] = (
+            "Not said by this user"
+            if failed_check == "supporting_user_quote"
+            else False
+        )
+        return answer
+
+    c = companion(
+        tmp_path, {"interaction": Worker(reviewing)}, character_development=True
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply("No nicknames", conversation_id="one", user_id="alice")
+    await c.settle()
+    assert c.interaction_experiences("alice") == ()
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_old_unreviewed_or_changed_interpretations_do_not_enter_context(tmp_path):
+    from dataclasses import replace
+
+    c = companion(tmp_path, {"interaction": Worker(lesson)}, character_development=True)
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply("No nicknames", conversation_id="one", user_id="alice")
+    await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    assert experience_topics([record])
+    assert experience_topics([replace(record, summary="They allow all names")]) == []
+    assert (
+        experience_topics(
+            [
+                replace(
+                    record,
+                    metadata={
+                        key: value
+                        for key, value in record.metadata.items()
+                        if key != "interpretation_review"
+                    },
+                )
+            ]
+        )
+        == []
+    )
+    assert (
+        experience_topics(
+            [
+                replace(
+                    record,
+                    metadata={
+                        **record.metadata,
+                        "review_feedback": "Actually, any nickname is fine",
+                    },
+                )
+            ]
+        )
+        == []
+    )
+    await c.close()
+
+
+def test_review_cannot_be_reused_for_different_candidate_or_feedback():
+    from ai_character_engine.memory.experience import verified_experience
+
+    source = {"previous_reply": "Hi", "feedback": "No nicknames", "topics": []}
+    candidate = lesson([None, type("M", (), {"content": json.dumps(source)})()])[
+        "experience"
+    ]
+    review = approving_review({"user_feedback": source["feedback"]})
+    proof = experience_review_proof(candidate, review, source["feedback"])
+    assert verified_experience(candidate, proof, source["feedback"])
+    assert not verified_experience(
+        {**candidate, "lesson": "Any nickname is welcome"}, proof, source["feedback"]
+    )
+    assert not verified_experience(
+        candidate, proof, "No nicknames is what I used to say; I changed my mind"
+    )
+
+
+@pytest.mark.asyncio
+async def test_coordinator_refuses_unreviewed_and_changed_candidates():
+    from dataclasses import replace
+    from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
+    from ai_character_engine.memory.experience import EXPERIENCE_TARGET
+    from ai_character_engine.tasks import MultiTaskRuntime
+    from tests.test_commit_coordinator import proposal, runtime
+
+    source = {
+        "user_id": "alice",
+        "previous_reply": "Hello",
+        "feedback": "No nicknames",
+        "topics": [],
+    }
+    candidate = lesson([None, type("M", (), {"content": json.dumps(source)})()])[
+        "experience"
+    ]
+    p = proposal(EXPERIENCE_TARGET, candidate, worker_kind="interaction_learning")
+    p = replace(
+        p,
+        provenance={
+            **p.provenance,
+            "user_id": "alice",
+            "interaction": source,
+            "foreground_event_content": source["feedback"],
+        },
+    )
+    commits = CognitiveCommitCoordinator(MultiTaskRuntime(runtime()))
+    result = await commits.commit(p)
+    assert result.status is CommitStatus.REJECTED
+    assert result.reason == "experience_requires_supported_interpretation"
+    proof = experience_review_proof(
+        candidate,
+        approving_review({"user_feedback": source["feedback"]}),
+        source["feedback"],
+    )
+    changed = replace(
+        p,
+        id="changed-after-review",
+        payload={**candidate, "lesson": "All nicknames are fine"},
+        provenance={**p.provenance, "interpretation_review": proof},
+    )
+    result = await commits.commit(changed)
+    assert result.status is CommitStatus.REJECTED
+    assert result.reason == "experience_requires_supported_interpretation"
+
+
+@pytest.mark.asyncio
+async def test_supported_feedback_survives_without_the_unsupported_lesson(tmp_path):
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "candidate" in source:
+            return {**approving_review(source), "supported_lesson": False}
+        result = lesson(messages)
+        result["experience"]["lesson"] = "They are deliberately trying to annoy me."
+        result["experience"]["outcome"] = (
+            "The user explicitly asks me not to give them nicknames."
+        )
+        return result
+
+    llm = Foreground()
+    c = companion(
+        tmp_path,
+        {"interaction": Worker(reviewing)},
+        llm=llm,
+        character_development=True,
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply("No nicknames", conversation_id="one", user_id="alice")
+    await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    assert record.summary == "The user explicitly asks me not to give them nicknames."
+    assert record.metadata["interpretation_review"]["accepted_components"] == [
+        "outcome"
+    ]
+    assert (
+        record.metadata["lesson"] == "They are deliberately trying to annoy me."
+    )  # audit only
+    await c.reply("Hello again", conversation_id="fresh", user_id="alice")
+    context = system_context(llm.calls[-1])
+    assert "explicitly asks me not to give them nicknames" in context
+    assert "deliberately trying to annoy" not in context
+    assert "reviewed_observation_only" in context
+    await c.close()
