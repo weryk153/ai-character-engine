@@ -687,11 +687,15 @@ propose revisions of an existing **taste, habit, or opinion**. It must name an
 active earlier record of the same kind and quote the character's new statement
 of the change and its reason. Unknown ids, missing quotes, protected kinds, and
 records already revised by another result cannot replace the earlier view.
-Before retiring any view, an independent model reading compares the old and new
-views. Reaffirmations, different subjects, uncertain readings and failed calls
+Before retiring any view, an independent model reading compares that specific
+old view and the new view in isolation, without the claimed change to bias it.
+Only an incompatible pair is then checked against the character's explanation.
+Every earlier record has its own check; a batch decision cannot retire them all.
+Reaffirmations, different subjects, uncertain readings and failed calls
 do not replace earlier views; compatible additions can be kept without retiring
 them. A confirmed change still needs exact quotes for both the change and its
-reason. This adds a model call only when the extractor proposes a replacement.
+reason. This adds up to two model calls per proposed earlier record, only when
+the extractor proposes a replacement.
 The setting defaults to `False`; evaluate complete conversations with your
 model before enabling it.
 

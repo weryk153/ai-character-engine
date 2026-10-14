@@ -240,6 +240,20 @@ class BackgroundCognitionResult:
     base_revision: int
 
 
+def _self_view_relation_question(earlier: str, proposed: str) -> list[Message]:
+    return [
+        Message(role="system", content=(
+            "Compare the meanings of two statements in isolation. Do not assume they conflict. "
+            "Classify the relation: same (same meaning), compatible (both can be held together), "
+            "unrelated (different subjects), incompatible (B makes A no longer true as a held "
+            "view), or uncertain. Return JSON with comparison (one sentence explaining A versus "
+            "B) first, then relation. A positive and a negative way of expressing the same "
+            "preference are compatible, not incompatible."
+        )),
+        Message(role="user", content=json.dumps({"A": earlier, "B": proposed}, ensure_ascii=False)),
+    ]
+
+
 def _self_change_question(
     earlier: list[str], proposed: str, lines: Sequence[str]
 ) -> list[Message]:
@@ -546,23 +560,45 @@ class StructuredBackgroundWorker:
                 kept.append(proposal)
                 continue
             lines = _assistant_lines(context, turns=self.spec.every_n_revisions)
-            try:
-                response = await self.models.generate(
-                    _ROLE_BY_KIND[self.spec.kind],
-                    _self_change_question(
-                        [prior[key]["summary"] for key in ids],
-                        str(proposal.payload["summary"]), lines,
-                    ),
-                    requirements=self.spec.requirements,
-                )
-                answer = _parse_json_object(response.text)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                continue
-            if _self_change_confirmed(answer, lines):
-                kept.append(proposal)
-            elif answer.get("relation") == "compatible":
+            answers = []
+            for key in ids:
+                try:
+                    # Hide the claimed change while comparing meanings: a
+                    # worker otherwise bent its reading of A to fit "I changed".
+                    relation_response = await self.models.generate(
+                        _ROLE_BY_KIND[self.spec.kind],
+                        _self_view_relation_question(prior[key]["summary"],
+                                                     str(proposal.payload["summary"])),
+                        requirements=self.spec.requirements,
+                    )
+                    relation = _parse_json_object(relation_response.text).get("relation")
+                    if relation != "incompatible":
+                        answers.append({"relation": relation if relation in
+                                        {"same", "compatible", "unrelated"} else "uncertain"})
+                        continue
+                    response = await self.models.generate(
+                        _ROLE_BY_KIND[self.spec.kind],
+                        _self_change_question(
+                            [prior[key]["summary"]], str(proposal.payload["summary"]), lines,
+                        ),
+                        requirements=self.spec.requirements,
+                    )
+                    answers.append(_parse_json_object(response.text))
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    answers.append({})
+            # A batch judgement overlooked unrelated earlier views. Every
+            # retired record now needs its own independent confirmation.
+            revised = [key for key, answer in zip(ids, answers)
+                       if _self_change_confirmed(answer, lines)]
+            if revised:
+                kept.append(replace(proposal, payload={
+                    **proposal.payload, "supersedes": revised,
+                }))
+            elif answers and all(answer.get("relation") in {"compatible", "unrelated", "same"}
+                                 for answer in answers) and any(
+                                     answer.get("relation") != "same" for answer in answers):
                 # An additional, compatible view can be learned without
                 # retiring the earlier one. Only the destructive link is refused.
                 kept.append(replace(proposal, payload={

@@ -178,6 +178,8 @@ def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
         current = None
 
         def extract(messages):
+            if messages[0].content.startswith("Compare the meanings of two statements"):
+                return {"relation": "incompatible"}
             if messages[0].content.startswith("Verify a proposed self-view change"):
                 return confirmed_change(new, confirmed=confirmed)
             if new not in messages[1].content:
@@ -247,6 +249,8 @@ def test_delayed_development_cannot_overwrite_a_view_edited_while_it_was_read(tm
 
         class DelayedReader:
             async def generate(self, messages, *, tools=None):
+                if messages[0].content.startswith("Compare the meanings of two statements"):
+                    return LLMResponse(text=json.dumps({"relation": "incompatible"}))
                 if messages[0].content.startswith("Verify a proposed self-view change"):
                     return LLMResponse(text=json.dumps(confirmed_change(new)))
                 if new in messages[1].content:
@@ -285,6 +289,8 @@ def test_reaffirming_a_learned_view_keeps_its_change_reason(tmp_path):
         current = None
 
         def extract(messages):
+            if messages[0].content.startswith("Compare the meanings of two statements"):
+                return {"relation": "incompatible"}
             if messages[0].content.startswith("Verify a proposed self-view change"):
                 return confirmed_change(changed)
             lines = _listed_for_her(messages)
@@ -328,6 +334,55 @@ def test_self_change_confirmation_requires_a_change_and_exact_quotes(relation):
     assert not _self_change_confirmed({**answer, "relation": relation}, [quote])
     assert not _self_change_confirmed({**answer, "reason_quote": "invented"}, [quote])
     assert not _self_change_confirmed({**answer, "change_quote": ""}, [quote])
+
+
+@pytest.mark.parametrize("other_relation", ["compatible", "unrelated", "uncertain", "failed"])
+def test_revising_one_taste_does_not_retire_another_taste_in_the_same_batch(tmp_path, other_relation):
+    async def scenario():
+        old = "I avoid bitter tea. I enjoy quiet places."
+        changed = "After tasting roasted tea, I now enjoy its bitterness."
+        current = None
+        read_pairs = []
+
+        def extract(messages):
+            if messages[0].content.startswith("Compare the meanings of two statements"):
+                earlier = [json.loads(messages[1].content)["A"]]
+                read_pairs.append(earlier)
+                assert len(earlier) == 1
+                if "quiet" in earlier[0]:
+                    if other_relation == "failed":
+                        raise RuntimeError("verification unavailable")
+                    return {"relation": other_relation}
+                return {"relation": "incompatible"}
+            if messages[0].content.startswith("Verify a proposed self-view change"):
+                return confirmed_change(changed)
+            if changed in _listed_for_her(messages):
+                return {"items": [{"summary": "Mei enjoys bitter tea.", "kind": "taste",
+                                   "evidence": changed, "confidence": 1.0,
+                                   "supersedes": [r.id for r in current.self_memory_history()],
+                                   "change_evidence": changed}]}
+            return {"items": [
+                {"summary": "Mei avoids bitter tea.", "kind": "taste",
+                 "evidence": "I avoid bitter tea.", "confidence": 1.0},
+                {"summary": "Mei enjoys quiet places.", "kind": "taste",
+                 "evidence": "I enjoy quiet places.", "confidence": 1.0},
+            ]}
+
+        current = companion(tmp_path, {"self_memory": Worker(extract)},
+                            llm=Scripted(old, changed), self_memory_every=1,
+                            character_development=True)
+        await current.reply("What do you like?", conversation_id="a")
+        await current.settle()
+        await current.reply("Try roasted tea.", conversation_id="a")
+        await current.settle()
+        history = current.self_memory_history()
+        assert history[0].status == "superseded"
+        assert history[1].is_active
+        assert history[2].supersedes == (history[0].id,)
+        assert len(read_pairs) == 2
+        await current.close()
+
+    run(scenario())
 
 
 # --- the foreground turn -------------------------------------------------------
