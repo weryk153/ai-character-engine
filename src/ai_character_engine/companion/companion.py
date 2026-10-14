@@ -2400,6 +2400,20 @@ class CharacterCompanion:
         summary = str(proposal.payload.get("summary", ""))
         now = self._now()
         same = [r.id for r in before if r.is_active and _the_same_fact(r.summary, summary)]
+        reaffirmed = next((r for r in before if r.id in same and r.supersedes
+                           and r.metadata.get("change_evidence")), None)
+        if self.settings.character_development and reaffirmed is not None:
+            # Repeating a learned preference is not a new change. Keep the
+            # original record, including the experience that established it.
+            return CommitResult(
+                proposal_id=proposal.id,
+                target=proposal.target,
+                status=CommitStatus.DUPLICATE,
+                reason="self_view_reaffirmed",
+                base_revision=proposal.base_revision,
+                current_revision=self._tasks.revision,
+                applied_record_id=reaffirmed.id,
+            )
         if same:
             self._memory_store.replace_for_character(
                 scope,

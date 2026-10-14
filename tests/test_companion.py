@@ -259,6 +259,45 @@ def test_delayed_development_cannot_overwrite_a_view_edited_while_it_was_read(tm
     run(scenario())
 
 
+def test_reaffirming_a_learned_view_keeps_its_change_reason(tmp_path):
+    async def scenario():
+        old = "I avoid bitter tea."
+        changed = "After trying roasted tea, I now enjoy bitterness."
+        repeated = "I still enjoy bitter tea."
+        current = None
+
+        def extract(messages):
+            lines = _listed_for_her(messages)
+            if repeated in lines:
+                return {"items": [{"summary": "Mei enjoys bitter tea!", "kind": "taste",
+                                   "evidence": repeated, "confidence": 1.0}]}
+            if changed in lines:
+                return {"items": [{"summary": "Mei enjoys bitter tea.", "kind": "taste",
+                                   "evidence": changed, "confidence": 1.0,
+                                   "supersedes": [current.self_memory_history()[0].id],
+                                   "change_evidence": changed}]}
+            return {"items": [{"summary": "Mei avoids bitter tea.", "kind": "taste",
+                               "evidence": old, "confidence": 1.0}]}
+
+        current = companion(tmp_path, {"self_memory": Worker(extract)},
+                            llm=Scripted(old, changed, repeated), self_memory_every=1,
+                            character_development=True)
+        for question in ("Which tea?", "Try roasted tea.", "Still like it?"):
+            await current.reply(question, conversation_id="a")
+            await current.settle()
+        await current.close()
+        reopened = companion(tmp_path, character_development=True)
+        history = reopened.self_memory_history()
+        assert len(history) == 2
+        assert history[0].superseded_by == history[1].id
+        assert history[1].is_active
+        assert history[1].metadata["change_evidence"] == changed
+        assert changed in reopened._self_memories_for_context()[0]
+        await reopened.close()
+
+    run(scenario())
+
+
 # --- the foreground turn -------------------------------------------------------
 
 

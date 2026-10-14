@@ -694,7 +694,9 @@ Accepted revisions keep the earlier record as `superseded`, link it to the new
 record, and retain the quoted reason. Only active views enter normal recall;
 their change reasons accompany them. `companion.self_memory_history()` returns
 copies of all self-memory records, including inactive records and their evidence,
-for inspection. The links and evidence survive a restart. The profile itself is
+for inspection. Reaffirming the same learned view keeps its original change
+reason instead of replacing it with an ungrounded duplicate. The links and
+evidence survive a restart. The profile itself is
 never rewritten. Identity, biography, physical traits, and views of a particular
 user are outside this revision mechanism. Models still judge the meaning of
 quotes: exact-source checks cannot prove that a stated experience really happened.
