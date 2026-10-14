@@ -42,6 +42,9 @@ class CompanionSettings:
     # call like memory's, so every second turn like memory: each run reads
     # every line of hers since the one before, nothing is skipped.
     self_memory_every: int = 2
+    # Candidate: evidence-backed changes to tastes, habits and opinions retain
+    # a link to the superseded view. Off until a host has evaluated its model.
+    character_development: bool = False
     # One model call. The engine's own worker defaults (12 s for emotion, 20 s
     # for a summary) time out on the hardware above.
     call_timeout_seconds: float = 60.0

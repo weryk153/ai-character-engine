@@ -680,3 +680,27 @@ the last reply changed in her state is not saved: the successor has read the
 state by then.
 A companion belongs to the event loop of its first turn;
 `usable_in_running_loop()` tells a host whether it may reuse one.
+# Candidate: experience and voluntary silence
+
+`CompanionSettings(character_development=True)` lets the self-memory worker
+propose revisions of an existing **taste, habit, or opinion**. It must name an
+active earlier record of the same kind and quote the character's new statement
+of the change and its reason. Unknown ids, missing quotes, protected kinds, and
+records already revised by another result cannot replace the earlier view.
+The setting defaults to `False`; evaluate complete conversations with your
+model before enabling it.
+
+Accepted revisions keep the earlier record as `superseded`, link it to the new
+record, and retain the quoted reason. Only active views enter normal recall;
+their change reasons accompany them. `companion.self_memory_history()` returns
+copies of all self-memory records, including inactive records and their evidence,
+for inspection. The links and evidence survive a restart. The profile itself is
+never rewritten. Identity, biography, physical traits, and views of a particular
+user are outside this revision mechanism. Models still judge the meaning of
+quotes: exact-source checks cannot prove that a stated experience really happened.
+
+`await companion.speak_up(allow_silence=True)` gives the character the choice to
+stay quiet. An exact `<stay_quiet>` response becomes empty text without another
+attempt, text deltas, history entries, or an unanswered-remark increment. Keep
+this optional on idle opportunities; a host that requires an event response or
+game action should leave the default `False`.

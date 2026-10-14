@@ -54,7 +54,7 @@ from ai_character_engine.cognition.background import (
     script_of_language,
 )
 from ai_character_engine.commit import CognitiveCommitCoordinator, CommitStatus
-from ai_character_engine.commit.models import StalePolicy
+from ai_character_engine.commit.models import CommitResult, StalePolicy
 from ai_character_engine.context.builder import (
     SELF_MEMORY_LINE,
     USER_LATELY_LINE,
@@ -82,6 +82,7 @@ from ai_character_engine.memory.conflicts import (
 )
 from ai_character_engine.memory.models import MemoryRecord, RetrievedMemory
 from ai_character_engine.memory.self_kinds import (
+    DEVELOPING_SELF_KINDS,
     CONVERSATION_KEY,
     self_memory_kind,
     stays_in_conversation,
@@ -360,6 +361,12 @@ class _Turn:
 
 
 _ANY = object()
+QUIET_TOKEN = "<stay_quiet>"
+QUIET_INSTRUCTION = (
+    "This is an opportunity to speak, not an obligation. If nothing new matters "
+    "to you now, or the user asked for quiet, return only <stay_quiet>. "
+    "Otherwise say what you want to say. Do not explain the choice or say the token aloud."
+)
 # How she is asked to speak up; not kept in the conversation. A host may pass
 # its own, in the language she speaks.
 SPEAK_UP_INSTRUCTION = """Nobody has said anything for a while. Speak up on your own, in character.
@@ -1212,6 +1219,10 @@ class CharacterCompanion:
             self._background.job_extras[BackgroundCognitionKind.USER_STATE] = (
                 self._how_the_user_seemed
             )
+            if self.settings.character_development:
+                self._background.job_extras[BackgroundCognitionKind.SELF_MEMORY_EXTRACTION] = (
+                    self._developing_self_views
+                )
         self._commits = CognitiveCommitCoordinator(
             self._tasks, event_history=self.settings.records_kept
         )
@@ -1372,7 +1383,22 @@ class CharacterCompanion:
     def _self_memories_for_context(self) -> list[str]:
         shown = self.settings.self_memories_shown
         said = self.self_memories(in_conversation=self._active)[-shown:] if shown else []
+        said = self._with_change_reasons(said)
         return ["\n".join(f"{SELF_MEMORY_LINE}{line}" for line in said)] * bool(said)
+
+    def _with_change_reasons(self, said: list[str]) -> list[str]:
+        if self.settings.character_development and said:
+            reasons = {
+                one_line(r.summary): one_line(r.metadata["change_evidence"])
+                for r in self._memory_store.list_for_character(self._self_scope())
+                if r.is_active and r.supersedes and r.metadata.get("change_evidence")
+            }
+            said = [
+                f"{line} (Reason you gave for this change: {reasons[line]})"
+                if line in reasons else line
+                for line in said
+            ]
+        return said
 
     @property
     def character(self) -> CharacterProfile:
@@ -1545,6 +1571,7 @@ class CharacterCompanion:
         keep: bool = True,
         instruction: str | None = None,
         statement_only: bool = False,
+        allow_silence: bool = False,
     ) -> CharacterRunResult:
         """She speaks up on her own; the host decides when (the user has been
         quiet, a timer, an event).
@@ -1572,12 +1599,18 @@ class CharacterCompanion:
         something: a remark that only acknowledges ("OK.", "嗯。") is none.
         Otherwise she is asked again, up to REMARK_ATTEMPTS times, and then
         stays quiet.
+
+        With ``allow_silence=True``, she can explicitly choose quiet. This
+        returns empty text immediately, without a retry, text delta, kept
+        remark, or increment of unanswered_remarks(). Off by default.
         """
         text = instruction or SPEAK_UP_INSTRUCTION
         unanswered = self._unanswered.get(conversation_id, 0)
         if unanswered and instruction is None:
             times = "time" if unanswered == 1 else "times"
             text = f"{text}\n\n{UNANSWERED_NOTE.format(n=unanswered, times=times)}"
+        if allow_silence:
+            text = f"{text}\n\n{QUIET_INSTRUCTION}"
         return await self._run(
             text,
             conversation_id=conversation_id,
@@ -1591,6 +1624,7 @@ class CharacterCompanion:
             turn_id=turn_id,
             remark="keep" if keep else "drop",
             statement_only=statement_only,
+            allow_silence=allow_silence,
         )
 
     async def _run(
@@ -1608,6 +1642,7 @@ class CharacterCompanion:
         turn_id: Any,
         remark: str | None,
         statement_only: bool = False,
+        allow_silence: bool = False,
     ) -> CharacterRunResult:
         """One turn. ``remark`` is None for a reply, "keep" or "drop" for a
         remark she made on her own (see speak_up)."""
@@ -1653,7 +1688,7 @@ class CharacterCompanion:
                             )
                         else:
                             result = await self._something_new(
-                                text, frames, on_text_delta, statement_only
+                                text, frames, on_text_delta, statement_only, allow_silence
                             )
                     except asyncio.CancelledError:
                         if turn.heard is None:
@@ -1730,7 +1765,7 @@ class CharacterCompanion:
         the host's user, or pushed out by newer ones. It was written into this
         conversation while she held it. What she said in another conversation
         about what she is doing there is not held here."""
-        held = set(self.self_memories(in_conversation=self._active))
+        held = set(self._with_change_reasons(self.self_memories(in_conversation=self._active)))
         self.runtime.withdraw_from_notes(
             lambda line: line.startswith(SELF_MEMORY_LINE)
             and line.removeprefix(SELF_MEMORY_LINE) not in held
@@ -1840,7 +1875,7 @@ class CharacterCompanion:
         return True
 
     async def _something_new(
-        self, text, frames, on_text_delta, statement_only=False
+        self, text, frames, on_text_delta, statement_only=False, allow_silence=False
     ) -> CharacterRunResult:
         """A remark she has not made before. Generated whole before any of it is
         passed on; asked again when it repeats one of her latest lines or says
@@ -1871,6 +1906,8 @@ class CharacterCompanion:
                     on_text_delta=said.append,
                 )
             )
+            if allow_silence and result.text.strip() == QUIET_TOKEN:
+                return replace(result, response=replace(result.response, text=""))
             # Sentences she already said, and the others a reply leaves out,
             # are left out; what is left must not repeat her either.
             kept, reasons = _what_a_remark_keeps(result.text, mine, statement_only, remarks)
@@ -2303,7 +2340,18 @@ class CharacterCompanion:
         ):
             return True
         quote = "".join(proposal.provenance.get("evidence") or ())
-        return said_in(quote, [m.content for m in history if m.role == "assistant"])
+        said = [m.content for m in history if m.role == "assistant"]
+        change = proposal.payload.get("change_evidence")
+        return said_in(quote, said) and (not change or said_in(change, said))
+
+    def _developing_self_views(self) -> dict:
+        records = self._memory_store.list_for_character(self._self_scope())
+        return {
+            "developing_self_views": [
+                {"id": r.id, "summary": r.summary, "kind": r.kind}
+                for r in records if r.is_active and r.kind in DEVELOPING_SELF_KINDS
+            ]
+        }
 
     async def _commit_what_she_said(self, proposal, conversation_id: str | None):
         """Call with the turn lock held. What she says again about herself
@@ -2313,6 +2361,42 @@ class CharacterCompanion:
             return await self._commit(proposal, conversation_id)
         scope = self._self_scope()
         before = self._memory_store.list_for_character(scope)
+        revisions = tuple(proposal.payload.get("supersedes") or ())
+        if revisions and self.settings.character_development:
+            kind = proposal.payload.get("kind")
+            available = {
+                r.id for r in before
+                if r.is_active and r.kind == kind and r.kind in DEVELOPING_SELF_KINDS
+            }
+            if not set(revisions) <= available:
+                return CommitResult(
+                    proposal_id=proposal.id,
+                    target=proposal.target,
+                    status=CommitStatus.CONFLICT,
+                    reason="self_view_changed_since_read",
+                    base_revision=proposal.base_revision,
+                    current_revision=self._tasks.revision,
+                )
+            outcome = await self._commit(proposal, conversation_id)
+            if outcome.committed:
+                newest = outcome.applied_record_id
+                records = self._memory_store.list_for_character(scope)
+                updated = []
+                for record in records:
+                    if record.id in revisions:
+                        record = replace(record, status="superseded", superseded_by=newest)
+                    elif record.id == newest:
+                        record = replace(
+                            record,
+                            supersedes=revisions,
+                            metadata={
+                                **record.metadata,
+                                "change_evidence": proposal.payload["change_evidence"],
+                            },
+                        )
+                    updated.append(record)
+                self._memory_store.replace_for_character(scope, updated)
+            return outcome
         summary = str(proposal.payload.get("summary", ""))
         now = self._now()
         same = [r.id for r in before if r.is_active and _the_same_fact(r.summary, summary)]
@@ -3155,6 +3239,15 @@ class CharacterCompanion:
             key=lambda record: record.created_at,
         )
         return [one_line(record.summary) for record in active]
+
+    def self_memory_history(self) -> tuple[MemoryRecord, ...]:
+        """All self views, including superseded ones, with source evidence.
+
+        A copy for host inspection; changing its metadata cannot edit storage.
+        ``self_memories()`` remains the active views used in conversation.
+        """
+        records = self._memory_store.list_for_character(self._self_scope())
+        return tuple(copy.deepcopy(sorted(records, key=lambda record: record.created_at)))
 
     def _shown(self, scope: str) -> list[str]:
         """The lines a memory page shows of ``scope``, oldest first."""

@@ -138,12 +138,125 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
+def test_opted_in_silence_is_not_retried_streamed_or_remembered(tmp_path):
+    async def scenario():
+        llm = Foreground(parts=("<stay_", "quiet>"))
+        current = companion(tmp_path, llm=llm)
+        heard = []
+        result = await current.speak_up("a", allow_silence=True, on_text_delta=heard.append)
+        assert result.text == ""
+        assert len(llm.calls) == 1
+        assert heard == []
+        assert current.runtime.history == []
+        assert current.unanswered_remarks("a") == 0
+        await current.close()
+    run(scenario())
+
+
+@pytest.mark.parametrize("enabled,valid_evidence,kind,unknown_id", [
+    (True, True, "taste", False),
+    (False, True, "taste", False),
+    (True, False, "taste", False),
+    (True, True, "identity", False),
+    (True, True, "view_of_user", False),
+    (True, True, "taste", True),
+])
+def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
+    tmp_path, enabled, valid_evidence, kind, unknown_id
+):
+    async def scenario():
+        old = "I avoid bitter tea."
+        new = "After tasting roasted tea today, I now enjoy its bitterness."
+        llm = Scripted(old, new)
+        current = None
+
+        def extract(messages):
+            if new not in messages[1].content:
+                return {"items": [{"summary": "Mei avoids bitter tea.", "kind": kind,
+                                   "evidence": old, "confidence": 1.0}]}
+            records = current.runtime.memory_manager.store.list_for_character("mei#self")
+            return {"items": [{"summary": "Mei enjoys the bitterness of roasted tea.",
+                               "kind": kind, "evidence": new, "confidence": 1.0,
+                               "supersedes": ["unknown" if unknown_id else records[0].id],
+                               "change_evidence": new if valid_evidence else "invented"}]}
+
+        current = companion(tmp_path, {"self_memory": Worker(extract)}, llm=llm,
+                            self_memory_every=1, character_development=enabled)
+        await current.reply("What tea do you like?", conversation_id="a")
+        await current.settle()
+        await current.reply("Here is some roasted tea to try.", conversation_id="a")
+        await current.settle()
+        await current.close()
+        reopened = companion(tmp_path, character_development=enabled)
+        records = reopened.runtime.memory_manager.store.list_for_character("mei#self")
+        if enabled and (not valid_evidence or kind != "taste" or unknown_id):
+            assert len(records) == 1
+            assert records[0].is_active
+            await reopened.close()
+            return
+        assert len(records) == 2
+        first, second = records
+        if enabled and valid_evidence:
+            assert first.status == "superseded"
+            assert first.superseded_by == second.id
+            assert second.supersedes == (first.id,)
+            assert second.metadata["change_evidence"] == new
+            assert reopened.self_memories() == [second.summary]
+            assert new in reopened._self_memories_for_context()[0]
+            inspection = reopened.self_memory_history()
+            inspection[1].metadata["change_evidence"] = "changed by inspector"
+            assert reopened.self_memory_history()[1].metadata["change_evidence"] == new
+        else:
+            assert all(r.is_active for r in records)
+            assert second.supersedes == ()
+        await reopened.close()
+    run(scenario())
+
+
 async def until(condition, *, steps=500):
     for _ in range(steps):
         if condition():
             return
         await asyncio.sleep(0)
     raise AssertionError("condition never became true")
+
+
+def test_delayed_development_cannot_overwrite_a_view_edited_while_it_was_read(tmp_path):
+    async def scenario():
+        from ai_character_engine.llm.models import LLMResponse
+
+        old, new = "I avoid bitter tea.", "After trying roasted tea, I now enjoy bitterness."
+        started, release = asyncio.Event(), asyncio.Event()
+        earlier_id = None
+
+        class DelayedReader:
+            async def generate(self, messages, *, tools=None):
+                if new in messages[1].content:
+                    started.set()
+                    await release.wait()
+                    item = {"summary": "Mei enjoys bitter tea.", "evidence": new,
+                            "supersedes": [earlier_id], "change_evidence": new}
+                else:
+                    item = {"summary": "Mei avoids bitter tea.", "evidence": old}
+                item.update(kind="taste", confidence=1.0)
+                return LLMResponse(text=json.dumps({"items": [item]}))
+
+        current = companion(tmp_path, {"self_memory": DelayedReader()},
+                            llm=Scripted(old, new), self_memory_every=1,
+                            character_development=True)
+        await current.reply("What tea?", conversation_id="a")
+        await current.settle()
+        earlier_id = current.self_memory_history()[0].id
+        await current.reply("Try roasted tea.", conversation_id="a")
+        await started.wait()
+        current.rewrite_self_memories(["Mei prefers coffee now."])
+        release.set()
+        await current.settle()
+        assert current.self_memories() == ["Mei prefers coffee now."]
+        assert not any(r.supersedes for r in current.self_memory_history())
+        await current.close()
+
+    run(scenario())
 
 
 # --- the foreground turn -------------------------------------------------------

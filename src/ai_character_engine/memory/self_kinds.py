@@ -26,6 +26,7 @@ DURABLE_SELF_MEMORY_KINDS: tuple[str, ...] = (
 CONVERSATION_SELF_MEMORY_KINDS: tuple[str, ...] = ("working_on", "plan", "view_of_user")
 # In this order wherever they are listed: the self-memory prompt, documentation.
 SELF_MEMORY_KINDS: tuple[str, ...] = DURABLE_SELF_MEMORY_KINDS + CONVERSATION_SELF_MEMORY_KINDS
+DEVELOPING_SELF_KINDS = frozenset({"taste", "habit", "opinion"})
 
 # Metadata key of a record (memory, self memory, goal, reflection) and
 # provenance key of a proposal: the conversation it came from. A record without
