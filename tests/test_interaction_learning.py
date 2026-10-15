@@ -45,6 +45,8 @@ def condition_check(
 
 def lesson(messages):
     source = json.loads(messages[1].content)
+    if "existing" in source:
+        return {"action": "UPVOTE", "user_excerpt": source["feedback"], "reason": "Same again."}
     if "candidate" in source:
         return approving_review(source)
     topics = source["topics"]
@@ -144,8 +146,9 @@ async def test_repeated_support_and_revision_keep_original_episodes(tmp_path):
         await c.reply(text, conversation_id="one", user_id="alice")
         await c.settle()
     records = c.interaction_experiences("alice")
-    assert len(records) == 3
-    before = experience_topics(records[:2])[0]
+    # Repeated support is a vote on the existing record, not a new episode.
+    assert len(records) == 2
+    before = experience_topics(records[:1])[0]
     assert before["distinct_exchanges"] == 2
     current = experience_topics(records)[0]
     assert current["distinct_exchanges"] == 1
@@ -777,4 +780,253 @@ async def test_users_own_conditions_ride_along_with_the_stored_summary(tmp_path)
     context = system_context(llm.calls[-1])
     assert '"conditions": ["if I catch you"]' in context
     assert "own words limiting that interpretation" in context
+    await c.close()
+
+
+def checklist_answers(**yes):
+    """All six answers no, except the given keys: value = (text_excerpt, user_excerpt)."""
+    from ai_character_engine.memory.experience import (
+        CHECKLIST_COMPONENTS,
+        CHECKLIST_QUESTIONS,
+        checklist_key,
+    )
+
+    answers = {}
+    for component in CHECKLIST_COMPONENTS:
+        for question, _, _ in CHECKLIST_QUESTIONS:
+            key = checklist_key(component, question)
+            if key in yes:
+                text_excerpt, user_excerpt = yes[key]
+                answers[key] = {
+                    "answer": "yes",
+                    "text_excerpt": text_excerpt,
+                    "user_excerpt": user_excerpt,
+                    "reason": "Found.",
+                }
+            else:
+                answers[key] = {
+                    "answer": "no",
+                    "text_excerpt": "",
+                    "user_excerpt": "",
+                    "reason": "Not found.",
+                }
+    return answers
+
+
+def test_checklist_yes_counts_only_with_the_words_of_the_text():
+    from ai_character_engine.memory.experience import verified_experience
+
+    feedback = "You can call me Shiro, but only at home."
+    candidate = {
+        "topic": "nicknames",
+        "topic_id": None,
+        "lesson": "I don't like being called nicknames anywhere.",
+        "outcome": "The user allows the nickname Shiro at home.",
+        "character_quote": "Can I call you Shiro?",
+        "user_quote": feedback,
+        "basis": "boundary",
+        "revises": False,
+    }
+    source = {"user_feedback": feedback}
+    review = {**approving_review(source), "lesson_problems": ["invented problem"]}
+
+    def accepted(answers):
+        proof = experience_review_proof(candidate, review, feedback, None, answers)
+        if proof is not None:
+            assert proof["version"] == 4
+            assert proof["checklist"] == answers
+            assert verified_experience(candidate, proof, feedback)
+        return proof["accepted_components"] if proof else []
+
+    # The review's own problem list is not consulted; six noes accept both.
+    assert accepted(checklist_answers()) == ["outcome", "lesson"]
+    # A yes that copies the words of the lesson drops the lesson only.
+    assert accepted(
+        checklist_answers(**{"lesson:speaker": ("I don't like being called", "")})
+    ) == ["outcome"]
+    # A yes with paraphrased words is a problem nobody can point at: not found.
+    assert accepted(
+        checklist_answers(**{"lesson:speaker": ("the character dislikes nicknames", "")})
+    ) == ["outcome", "lesson"]
+    # Widening must also cite the user's narrower words.
+    assert accepted(checklist_answers(**{"outcome:widened": ("at home", "")})) == [
+        "outcome",
+        "lesson",
+    ]
+    assert accepted(
+        checklist_answers(**{"outcome:widened": ("at home", "only at home")})
+    ) == []
+    # A flagged outcome takes the lesson with it; an unusable answer stores nothing.
+    assert accepted(
+        checklist_answers(**{"outcome:unstated": ("allows the nickname", "")})
+    ) == []
+    incomplete = checklist_answers()
+    del incomplete["lesson:widened"]
+    assert accepted(incomplete) == []
+    vague = checklist_answers()
+    vague["outcome:speaker"]["answer"] = "maybe"
+    assert accepted(vague) == []
+    # Tampering with the stored answers breaks the proof.
+    proof = experience_review_proof(candidate, review, feedback, None, checklist_answers())
+    proof["checklist"]["lesson:speaker"] = {
+        "answer": "yes",
+        "text_excerpt": "I don't like",
+        "user_excerpt": "",
+        "reason": "",
+    }
+    assert not verified_experience(candidate, proof, feedback)
+
+
+@pytest.mark.asyncio
+async def test_checklist_review_asks_six_questions_and_its_proof_survives_restart(
+    tmp_path,
+):
+    calls = []
+
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "question" in source:
+            calls.append(f"{source['which']}:{source['question'][:4]}")
+            assert source["user_feedback"] == "I don't like you asking a question in every sentence."
+            if source["which"] == "lesson" and source["question"].startswith("Does the text put"):
+                return {
+                    "answer": "yes",
+                    "text_excerpt": "I don't like being asked",
+                    "user_excerpt": "",
+                    "reason": "The user's dislike is written as the character's.",
+                }
+            return {"answer": "no", "text_excerpt": "", "user_excerpt": "", "reason": ""}
+        if "candidate" in source:
+            calls.append("review")
+            return approving_review(source)
+        calls.append("extract")
+        result = lesson(messages)
+        result["experience"]["lesson"] = "I don't like being asked questions in every sentence."
+        result["experience"]["outcome"] = "The user dislikes a question in every sentence."
+        return result
+
+    llm = Foreground()
+    c = companion(
+        tmp_path,
+        {"interaction": Worker(reviewing)},
+        llm=llm,
+        character_development=True,
+        interaction_review_checklist=True,
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply(
+        "I don't like you asking a question in every sentence.",
+        conversation_id="one",
+        user_id="alice",
+    )
+    await c.settle()
+    assert calls == ["extract", "review"] + [
+        f"{component}:Does" for component in ("outcome", "lesson") for _ in range(3)
+    ]
+    (record,) = c.interaction_experiences("alice")
+    proof = record.metadata["interpretation_review"]
+    assert proof["version"] == 4
+    assert proof["accepted_components"] == ["outcome"]
+    assert record.summary == "The user dislikes a question in every sentence."
+    await c.close()
+
+    foreground = Foreground()
+    c = companion(
+        tmp_path, llm=foreground, character_development=True, interaction_review_checklist=True
+    )
+    await c.reply("Hello again", conversation_id="fresh", user_id="alice")
+    context = system_context(foreground.calls[-1])
+    assert "dislikes a question in every sentence" in context
+    assert "I don't like being asked" not in context
+    await c.close()
+
+
+def test_votes_move_support_only_with_the_users_words():
+    from ai_character_engine.memory.experience import apply_vote
+
+    feedback = "Yes, still no nicknames please."
+    assert apply_vote(2, {"action": "UPVOTE", "user_excerpt": "still no nicknames"}, feedback) == 3
+    assert apply_vote(2, {"action": "DOWNVOTE", "user_excerpt": "nicknames are fine now"}, feedback) is None
+    assert apply_vote(2, {"action": "NOOP", "user_excerpt": ""}, feedback) == 2
+    assert apply_vote(1, {"action": "DOWNVOTE", "user_excerpt": "still no nicknames"}, feedback) == 0
+    assert apply_vote(2, {"action": "EDIT", "user_excerpt": "still no nicknames"}, feedback) is None
+
+
+def voting(action):
+    """A worker that extracts, approves the first review and answers votes with `action`."""
+    calls = []
+
+    def worker(messages):
+        source = json.loads(messages[1].content)
+        if "existing" in source:
+            calls.append("vote")
+            assert source["existing"]["topic_id"]
+            return {"action": action, "user_excerpt": source["feedback"], "reason": "Read."}
+        if "candidate" in source:
+            calls.append("review")
+            return approving_review(source)
+        calls.append("extract")
+        return lesson(messages)
+
+    return worker, calls
+
+
+@pytest.mark.asyncio
+async def test_an_upvote_counts_the_exchange_without_a_new_review(tmp_path):
+    worker, calls = voting("UPVOTE")
+    c = companion(tmp_path, {"interaction": Worker(worker)}, character_development=True)
+    for text in ["Hello", "Please don't use nicknames.", "I still prefer my name."]:
+        await c.reply(text, conversation_id="one", user_id="alice")
+        await c.settle()
+    assert calls == ["extract", "review", "extract", "vote"]
+    (record,) = c.interaction_experiences("alice")
+    assert record.metadata["support"] == 3
+    (topic,) = experience_topics([record])
+    assert topic["distinct_exchanges"] == 2
+    assert topic["interpretation_basis"] == "reviewed_lesson"
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_downvoted_lesson_leaves_the_prompt_but_keeps_its_outcome(tmp_path):
+    from ai_character_engine.memory.experience import experience_scope
+
+    worker, calls = voting("DOWNVOTE")
+    c = companion(tmp_path, {"interaction": Worker(worker)}, character_development=True)
+    for text in ["Hello", "Please don't use nicknames.", "Hm, that is not quite it."]:
+        await c.reply(text, conversation_id="one", user_id="alice")
+        await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    assert record.metadata["support"] == 1
+    (topic,) = experience_topics([record])
+    assert topic["interpretation_basis"] == "reviewed_observation_only"
+    assert topic["interpretation"] == "The user explicitly objected to a nickname."
+    await c.reply("No, really, not that.", conversation_id="one", user_id="alice")
+    await c.settle()
+    assert experience_topics(c.interaction_experiences("alice")) == []
+    stored = c.runtime.memory_manager.store.list_for_character(experience_scope("mei", "alice"))
+    assert [r.status for r in stored] == ["forgotten"]
+    assert stored[0].forgotten_at is not None
+    assert [o["user_excerpt"] for o in stored[0].metadata["objections"]] == [
+        "Hm, that is not quite it.",
+        "No, really, not that.",
+    ]
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_vote_in_paraphrased_words_changes_nothing(tmp_path):
+    def worker(messages):
+        source = json.loads(messages[1].content)
+        if "existing" in source:
+            return {"action": "DOWNVOTE", "user_excerpt": "the user objects", "reason": ""}
+        return lesson(messages)
+
+    c = companion(tmp_path, {"interaction": Worker(worker)}, character_development=True)
+    for text in ["Hello", "Please don't use nicknames.", "Hm, that is not quite it."]:
+        await c.reply(text, conversation_id="one", user_id="alice")
+        await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    assert record.metadata["support"] == 2
+    assert record.metadata["objections"] == []
     await c.close()

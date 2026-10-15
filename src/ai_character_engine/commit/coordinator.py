@@ -24,11 +24,16 @@ from ai_character_engine.memory.conflicts import apply_conflicts, conflict_candi
 from ai_character_engine.memory.experience import (
     EXPERIENCE_KIND,
     EXPERIENCE_TARGET,
+    EXPERIENCE_VOTE_TARGET,
+    INITIAL_SUPPORT,
+    apply_vote,
     experience_scope,
+    experience_support,
     normalize_experience,
     verified_experience,
     record_has_verified_interpretation,
 )
+from ai_character_engine.memory.models import MemoryRecord
 from ai_character_engine.memory.self_kinds import CONVERSATION_KEY
 from ai_character_engine.long_term_cognition import (
     BeliefClaim,
@@ -71,6 +76,14 @@ logger = logging.getLogger(__name__)
 _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
     EXPERIENCE_TARGET: CommitTargetPolicy(
         min_confidence=0.80,
+        stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
+        expected_worker_kind="interaction_learning",
+        max_age_s=300.0,
+    ),
+    # A vote on an interpretation already held; its evidence is the user's
+    # quoted words, checked at commit, so the worker's confidence is not a gate.
+    EXPERIENCE_VOTE_TARGET: CommitTargetPolicy(
+        min_confidence=0.0,
         stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
         expected_worker_kind="interaction_learning",
         max_age_s=300.0,
@@ -527,6 +540,40 @@ class CognitiveCommitCoordinator:
                     "experience_topic_not_owned_by_user",
                     current_revision,
                 )
+        if proposal.target == EXPERIENCE_VOTE_TARGET:
+            source = proposal.provenance.get("interaction")
+            user_id = proposal.provenance.get("user_id")
+            grounded = (
+                isinstance(source, Mapping)
+                and isinstance(user_id, str)
+                and bool(user_id.strip())
+                and source.get("user_id") == user_id
+                and proposal.provenance.get("foreground_event_type") == "user_message"
+                and bool(proposal.provenance.get("foreground_event_id"))
+                and source.get("feedback")
+                == proposal.provenance.get("foreground_event_content")
+            )
+            if not grounded:
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "experience_vote_requires_grounded_exchange",
+                    current_revision,
+                )
+            if self._voted_record(proposal) is None:
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "experience_topic_not_owned_by_user",
+                    current_revision,
+                )
+            if apply_vote(0, proposal.payload, str(source["feedback"])) is None:
+                return self._finalize(
+                    proposal,
+                    CommitStatus.REJECTED,
+                    "experience_vote_requires_users_words",
+                    current_revision,
+                )
         if proposal.target == "state.emotion_candidate":
             evidence_type = str(proposal.provenance.get("evidence_type", ""))
             if evidence_type in {"quoted_reference", "user_instruction", "memory_operation"}:
@@ -806,6 +853,9 @@ class CognitiveCommitCoordinator:
                     tags=("background_cognition", "interaction_learning"),
                     metadata={
                         **payload,
+                        "support": INITIAL_SUPPORT,
+                        "support_events": [],
+                        "objections": [],
                         "topic_id": payload["topic_id"] or event_id,
                         "reviewed_topic_id": payload["topic_id"],
                         "review_feedback": proposal.provenance["interaction"][
@@ -828,6 +878,49 @@ class CognitiveCommitCoordinator:
             except Exception:
                 manager.store.replace_for_character(scope, before)
                 raise
+            return record.id
+        if proposal.target == EXPERIENCE_VOTE_TARGET:
+            manager = runtime.memory_manager
+            scope = experience_scope(runtime.character.id, proposal.provenance["user_id"])
+            record = self._voted_record(proposal)
+            feedback = str(proposal.provenance["interaction"]["feedback"])
+            support = None if record is None else apply_vote(
+                experience_support(record), proposal.payload, feedback
+            )
+            if record is None or support is None:
+                raise RuntimeError("experience vote lost its record between check and apply")
+            entry = {
+                "event_id": str(proposal.provenance["foreground_event_id"]),
+                "user_excerpt": proposal.payload.get("user_excerpt"),
+                "feedback": feedback,
+                "reason": proposal.payload.get("reason"),
+                "observed_at": proposal.provenance["interaction"].get(
+                    "observed_at", proposal.created_at.isoformat()
+                ),
+            }
+            metadata = {
+                **record.metadata,
+                "support": support,
+                "support_events": list(record.metadata.get("support_events") or ()),
+                "objections": list(record.metadata.get("objections") or ()),
+            }
+            action = proposal.payload.get("action")
+            if action == "UPVOTE":
+                metadata["support_events"].append(entry)
+            elif action == "DOWNVOTE":
+                metadata["objections"].append(entry)
+            # Voted down to nothing: withdrawn like a memory the user asked to
+            # forget, kept on disk with its objections for inspection.
+            updated = replace(
+                record,
+                metadata=metadata,
+                status="forgotten" if support <= 0 else record.status,
+                forgotten_at=datetime.now(UTC) if support <= 0 else record.forgotten_at,
+            )
+            manager.store.replace_for_character(
+                scope,
+                [updated if r.id == record.id else r for r in manager.store.list_for_character(scope)],
+            )
             return record.id
         if proposal.target in {"memory.append_candidate", "memory.self_candidate"}:
             manager = runtime.memory_manager
@@ -1320,6 +1413,24 @@ class CognitiveCommitCoordinator:
                 )
         return None
 
+    def _voted_record(self, proposal: TaskProposal) -> MemoryRecord | None:
+        """The newest active, reviewed record of the topic a vote names, in the voter's scope."""
+        manager = self.tasks.runtime.memory_manager
+        user_id = proposal.provenance.get("user_id")
+        topic_id = proposal.payload.get("topic_id")
+        if manager is None or not isinstance(user_id, str) or not topic_id:
+            return None
+        scope = experience_scope(self.tasks.runtime.character.id, user_id)
+        matching = [
+            r
+            for r in manager.store.list_for_character(scope)
+            if r.kind == EXPERIENCE_KIND
+            and r.metadata.get("topic_id") == topic_id
+            and r.is_active
+            and record_has_verified_interpretation(r)
+        ]
+        return matching[-1] if matching else None
+
     def _identity(self, proposal: TaskProposal) -> tuple[str | None, str | None, str]:
         payload_json = json.dumps(
             _jsonable(dict(proposal.payload)), ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -1331,6 +1442,10 @@ class CognitiveCommitCoordinator:
         if proposal.target == EXPERIENCE_TARGET:
             scope = experience_scope(self.tasks.runtime.character.id, provenance["user_id"])
             semantic = hashlib.sha256(f"experience|{scope}|{event_id}".encode()).hexdigest()
+            return semantic, None, fingerprint
+        if proposal.target == EXPERIENCE_VOTE_TARGET:
+            scope = experience_scope(self.tasks.runtime.character.id, provenance["user_id"])
+            semantic = hashlib.sha256(f"experience_vote|{scope}|{event_id}".encode()).hexdigest()
             return semantic, None, fingerprint
 
         if proposal.target == "memory.append_candidate":

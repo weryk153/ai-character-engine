@@ -49,6 +49,12 @@ class CompanionSettings:
     # an explicit user_id on reply(); no identity is inferred from dialogue.
     interaction_every: int = 1
     interaction_topics_shown: int = 4
+    # Review each interaction candidate with one yes/no question per concern
+    # (unstated claim, wrong speaker, widened scope) for the outcome and the
+    # lesson: six short calls whose yes must copy the words of the text, instead
+    # of one call listing problems. For a reviewer that invents problems or
+    # never leaves the list empty; costs six more calls per candidate.
+    interaction_review_checklist: bool = False
     # One model call. The engine's own worker defaults (12 s for emotion, 20 s
     # for a summary) time out on the hardware above.
     call_timeout_seconds: float = 60.0

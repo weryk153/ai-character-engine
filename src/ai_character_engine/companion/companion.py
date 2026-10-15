@@ -84,6 +84,7 @@ from ai_character_engine.memory.models import MemoryRecord, RetrievedMemory
 from ai_character_engine.memory.experience import (
     EXPERIENCE_KIND,
     EXPERIENCE_TARGET,
+    EXPERIENCE_VOTE_TARGET,
     experience_scope,
     experience_topics,
 )
@@ -140,7 +141,7 @@ _READ_ONCE = (
 # A conflict is checked against the memories as they are when it is
 # committed: a turn in between does not make it wrong.
 _KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET, DIARY_TARGET,
-                      MEMORY_CONFLICT_TARGET, EXPERIENCE_TARGET)
+                      MEMORY_CONFLICT_TARGET, EXPERIENCE_TARGET, EXPERIENCE_VOTE_TARGET)
 # Of use only before the next turn: a note about a reply is never moved onto
 # a later one.
 _THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
@@ -1244,7 +1245,11 @@ class CharacterCompanion:
                     self._developing_self_views
                 )
                 self._background.job_extras[BackgroundCognitionKind.INTERACTION_LEARNING] = (
-                    lambda: {"interaction": self._interaction_source}
+                    lambda: {
+                        "interaction": self._interaction_source,
+                        "interaction_review_checklist":
+                            self.settings.interaction_review_checklist,
+                    }
                     if self._interaction_source is not None else None
                 )
         self._commits = CognitiveCommitCoordinator(

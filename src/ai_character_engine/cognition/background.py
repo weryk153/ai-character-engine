@@ -26,9 +26,15 @@ from ai_character_engine.memory.conflicts import (
 )
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.memory.experience import (
+    CHECKLIST_COMPONENTS,
+    CHECKLIST_QUESTIONS,
     EXPERIENCE_TARGET,
+    EXPERIENCE_VOTE_TARGET,
+    checklist_key,
     condition_check_required,
+    experience_checklist_messages,
     experience_condition_messages,
+    experience_vote_messages,
     experience_messages,
     experience_review_conditions,
     experience_review_messages,
@@ -582,6 +588,42 @@ class StructuredBackgroundWorker:
         self, context: TaskContext, proposal: TaskProposal
     ):
         source = context.request.payload["interaction"]
+        topic_id = proposal.payload.get("topic_id")
+        existing = next(
+            (
+                topic
+                for topic in source.get("topics") or ()
+                if isinstance(topic, Mapping) and topic_id and topic.get("topic_id") == topic_id
+            ),
+            None,
+        )
+        if existing is not None and not proposal.payload.get("revises"):
+            # More feedback on a topic she already holds an interpretation of:
+            # one vote on that interpretation instead of a new extraction review.
+            try:
+                response = await self.models.generate(
+                    _ROLE_BY_KIND[self.spec.kind],
+                    experience_vote_messages(existing, source),
+                    requirements=self.spec.requirements,
+                )
+                vote = _parse_json_object(response.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return [], {"accepted": False, "reason": "vote_unavailable"}
+            return [
+                replace(
+                    proposal,
+                    target=EXPERIENCE_VOTE_TARGET,
+                    payload={
+                        "topic_id": topic_id,
+                        "action": vote.get("action"),
+                        "user_excerpt": vote.get("user_excerpt"),
+                        "reason": vote.get("reason"),
+                    },
+                    confidence=1.0,
+                )
+            ], {"accepted": True, "vote": vote}
         try:
             response = await self.models.generate(
                 _ROLE_BY_KIND[self.spec.kind],
@@ -594,8 +636,34 @@ class StructuredBackgroundWorker:
         except Exception:
             return [], {"accepted": False, "reason": "review_unavailable"}
         feedback = str(source["feedback"])
+        checklist = None
+        if context.request.payload.get("interaction_review_checklist"):
+            # One narrow question per concern and component, each answered with
+            # the words of the text; the review's own problem lists are not used.
+            checklist = {}
+            for component in CHECKLIST_COMPONENTS:
+                for question, _, _ in CHECKLIST_QUESTIONS:
+                    try:
+                        response = await self.models.generate(
+                            _ROLE_BY_KIND[self.spec.kind],
+                            experience_checklist_messages(
+                                source, proposal.payload, component, question
+                            ),
+                            requirements=self.spec.requirements,
+                        )
+                        checklist[checklist_key(component, question)] = (
+                            _parse_json_object(response.text)
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        return [], {
+                            "accepted": False,
+                            "reason": "checklist_unavailable",
+                            "review": review,
+                        }
         conditions_check = None
-        if condition_check_required(review, feedback):
+        if condition_check_required(review, feedback, proposal.payload, checklist):
             # The reviewer lists the user's conditions but has repeatedly passed a
             # lesson that reworded one. Compare them apart from everything else.
             try:
@@ -616,12 +684,13 @@ class StructuredBackgroundWorker:
                     "review": review,
                 }
         proof = experience_review_proof(
-            proposal.payload, review, feedback, conditions_check
+            proposal.payload, review, feedback, conditions_check, checklist
         )
         audit = {
             "accepted": proof is not None,
             "review": review,
             "conditions": conditions_check,
+            "checklist": checklist,
         }
         if proof is None:
             return [], audit
