@@ -22,6 +22,7 @@ from ai_character_engine.companion import (
     CompanionSnapshot,
     TurnInterrupted,
 )
+from ai_character_engine.context.builder import is_turn_context
 from ai_character_engine.llm.models import LLMResponse, LLMStreamChunk, Message
 from ai_character_engine.state.models import StatePatch
 from ai_character_engine.tools.models import ToolCall, ToolDefinition
@@ -219,11 +220,16 @@ def test_changed_taste_keeps_its_previous_view_and_evidence_after_restart(
             inspection[1].metadata["change_evidence"] = "changed by inspector"
             assert reopened.self_memory_history()[1].metadata["change_evidence"] == new
             await reopened.reply("What do you like now?", conversation_id="new-conversation")
-            system = reopened_llm.calls[-1][0].content
-            assert "Current self-views carried from lived conversations" in system
-            assert new in system
-            assert second.summary in system
-            assert first.summary not in system
+            sent = reopened_llm.calls[-1]
+            system = sent[0].content
+            # The explanation stays in the system prompt; the views themselves
+            # are note lines in the conversation, so a changed view does not
+            # move the prompt's beginning.
+            assert 'Note lines that begin with "- self-view: "' in system
+            said = "\n".join(m.content for m in sent[1:] if is_turn_context(m))
+            assert new in said
+            assert second.summary in said
+            assert first.summary not in said and first.summary not in system
         else:
             assert all(r.is_active for r in records)
             assert second.supersedes == ()

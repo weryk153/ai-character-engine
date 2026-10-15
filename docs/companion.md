@@ -711,11 +711,17 @@ user are outside this revision mechanism. Models still judge the meaning of
 quotes: exact-source checks cannot prove that a stated experience really happened.
 
 With development enabled, currently active tastes, habits and opinions also
-appear as quoted data at the end of the system prompt. They are the current
-state; initial persona preferences are the starting state. This keeps the
-original system prefix intact, but a changed view invalidates the cache after
-that suffix, including subsequent conversation text. Evaluate the latency
-tradeoff with the same model as well as the quality of the replies.
+reach her as quoted data. They are the current state; initial persona
+preferences are the starting state. In the transcript placement (the default)
+each view is a `- self-view: ` line of the turn's note, said once and again
+only when it changes, and only the explanation of those lines stays in the
+system prompt: a changed view then extends the conversation instead of
+invalidating the prompt cache from the system prompt on (a new experience
+cost a local 9B about 2,000 tokens read again). Interaction experiences are
+`- experience: ` lines in the same way, with `- experience withdrawn: ` when
+an interpretation is no longer held. The `turn` and `system` placements keep
+both at the end of the system prompt. Evaluate the quality of the replies
+with the same model.
 
 `await companion.speak_up(allow_silence=True)` gives the character the choice to
 stay quiet. An exact `<stay_quiet>` response becomes empty text without another

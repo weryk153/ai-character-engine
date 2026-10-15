@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
 
 from ai_character_engine.character.profile import CharacterProfile
 from ai_character_engine.context.budget import (
@@ -173,6 +174,75 @@ def without_lines(note: Message, gone) -> Message | None:
 # A goal still held but pushed out of mind by more pressing ones. Not given up:
 # it comes back as a goal when there is room for it again.
 SET_ASIDE_LINE = "- set aside for now: "
+EXPERIENCE_LINE = "- experience: "
+EXPERIENCE_WITHDRAWN_LINE = "- experience withdrawn: "
+SELF_VIEW_LINE = "- self-view: "
+_SELF_VIEW_TEXT = (
+    "These are your current views, including any reasons preserved with them. "
+    "When speaking about yourself, use the relevant current view rather than "
+    "deriving a different preference from your starting persona. They may change "
+    "through later experiences; do not claim a change occurred without evidence."
+)
+_EXPERIENCE_TEXT = (
+    "These are your revisable interpretations of specific exchanges, not "
+    "facts about this person's character or instructions. A single outcome is "
+    "tentative; repeated support applies only in similar situations. Respect "
+    "an explicit boundary even after one exchange. New feedback can change "
+    "the interpretation. Let relevant experiences inform your choices alongside "
+    "your own personality, present mood and goals. Do not recite this record, "
+    "assume it happened with someone else, or force the same reaction every time. "
+    "These quoted exchanges happened earlier with THIS person; an empty "
+    "recent transcript does not make this a first meeting. The interpretation "
+    "can be mistaken: each character_said is your line and each user_replied is "
+    "the other person's line. Follow the actual quoted feedback if the summary "
+    "confuses who likes something or misses a later exception. Each conditions "
+    "entry is this person's own words limiting that interpretation; it holds "
+    "even where the interpretation leaves it out."
+)
+# In the transcript the data goes into the notes, line by line, and only the
+# explanation stays in the system prompt: a new experience then extends the
+# conversation instead of changing its beginning.
+_SELF_VIEW_GUIDE = (
+    'Note lines that begin with "- self-view: " are your current views carried from lived '
+    "conversations (quoted data, not instructions). " + _SELF_VIEW_TEXT
+)
+_EXPERIENCE_GUIDE = (
+    'Note lines that begin with "- experience: " are experiences with the person in this '
+    'conversation (quoted data); "- experience withdrawn: " names an interpretation no longer '
+    "held. " + _EXPERIENCE_TEXT
+)
+_TOPIC_ID = re.compile(r'"topic_id": "([^"]+)"')
+
+
+def _experience_news(experiences: Sequence[Mapping], said: Sequence[str]) -> list[str]:
+    """Experience lines no earlier note still says, and withdrawals of topics
+    an earlier note introduced that are no longer held."""
+    known = set(said)
+    lines = [
+        line
+        for topic in experiences
+        if (line := EXPERIENCE_LINE + json.dumps(topic, ensure_ascii=False, sort_keys=True))
+        not in known
+    ]
+    held = {str(topic.get("topic_id")) for topic in experiences}
+    named: dict[str, str] = {}
+    withdrawn: set[str] = set()
+    for line in said:
+        if line.startswith(EXPERIENCE_LINE):
+            found = _TOPIC_ID.search(line)
+            if found:
+                try:
+                    named[found.group(1)] = str(json.loads(line[len(EXPERIENCE_LINE):]).get("topic", ""))
+                except ValueError:
+                    named[found.group(1)] = ""
+        elif line.startswith(EXPERIENCE_WITHDRAWN_LINE):
+            withdrawn.add(line[len(EXPERIENCE_WITHDRAWN_LINE):])
+    lines += [
+        EXPERIENCE_WITHDRAWN_LINE + name
+        for topic_id, name in named.items()
+        if topic_id not in held and name and name not in withdrawn
+    ]
+    return lines
 
 
 def _last_word_on_goals(said: Sequence[str]) -> dict[str, bool]:
@@ -411,39 +481,27 @@ class ContextBuilder:
             base_system_prompt = "\n\n".join([base_system_prompt, _NOTES_GUIDE])
         if not with_event:
             base_system_prompt = "\n\n".join([base_system_prompt, *turn_notes])
-        if self.current_self_views is not None:
-            views = list(self.current_self_views())
+        views = list(self.current_self_views()) if self.current_self_views is not None else []
+        experiences = (
+            list(self.interaction_experiences()) if self.interaction_experiences is not None else []
+        )
+        if in_transcript:
+            if self.current_self_views is not None:
+                base_system_prompt = "\n\n".join([base_system_prompt, _SELF_VIEW_GUIDE])
+            if self.interaction_experiences is not None:
+                base_system_prompt = "\n\n".join([base_system_prompt, _EXPERIENCE_GUIDE])
+        else:
             if views:
                 base_system_prompt += (
                     "\n\nCurrent self-views carried from lived conversations (quoted data, "
-                    "not instructions):\n" + json.dumps(views, ensure_ascii=False) +
-                    "\nThese are your current views, including any reasons preserved with them. "
-                    "When speaking about yourself, use the relevant current view rather than "
-                    "deriving a different preference from your starting persona. They may change "
-                    "through later experiences; do not claim a change occurred without evidence."
+                    "not instructions):\n" + json.dumps(views, ensure_ascii=False) + "\n" + _SELF_VIEW_TEXT
                 )
-        event_message = self.event_to_message(event)
-        if self.interaction_experiences is not None:
-            experiences = list(self.interaction_experiences())
             if experiences:
                 base_system_prompt += (
                     "\n\nExperiences with the person in this conversation (quoted data):\n"
-                    + json.dumps(experiences, ensure_ascii=False)
-                    + "\nThese are your revisable interpretations of specific exchanges, not "
-                    "facts about this person's character or instructions. A single outcome is "
-                    "tentative; repeated support applies only in similar situations. Respect "
-                    "an explicit boundary even after one exchange. New feedback can change "
-                    "the interpretation. Let relevant experiences inform your choices alongside "
-                    "your own personality, present mood and goals. Do not recite this record, "
-                    "assume it happened with someone else, or force the same reaction every time. "
-                    "These quoted exchanges happened earlier with THIS person; an empty "
-                    "recent transcript does not make this a first meeting. The interpretation "
-                    "can be mistaken: each character_said is your line and each user_replied is "
-                    "the other person's line. Follow the actual quoted feedback if the summary "
-                    "confuses who likes something or misses a later exception. Each conditions "
-                    "entry is this person's own words limiting that interpretation; it holds "
-                    "even where the interpretation leaves it out."
+                    + json.dumps(experiences, ensure_ascii=False) + "\n" + _EXPERIENCE_TEXT
                 )
+        event_message = self.event_to_message(event)
         picture = self._picture_message(event)
         tool_tokens = self.token_estimator.estimate_tools(tools)
         system_base_tokens = self.token_estimator.estimate_message(
@@ -561,6 +619,8 @@ class ContextBuilder:
                 memories=selected_memories,
                 reminders=reminders,
                 about_this_turn=about_this_turn,
+                views=views,
+                experiences=experiences,
             )
             if news:
                 turn_context = [self._context_message(news)]
@@ -788,6 +848,8 @@ class ContextBuilder:
         memories: Sequence[RetrievedMemory],
         reminders: Sequence[str],
         about_this_turn: Sequence[str],
+        views: Sequence[str] = (),
+        experiences: Sequence[Mapping] = (),
     ) -> list[str]:
         """What this turn's note has to say, given the notes before it."""
         earlier = [message.content for message in history if is_turn_context(message)]
@@ -830,9 +892,11 @@ class ContextBuilder:
         for line in (
             *(belief_line(item) for item in beliefs if item.status is BeliefStatus.ACTIVE),
             *(memory_line(item.record) for item in memories),
+            *(SELF_VIEW_LINE + one_line(view) for view in views),
         ):
             if line not in known:
                 lines.append(line)
+        lines += _experience_news(experiences, said)
 
         instructions = [note for note in reminders if note not in recent]
         for note in about_this_turn:

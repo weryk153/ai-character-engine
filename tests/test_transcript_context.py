@@ -523,3 +523,81 @@ def test_a_goal_withdrawn_and_taken_up_again_costs_budget_again():
 
     goal_lines = [line for line in notes(third)[-1].splitlines() if line.startswith("- goal: ")]
     assert len(goal_lines) == 1
+
+
+# --- what she learned goes into the notes too ----------------------------------
+
+
+TOPIC = {"topic_id": "t1", "topic": "nicknames", "interpretation": "They dislike nicknames."}
+
+
+def build_with_notes(history, *, builder, notes):
+    return builder.build_for_event_with_trace(
+        character=PROFILE,
+        history=list(history),
+        event=CharacterEvent.user_message("hello"),
+        notes=list(notes),
+    ).messages
+
+
+def learning(builder, experiences=(), views=()):
+    builder.interaction_experiences = lambda: list(experiences)
+    builder.current_self_views = lambda: list(views)
+    return builder
+
+
+def test_experiences_and_self_views_are_notes_in_the_transcript():
+    """Appended to the system prompt, a new experience made the whole
+    conversation after it re-read (about 2k tokens on a local 9B)."""
+    messages = build(builder=learning(ContextBuilder(), [TOPIC], ["I prefer tea."]))
+    system = messages[0].content
+    assert "They dislike nicknames." not in system
+    assert "I prefer tea." not in system
+    (note,) = notes(messages)
+    assert any(line.startswith("- experience: ") and "They dislike nicknames." in line for line in note.splitlines())
+    assert "- self-view: I prefer tea." in note.splitlines()
+    assert "- experience:" in system  # how to read the lines is explained once, in the system prompt
+
+
+def test_the_system_prompt_is_the_same_with_and_without_experiences():
+    empty = build(builder=learning(ContextBuilder()))
+    full = build(builder=learning(ContextBuilder(), [TOPIC], ["I prefer tea."]))
+    assert empty[0].content == full[0].content
+
+
+def test_an_experience_line_is_said_once_until_it_changes():
+    # As the runtime does: history holds what was said, notes ride beside it.
+    builder = learning(ContextBuilder(), [TOPIC], ["I prefer tea."])
+    first = build(builder=builder)
+    note, hello = first[-2], first[-1]
+    history = [hello, Message("assistant", "fine")]
+    again = build_with_notes(history, builder=builder, notes=[(hello, note)])
+    assert notes(again) == [note.content]  # the old note stays; nothing new is said
+    revised = {**TOPIC, "interpretation": "They allow the nickname at home."}
+    builder = learning(ContextBuilder(), [revised], ["I prefer tea."])
+    changed = build_with_notes(history, builder=builder, notes=[(hello, note)])
+    (said,) = [n for n in notes(changed) if n != note.content]
+    assert "They allow the nickname at home." in said
+    assert "I prefer tea." not in said
+
+
+def test_a_withdrawn_experience_is_said_to_no_longer_hold():
+    first = build(builder=learning(ContextBuilder(), [TOPIC]))
+    note, hello = first[-2], first[-1]
+    history = [hello, Message("assistant", "fine")]
+    gone = build_with_notes(history, builder=learning(ContextBuilder(), []), notes=[(hello, note)])
+    (said,) = [n for n in notes(gone) if n != note.content]
+    assert "- experience withdrawn: nicknames" in said.splitlines()
+    note2, hello2 = gone[-2], gone[-1]
+    history = [hello, Message("assistant", "fine"), hello2, Message("assistant", "fine")]
+    later = build_with_notes(
+        history, builder=learning(ContextBuilder(), []), notes=[(hello, note), (hello2, note2)]
+    )
+    assert [n for n in notes(later) if n not in (note.content, note2.content)] == []
+
+
+def test_a_host_with_the_system_placement_keeps_experiences_in_the_system_prompt():
+    builder = learning(ContextBuilder(context_placement="system"), [TOPIC], ["I prefer tea."])
+    system = build(builder=builder)[0].content
+    assert "They dislike nicknames." in system
+    assert "I prefer tea." in system
