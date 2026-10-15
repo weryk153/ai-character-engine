@@ -440,7 +440,9 @@ class ContextBuilder:
                     "recent transcript does not make this a first meeting. The interpretation "
                     "can be mistaken: each character_said is your line and each user_replied is "
                     "the other person's line. Follow the actual quoted feedback if the summary "
-                    "confuses who likes something or misses a later exception."
+                    "confuses who likes something or misses a later exception. Each conditions "
+                    "entry is this person's own words limiting that interpretation; it holds "
+                    "even where the interpretation leaves it out."
                 )
         picture = self._picture_message(event)
         tool_tokens = self.token_estimator.estimate_tools(tools)

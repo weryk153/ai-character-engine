@@ -87,14 +87,31 @@ before enabling it in a host.
 
 Interaction candidates now require a separate evidence-review call before commit.
 The reviewer receives the exchange and proposed interpretation, without the
-character's persona. It checks speaker attribution, explicit feedback, support
-for the lesson and outcome, scope, and the proposed topic revision. Unsupported
-lessons stay out of context. When the outcome and all other checks pass, the
-verified outcome can be retained without the lesson; the rejected lesson is
-kept only in audit metadata. Missing, malformed, or uncertain required checks
-produce no interaction memory. This is
-a fresh call to the configured interaction model, not an independent model vendor
-or a guarantee of semantic correctness.
+character's persona. It paraphrases the feedback, lists every condition,
+exception or limit the user attached (`user_conditions`), checks explicit
+feedback, and then names the problems it finds as short sentences, separately
+for the topic update, the outcome and the lesson (`topic_problems`,
+`outcome_problems`, `lesson_problems`; an empty list is a pass). Problems
+include unsupported feelings, motives or facts, widened limits and wrong
+speakers. A boolean verdict beside a free-text reason came back contradicting
+it on three models, so there is no verdict apart from the problems named. A
+problem found in the lesson no longer discards a supported outcome; a problem
+in the outcome discards everything.
+The supporting quote must be an exact excerpt of the feedback; several exact
+excerpts may be joined in their original order with an ellipsis, and nothing
+else counts as a quotation. When the review lists conditions, a second call
+compares each condition with the outcome and with the lesson, seeing only
+those texts (`kept`, `absent`, or `changed`); a component that changes a
+condition (weakened, widened or replaced) is not stored. A `changed` verdict
+must cite the exact words of that component which state the different
+trigger, scope or consequence; a verdict with nothing to cite makes the
+comparison unusable. Leaving a condition unstated is `absent`, not `changed`:
+the conditions that are the user's own words are stored with the review and
+shown beside the interpretation as `conditions`, so a shorter summary does not
+lose them. Missing, malformed, or uncertain required checks produce no
+interaction memory. These
+are fresh calls to the configured interaction model, not an independent model
+vendor or a guarantee of semantic correctness.
 
 The coordinator requires a positive review bound to the exact candidate and
 feedback, and persists that review with the quotations. A later change cannot
@@ -102,5 +119,8 @@ reuse the earlier review. Existing records without a valid review are preserved
 for inspection/withdrawal but excluded from context and from the prior topics
 used for new learning. `interaction_experiences` still exposes those historical
 records; the presence of a record alone does not mean it is used in prompts.
-Each valid candidate adds one background model call, under the existing job
-limit and timeout. Review failure leaves the conversation reply intact.
+Records reviewed under the earlier single-verdict review (proof version 2)
+still verify; new reviews are stored as version 3 with the condition
+comparison. Each valid candidate adds one background model call, two when the
+user stated conditions, under the existing job limit and timeout. Review
+failure leaves the conversation reply intact.

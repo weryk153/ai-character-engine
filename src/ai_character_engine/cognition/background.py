@@ -27,7 +27,10 @@ from ai_character_engine.memory.conflicts import (
 from ai_character_engine.memory.evidence import classify_user_text
 from ai_character_engine.memory.experience import (
     EXPERIENCE_TARGET,
+    condition_check_required,
+    experience_condition_messages,
     experience_messages,
+    experience_review_conditions,
     experience_review_messages,
     experience_review_proof,
     normalize_experience,
@@ -590,10 +593,36 @@ class StructuredBackgroundWorker:
             raise
         except Exception:
             return [], {"accepted": False, "reason": "review_unavailable"}
+        feedback = str(source["feedback"])
+        conditions_check = None
+        if condition_check_required(review, feedback):
+            # The reviewer lists the user's conditions but has repeatedly passed a
+            # lesson that reworded one. Compare them apart from everything else.
+            try:
+                response = await self.models.generate(
+                    _ROLE_BY_KIND[self.spec.kind],
+                    experience_condition_messages(
+                        experience_review_conditions(review), proposal.payload
+                    ),
+                    requirements=self.spec.requirements,
+                )
+                conditions_check = _parse_json_object(response.text)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return [], {
+                    "accepted": False,
+                    "reason": "condition_check_unavailable",
+                    "review": review,
+                }
         proof = experience_review_proof(
-            proposal.payload, review, str(source["feedback"])
+            proposal.payload, review, feedback, conditions_check
         )
-        audit = {"accepted": proof is not None, "review": review}
+        audit = {
+            "accepted": proof is not None,
+            "review": review,
+            "conditions": conditions_check,
+        }
         if proof is None:
             return [], audit
         return [

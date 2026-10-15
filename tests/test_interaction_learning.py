@@ -13,17 +13,33 @@ from tests.fakes import system_context
 from tests.test_companion import Foreground, Worker, companion
 
 
-def approving_review(source):
+def approving_review(source, conditions=()):
     return {
         "literal_user_meaning": "The user is stating an interaction preference.",
+        "user_conditions": list(conditions),
         "explicit_feedback": True,
-        "correct_speakers": True,
-        "supported_lesson": True,
-        "supported_outcome": True,
-        "correct_topic_update": True,
-        "preserves_scope": True,
+        "topic_problems": [],
+        "outcome_problems": [],
+        "lesson_problems": [],
         "supporting_user_quote": source["user_feedback"],
-        "reason": "Supported.",
+    }
+
+
+def condition_check(
+    source, in_outcome="kept", in_lesson="kept", conflicting_outcome="", conflicting_lesson=""
+):
+    return {
+        "conditions": [
+            {
+                "condition": condition,
+                "in_outcome": in_outcome,
+                "in_lesson": in_lesson,
+                "conflicting_outcome_text": conflicting_outcome,
+                "conflicting_lesson_text": conflicting_lesson,
+                "reason": "Compared.",
+            }
+            for condition in source["user_conditions"]
+        ]
     }
 
 
@@ -305,11 +321,12 @@ async def test_export_import_carries_only_the_matching_partners_experience(tmp_p
     "failed_check",
     [
         "explicit_feedback",
-        "correct_speakers",
-        "supported_outcome",
-        "correct_topic_update",
-        "preserves_scope",
+        "outcome_problems",
+        "topic_problems",
         "supporting_user_quote",
+        "literal_user_meaning",
+        "user_conditions",
+        "missing_outcome_problems",
         "unavailable",
     ],
 )
@@ -321,11 +338,15 @@ async def test_unconfirmed_interpretation_never_becomes_memory(tmp_path, failed_
         if failed_check == "unavailable":
             raise RuntimeError("review endpoint unavailable")
         answer = approving_review(source)
-        answer[failed_check] = (
-            "Not said by this user"
-            if failed_check == "supporting_user_quote"
-            else False
-        )
+        if failed_check == "missing_outcome_problems":
+            del answer["outcome_problems"]
+            return answer
+        answer[failed_check] = {
+            "explicit_feedback": False,
+            "supporting_user_quote": "Not said by this user",
+            "literal_user_meaning": "",
+            "user_conditions": "only when we are alone",  # not a list
+        }.get(failed_check, ["Adds a feeling the user never stated."])
         return answer
 
     c = companion(
@@ -390,6 +411,7 @@ def test_review_cannot_be_reused_for_different_candidate_or_feedback():
     ]
     review = approving_review({"user_feedback": source["feedback"]})
     proof = experience_review_proof(candidate, review, source["feedback"])
+    assert proof["version"] == 3
     assert verified_experience(candidate, proof, source["feedback"])
     assert not verified_experience(
         {**candidate, "lesson": "Any nickname is welcome"}, proof, source["feedback"]
@@ -397,6 +419,236 @@ def test_review_cannot_be_reused_for_different_candidate_or_feedback():
     assert not verified_experience(
         candidate, proof, "No nicknames is what I used to say; I changed my mind"
     )
+
+
+def test_quote_may_join_exact_excerpts_in_order_with_an_ellipsis():
+    feedback = "我改主意了：私下叫我菜攤老闆可以，這個是我們一起玩的。其他綽號還是先不要。"
+    source = {"previous_reply": "Hi", "feedback": feedback, "topics": []}
+    candidate = lesson([None, type("M", (), {"content": json.dumps(source)})()])[
+        "experience"
+    ]
+
+    def components(quote):
+        review = {
+            **approving_review({"user_feedback": feedback}),
+            "supporting_user_quote": quote,
+        }
+        proof = experience_review_proof(candidate, review, feedback)
+        return proof["accepted_components"] if proof else []
+
+    assert components("私下叫我菜攤老闆可以...其他綽號還是先不要。") == [
+        "outcome",
+        "lesson",
+    ]
+    assert components("私下叫我菜攤老闆可以…其他綽號還是先不要") == ["outcome", "lesson"]
+    # Reordered, altered or empty excerpts are not quotations of the feedback.
+    assert components("其他綽號還是先不要...私下叫我菜攤老闆可以") == []
+    assert components("私下叫我菜攤老闆可以...其他綽號都不要") == []
+    assert components("...") == []
+    assert components("") == []
+
+
+def test_speaker_or_support_error_in_the_lesson_keeps_the_reviewed_outcome():
+    feedback = "這樣陪我聊就很好。偶爾問也可以，只是不用每句都問。"
+    source = {"previous_reply": "Hi", "feedback": feedback, "topics": []}
+    candidate = lesson([None, type("M", (), {"content": json.dumps(source)})()])[
+        "experience"
+    ]
+    for problem in (
+        "The lesson states the user's preference as the character's own.",
+        "The lesson adds that the user felt ignored.",
+    ):
+        review = approving_review({"user_feedback": feedback})
+        review["lesson_problems"] = [problem]
+        proof = experience_review_proof(candidate, review, feedback)
+        assert proof["accepted_components"] == ["outcome"]
+        review["outcome_problems"] = [problem]
+        assert experience_review_proof(candidate, review, feedback) is None
+
+
+def test_changed_condition_drops_only_the_component_that_changed_it():
+    from ai_character_engine.memory.experience import (
+        condition_check_required,
+        verified_experience,
+    )
+
+    feedback = "我喜歡你也自己下場玩。規則偏心一點也行，但被我抓到要認輸喔。"
+    source = {"previous_reply": "Hi", "feedback": feedback, "topics": []}
+    candidate = lesson([None, type("M", (), {"content": json.dumps(source)})()])[
+        "experience"
+    ]
+    review = approving_review({"user_feedback": feedback}, ["被我抓到要認輸"])
+    assert condition_check_required(review, feedback)
+    # A stated condition without the comparison is not a finished review.
+    assert experience_review_proof(candidate, review, feedback) is None
+
+    def proof_with(in_outcome, in_lesson, cite_outcome="", cite_lesson=""):
+        return experience_review_proof(
+            candidate,
+            review,
+            feedback,
+            condition_check(
+                review,
+                in_outcome=in_outcome,
+                in_lesson=in_lesson,
+                conflicting_outcome=cite_outcome,
+                conflicting_lesson=cite_lesson,
+            ),
+        )
+
+    assert proof_with("kept", "kept")["accepted_components"] == ["outcome", "lesson"]
+    cite = "I can use their name when we chat"
+    assert proof_with("absent", "changed", cite_lesson=cite)["accepted_components"] == [
+        "outcome"
+    ]
+    # A changed verdict has to point at the words that change the condition: an
+    # exact excerpt of that component, or excerpts joined in order by an ellipsis.
+    assert proof_with("absent", "changed") is None
+    assert proof_with("absent", "changed", cite_lesson="when we play") is None
+    assert (
+        proof_with("absent", "changed", cite_lesson=cite.replace("their", "the"))
+        is None
+    )
+    assert proof_with(
+        "absent", "changed", cite_lesson="dislikes nicknames...when we chat"
+    )["accepted_components"] == ["outcome"]
+    assert proof_with("absent", "changed", cite_outcome=cite) is None
+    assert proof_with("changed", "kept", cite_outcome="objected to a nickname") is None
+    assert proof_with("absent", "unsure") is None
+    full = proof_with("absent", "kept")
+    assert verified_experience(candidate, full, feedback)
+    # The comparison must cover exactly the conditions the review listed.
+    tampered = {
+        **full,
+        "conditions": {
+            "conditions": [
+                {**full["conditions"]["conditions"][0], "condition": "規則偏心也行"}
+            ]
+        },
+    }
+    assert not verified_experience(candidate, tampered, feedback)
+    assert not verified_experience(
+        candidate, {**full, "conditions": {"conditions": []}}, feedback
+    )
+    assert not condition_check_required(
+        {**review, "explicit_feedback": False}, feedback
+    )
+    assert not condition_check_required({**review, "user_conditions": []}, feedback)
+
+
+def test_version_2_reviews_already_stored_still_verify():
+    import hashlib
+
+    from ai_character_engine.memory.experience import verified_experience
+
+    source = {"previous_reply": "Hi", "feedback": "No nicknames", "topics": []}
+    candidate = lesson([None, type("M", (), {"content": json.dumps(source)})()])[
+        "experience"
+    ]
+    review = {
+        "literal_user_meaning": "The user is stating an interaction preference.",
+        "explicit_feedback": True,
+        "correct_speakers": True,
+        "supported_lesson": False,
+        "supported_outcome": True,
+        "correct_topic_update": True,
+        "preserves_scope": True,
+        "supporting_user_quote": "No nicknames",
+        "reason": "Supported.",
+    }
+    proof = {
+        "version": 2,
+        "accepted_components": ["outcome"],
+        "candidate_sha256": hashlib.sha256(
+            json.dumps(dict(candidate), sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest(),
+        "feedback_sha256": hashlib.sha256(b"No nicknames").hexdigest(),
+        "review": review,
+    }
+    assert verified_experience(candidate, proof, "No nicknames")
+    assert not verified_experience(
+        candidate, {**proof, "accepted_components": ["outcome", "lesson"]}, "No nicknames"
+    )
+    assert not verified_experience(
+        candidate,
+        {**proof, "review": {**review, "correct_speakers": False}},
+        "No nicknames",
+    )
+
+
+@pytest.mark.asyncio
+async def test_condition_comparison_runs_as_its_own_call_and_guards_the_lesson(
+    tmp_path,
+):
+    calls = []
+
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "user_conditions" in source and "candidate" in source:
+            calls.append("conditions")
+            assert "character_previous_reply" not in source
+            return condition_check(
+                source,
+                in_outcome="absent",
+                in_lesson="changed",
+                conflicting_lesson="as long as I admit a loss",
+            )
+        if "candidate" in source:
+            calls.append("review")
+            return approving_review(source, ["only if I catch them"])
+        calls.append("extract")
+        result = lesson(messages)
+        result["experience"]["lesson"] = "Biased rules are fine as long as I admit a loss."
+        result["experience"]["outcome"] = "The user wants me to join the game."
+        return result
+
+    llm = Foreground()
+    c = companion(
+        tmp_path,
+        {"interaction": Worker(reviewing)},
+        llm=llm,
+        character_development=True,
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply(
+        "Join the game; biased rules are fine, but admit a loss if I catch you.",
+        conversation_id="one",
+        user_id="alice",
+    )
+    await c.settle()
+    assert calls == ["extract", "review", "conditions"]
+    (record,) = c.interaction_experiences("alice")
+    assert record.summary == "The user wants me to join the game."
+    proof = record.metadata["interpretation_review"]
+    assert proof["accepted_components"] == ["outcome"]
+    assert proof["conditions"]["conditions"][0]["condition"] == "only if I catch them"
+    await c.reply("Hello again", conversation_id="fresh", user_id="alice")
+    context = system_context(llm.calls[-1])
+    assert "wants me to join the game" in context
+    assert "as long as I admit a loss" not in context
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_condition_comparison_stores_nothing(tmp_path):
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "user_conditions" in source and "candidate" in source:
+            raise RuntimeError("comparison endpoint unavailable")
+        if "candidate" in source:
+            return approving_review(source, ["only when we are alone"])
+        return lesson(messages)
+
+    c = companion(
+        tmp_path, {"interaction": Worker(reviewing)}, character_development=True
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply(
+        "Nicknames only when we are alone", conversation_id="one", user_id="alice"
+    )
+    await c.settle()
+    assert c.interaction_experiences("alice") == ()
+    await c.close()
 
 
 @pytest.mark.asyncio
@@ -451,7 +703,9 @@ async def test_supported_feedback_survives_without_the_unsupported_lesson(tmp_pa
     def reviewing(messages):
         source = json.loads(messages[1].content)
         if "candidate" in source:
-            return {**approving_review(source), "supported_lesson": False}
+            answer = approving_review(source)
+            answer["lesson_problems"] = ["Invents a motive the user never stated."]
+            return answer
         result = lesson(messages)
         result["experience"]["lesson"] = "They are deliberately trying to annoy me."
         result["experience"]["outcome"] = (
@@ -482,4 +736,45 @@ async def test_supported_feedback_survives_without_the_unsupported_lesson(tmp_pa
     assert "explicitly asks me not to give them nicknames" in context
     assert "deliberately trying to annoy" not in context
     assert "reviewed_observation_only" in context
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_users_own_conditions_ride_along_with_the_stored_summary(tmp_path):
+    """A summary that leaves a condition out does not lose it: the condition is
+    shown beside the interpretation, in the user's words only."""
+
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "user_conditions" in source and "candidate" in source:
+            return condition_check(source, in_outcome="absent", in_lesson="absent")
+        if "candidate" in source:
+            return approving_review(source, ["if I catch you", "only if I catch them"])
+        result = lesson(messages)
+        result["experience"]["lesson"] = "I should join the game instead of only hosting."
+        result["experience"]["outcome"] = "The user wants me to join the game."
+        return result
+
+    llm = Foreground()
+    c = companion(
+        tmp_path,
+        {"interaction": Worker(reviewing)},
+        llm=llm,
+        character_development=True,
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply(
+        "Join the game; biased rules are fine, but admit a loss if I catch you.",
+        conversation_id="one",
+        user_id="alice",
+    )
+    await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    (topic,) = experience_topics([record])
+    # The paraphrased one is the reviewer's wording, not the user's.
+    assert topic["conditions"] == ["if I catch you"]
+    await c.reply("Hello again", conversation_id="fresh", user_id="alice")
+    context = system_context(llm.calls[-1])
+    assert '"conditions": ["if I catch you"]' in context
+    assert "own words limiting that interpretation" in context
     await c.close()
