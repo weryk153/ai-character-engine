@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -86,7 +88,31 @@ class MemoryManager:
             query=event_query(event), limit=self.retrieval_limit, now=self._now(),
         )
         self.last_retrieval_trace = result.trace
+        self._mark_recalled(character_id, result.memories)
         return result
+
+    def _mark_recalled(self, character_id: str, memories) -> None:
+        """Count the recall on each returned record: what keeps coming up
+        fades slower (retention), and a host can see what she leans on."""
+        ids = {item.record.id for item in memories}
+        if not ids:
+            return
+        now = self._now().isoformat()
+        records = self.store.list_for_character(character_id)
+        updated = [
+            replace(
+                record,
+                metadata={
+                    **record.metadata,
+                    "recalled": int(record.metadata.get("recalled") or 0) + 1,
+                    "last_recalled_at": now,
+                },
+            )
+            if record.id in ids
+            else record
+            for record in records
+        ]
+        self.store.replace_for_character(character_id, updated)
 
     async def retrieve_for_event_async(
         self, *, character_id: str, event: CharacterEvent,
@@ -106,6 +132,7 @@ class MemoryManager:
             rewrite_context=rewrite_context, now=self._now(),
         )
         self.last_retrieval_trace = result.trace
+        self._mark_recalled(character_id, result.memories)
         return result
 
     def preview_revision(

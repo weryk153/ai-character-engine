@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from time import perf_counter
 from typing import Protocol
 
-from .models import RetrievedMemory
+from .models import MemoryRecord, RetrievedMemory
 from .evidence import classify_user_text, evidence_weight
 from .store import MemoryStore
 from .trace import RetrievalCandidateTrace, RetrievalResult, RetrievalTrace
@@ -25,6 +25,36 @@ def _terms(text: str) -> set[str]:
         for index in range(max(0, len(cjk_chars) - 1))
     )
     return {term for term in terms if term}
+
+
+# A memory this important is a boundary or a standing fact the user stated:
+# it does not fade, however long since it last came up.
+NEVER_FADES_ABOVE = 0.8
+
+
+def retention(record: MemoryRecord, now: datetime) -> float:
+    """How present a memory still is: e^(-days since last recall / (1 + recalls)).
+
+    Each recall both restarts the clock and slows the next fade (the
+    forgetting curve MemoryBank borrowed); a memory never recalled fades
+    from the day it was written. Boundaries and standing facts stay at 1.
+    """
+    if record.importance >= NEVER_FADES_ABOVE:
+        return 1.0
+    metadata = record.metadata
+    recalled = metadata.get("recalled", 0)
+    recalled = int(recalled) if isinstance(recalled, (int, float)) and recalled > 0 else 0
+    last = metadata.get("last_recalled_at")
+    since = record.created_at
+    if isinstance(last, str):
+        try:
+            since = datetime.fromisoformat(last)
+        except ValueError:
+            pass
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    days = max(0.0, (now - since).total_seconds() / 86400.0)
+    return math.exp(-days / (1 + recalled))
 
 
 class MemoryRetriever:
@@ -77,11 +107,11 @@ class MemoryRetriever:
                 if query_terms and record_terms
                 else 0.0
             )
-            age_days = max(
-                0.0, (current_time - record.created_at).total_seconds() / 86400.0
+            score = (
+                overlap * 0.65
+                + record.importance * 0.25
+                + retention(record, current_time) * 0.10
             )
-            recency = 1.0 / (1.0 + age_days / 30.0)
-            score = overlap * 0.65 + record.importance * 0.25 + recency * 0.10
             # Provenance-aware ranking. Old stores may not have an
             # evidence_type field, so infer it conservatively from source text.
             source_content = record.metadata.get("source_content", "")

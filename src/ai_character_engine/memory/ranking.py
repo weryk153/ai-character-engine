@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from .models import RetrievedMemory
+from .retriever import retention
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,13 +92,10 @@ class ImportanceRecencyReranker:
         total = self.relevance_weight + self.importance_weight + self.recency_weight
         ranked = []
         for item in candidates:
-            age_days = max(
-                0.0, (current_time - item.record.created_at).total_seconds() / 86400
-            )
             score = (
                 self.relevance_weight * max(0.0, min(1.0, item.score))
                 + self.importance_weight * item.record.importance
-                + self.recency_weight / (1.0 + age_days / 30.0)
+                + self.recency_weight * retention(item.record, current_time)
             ) / total
             ranked.append(RetrievedMemory(item.record, score))
         return sorted(ranked, key=lambda item: (-item.score, item.record.id))
