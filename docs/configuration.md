@@ -121,12 +121,14 @@ vendor or a guarantee of semantic correctness.
 An interpretation starts with a support of 2. Later feedback on a topic she
 already holds an interpretation of (the extractor names its `topic_id`
 without `revises`) is not extracted and reviewed again: one call reads the
-exchange against that interpretation and answers `UPVOTE`, `DOWNVOTE` or
-`NOOP`, and an up- or downvote counts only with the user's words quoted
-exactly. Support 3 and above is repeated support; at 1 the lesson leaves the
+exchange against that interpretation and answers `UPVOTE`, `DOWNVOTE`,
+`EDIT` or `NOOP`; an up- or downvote counts only with the user's words quoted
+exactly, and `EDIT` (the words add or change a limit the interpretation does
+not state) sends the candidate through the full review instead. Support 3 and above is repeated support; at 1 the lesson leaves the
 context and only the observed outcome is shown; at 0 the record is marked
-forgotten, kept on disk with its objections. One wrong vote in either
-direction is a step, not a verdict. A revision (`revises=true`) still goes
+forgotten, kept on disk with its objections, and the topic shows nothing
+rather than falling back to the view that record had replaced. One wrong
+vote in either direction is a step, not a verdict. A revision (`revises=true`) still goes
 through the full extraction review and supersedes the earlier view.
 
 `interaction_review_checklist=True` replaces the review's problem lists with
@@ -136,8 +138,8 @@ speaker, or widens a permission or limit. A yes counts only when it copies the
 exact words of that text (and, for widening, of the user's narrower words);
 a yes with nothing to cite is treated as not found, and a missing or
 malformed answer stores nothing. The first review still has to establish
-explicit feedback, the supporting quote and the conditions, and the condition
-comparison runs as before. This is for a reviewer that invents problems when
+explicit feedback, the supporting quote, the conditions and a clean topic
+(its `topic_problems`), and the condition comparison runs as before. This is for a reviewer that invents problems when
 asked to list them, or never leaves the list empty (a 12B and a 9B did, in
 turn); it costs six more short calls per candidate and stores proof version 4.
 

@@ -68,3 +68,33 @@ def test_recall_counts_survive_a_restart(tmp_path):
     )
     (reloaded,) = JsonlMemoryStore(path).list_for_character("mei")
     assert reloaded.metadata["recalled"] == 1
+
+
+def test_only_matched_memories_count_as_recalled_not_the_padding():
+    """A host retriever may pad its result with every other memory (the
+    companion does, up to memories_recalled); those are not recalls."""
+    from ai_character_engine.memory.models import RetrievedMemory
+    from ai_character_engine.memory.trace import RetrievalResult, RetrievalTrace
+
+    matched = MemoryRecord("mei", "The user likes strong black tea.", importance=0.5)
+    padding = MemoryRecord("mei", "The user keeps a cat.", importance=0.5)
+    store = InMemoryMemoryStore([matched, padding])
+
+    class Padding:
+        def retrieve_with_trace(self, *, character_id, query, limit=5, now=None):
+            memories = (RetrievedMemory(matched, 0.6), RetrievedMemory(padding, 0.0))
+            return RetrievalResult(
+                memories,
+                RetrievalTrace(
+                    strategy="padded", character_id=character_id, query=query,
+                    requested_limit=limit, total_records=2, active_records=2,
+                    filtered_inactive=0, candidates=(), selected_memory_ids=(matched.id, padding.id),
+                    elapsed_ms=0.0,
+                ),
+            )
+
+    manager = MemoryManager(store=store, retriever=Padding())
+    manager.retrieve_for_event(character_id="mei", event=CharacterEvent.user_message("Tea?"))
+    by_id = {r.id: r for r in store.list_for_character("mei")}
+    assert by_id[matched.id].metadata["recalled"] == 1
+    assert "recalled" not in by_id[padding.id].metadata

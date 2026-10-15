@@ -23,6 +23,9 @@ EXPERIENCE_KIND = "interaction_experience"
 # vote in either direction is then a step, not a verdict.
 INITIAL_SUPPORT = 2
 _VOTES = ("UPVOTE", "DOWNVOTE", "NOOP")
+# EDIT is answered by the voter but counted by nobody: the candidate then
+# takes the full extraction review, as a revision does.
+VOTE_EDIT = "EDIT"
 
 
 def experience_scope(character_id: str, user_id: str) -> str:
@@ -141,12 +144,14 @@ def experience_vote_messages(existing: Mapping, source: Mapping) -> list[Message
         "user_feedback shows what the user said now. Decide: UPVOTE = the user's words "
         "confirm the interpretation again (the same preference, limit or reaction); "
         "DOWNVOTE = the user's words contradict it or tell the character it was wrong; "
+        "EDIT = the user's words add, narrow or change a limit, exception or condition "
+        "that the interpretation does not state (it will be read in full separately); "
         "NOOP = the exchange neither confirms nor contradicts it. "
-        'Return JSON only: {"action":"UPVOTE"|"DOWNVOTE"|"NOOP","user_excerpt":str,'
-        '"reason":str}. For UPVOTE and DOWNVOTE, user_excerpt must be the exact, '
-        "contiguous excerpt of user_feedback that confirms or contradicts (several exact "
-        "excerpts may be joined with ... in their original order); empty for NOOP. "
-        "Keep reason under 30 words."
+        'Return JSON only: {"action":"UPVOTE"|"DOWNVOTE"|"EDIT"|"NOOP","user_excerpt":str,'
+        '"reason":str}. For UPVOTE, DOWNVOTE and EDIT, user_excerpt must be the exact, '
+        "contiguous excerpt of user_feedback that confirms, contradicts or adds the limit "
+        "(several exact excerpts may be joined with ... in their original order); empty "
+        "for NOOP. Keep reason under 30 words."
     )
     data = {
         "existing": {
@@ -180,6 +185,16 @@ def apply_vote(support: int, vote: Mapping, feedback: str) -> int | None:
     return int(support) + (1 if action == "UPVOTE" else -1)
 
 
+def vote_already_counted(metadata: Mapping, event_id: str) -> bool:
+    """Whether this exchange already voted on the record (after a restart the
+    commit journal is empty; the record remembers)."""
+    for key in ("support_events", "objections"):
+        for entry in metadata.get(key) or ():
+            if isinstance(entry, Mapping) and entry.get("event_id") == event_id:
+                return True
+    return False
+
+
 def experience_support(record: MemoryRecord) -> int:
     """Records stored before support was counted hold the initial amount."""
     value = record.metadata.get("support", INITIAL_SUPPORT)
@@ -198,9 +213,12 @@ def experience_topics(records: Sequence[MemoryRecord], limit: int = 4) -> list[d
         return record.metadata.get("observed_at", record.created_at.isoformat())
 
     for record in sorted(records, key=observed):
+        # A record voted down to nothing stays in its topic's history, so the
+        # topic does not fall back to the view the user had replaced.
+        voted_out = record.metadata.get("retired_by_votes") is True
         if (
             record.kind != EXPERIENCE_KIND
-            or not record.is_active
+            or not (record.is_active or voted_out)
             or not record_has_verified_interpretation(record)
         ):
             continue
@@ -215,7 +233,7 @@ def experience_topics(records: Sequence[MemoryRecord], limit: int = 4) -> list[d
         if len(result) >= max(0, limit):
             break
         last = episodes[-1]
-        if experience_support(last) <= 0:
+        if experience_support(last) <= 0 or not last.is_active:
             continue
         start = max(
             (i for i, r in enumerate(episodes) if r.metadata.get("revises")), default=0
@@ -559,14 +577,14 @@ def _reviewed_components(
     With a checklist, the review's own problem lists are not consulted: the
     verdict on each component comes from the yes/no answers it could cite.
     """
-    if not _review_gate(review, feedback):
+    if not _review_gate(review, feedback) or not _no_problems(review, "topic"):
         return []
     if checklist is not None:
         flags = checklist_flags(candidate or {}, feedback, checklist)
         if flags is None or flags["outcome"]:
             return []
         return ["outcome"] if flags["lesson"] else ["outcome", "lesson"]
-    if not _no_problems(review, "topic") or not _no_problems(review, "outcome"):
+    if not _no_problems(review, "outcome"):
         return []
     accepted = ["outcome"]
     if _no_problems(review, "lesson"):

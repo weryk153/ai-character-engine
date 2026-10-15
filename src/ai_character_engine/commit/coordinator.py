@@ -30,6 +30,7 @@ from ai_character_engine.memory.experience import (
     experience_scope,
     experience_support,
     normalize_experience,
+    vote_already_counted,
     verified_experience,
     record_has_verified_interpretation,
 )
@@ -574,6 +575,16 @@ class CognitiveCommitCoordinator:
                     "experience_vote_requires_users_words",
                     current_revision,
                 )
+            if vote_already_counted(
+                self._voted_record(proposal).metadata,
+                str(proposal.provenance.get("foreground_event_id")),
+            ):
+                return self._finalize(
+                    proposal,
+                    CommitStatus.DUPLICATE,
+                    "experience_vote_already_counted",
+                    current_revision,
+                )
         if proposal.target == "state.emotion_candidate":
             evidence_type = str(proposal.provenance.get("evidence_type", ""))
             if evidence_type in {"quoted_reference", "user_instruction", "memory_operation"}:
@@ -909,6 +920,8 @@ class CognitiveCommitCoordinator:
                 metadata["support_events"].append(entry)
             elif action == "DOWNVOTE":
                 metadata["objections"].append(entry)
+            if support <= 0:
+                metadata["retired_by_votes"] = True
             # Voted down to nothing: withdrawn like a memory the user asked to
             # forget, kept on disk with its objections for inspection.
             updated = replace(

@@ -94,7 +94,9 @@ class MemoryManager:
     def _mark_recalled(self, character_id: str, memories) -> None:
         """Count the recall on each returned record: what keeps coming up
         fades slower (retention), and a host can see what she leans on."""
-        ids = {item.record.id for item in memories}
+        # A host retriever may pad its result with every other memory
+        # (score 0); only what matched counts as recalled.
+        ids = {item.record.id for item in memories if item.score > 0}
         if not ids:
             return
         now = self._now().isoformat()

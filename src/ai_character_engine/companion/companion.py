@@ -1480,8 +1480,12 @@ class CharacterCompanion:
         restarts, but never enter another person's context.
         """
         scope = experience_scope(self.character.id, user_id)
+        # A record voted down to nothing stays in its topic's history (so the
+        # topic does not fall back to the view it replaced); one the host
+        # asked to forget is gone from here.
         return tuple(r for r in self._memory_store.list_for_character(scope)
-                     if r.kind == EXPERIENCE_KIND and r.is_active)
+                     if r.kind == EXPERIENCE_KIND
+                     and (r.is_active or r.metadata.get("retired_by_votes") is True))
 
     def forget_interaction_experiences(self, user_id: str, record_ids: Sequence[str]) -> None:
         """Withdraw selected interpretations without changing the initial persona."""

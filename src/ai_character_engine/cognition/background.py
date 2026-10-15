@@ -30,6 +30,7 @@ from ai_character_engine.memory.experience import (
     CHECKLIST_QUESTIONS,
     EXPERIENCE_TARGET,
     EXPERIENCE_VOTE_TARGET,
+    VOTE_EDIT,
     checklist_key,
     condition_check_required,
     experience_checklist_messages,
@@ -620,6 +621,9 @@ class StructuredBackgroundWorker:
                 raise
             except Exception:
                 return [], {"accepted": False, "reason": "vote_unavailable"}
+            if vote.get("action") == VOTE_EDIT:
+                vote = None  # a limit the interpretation lacks: read the candidate in full
+        if existing is not None and not proposal.payload.get("revises") and vote is not None:
             return [
                 replace(
                     proposal,

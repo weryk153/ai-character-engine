@@ -1066,3 +1066,67 @@ async def test_review_calls_go_to_the_review_client_when_one_is_mapped(tmp_path)
     (record,) = c.interaction_experiences("alice")
     assert record.metadata["support"] == 3
     await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_view_voted_out_does_not_bring_back_the_one_it_replaced(tmp_path):
+    """Review finding: at support 0 the newest record dropped out and the
+    topic fell back to the view the user had replaced."""
+    def worker(messages):
+        source = json.loads(messages[1].content)
+        if "existing" in source:
+            return {"action": "DOWNVOTE", "user_excerpt": source["feedback"], "reason": ""}
+        result = lesson(messages)
+        if "experience" in result and "changed my mind" in result["experience"]["user_quote"]:
+            result["experience"].update(
+                lesson="They now welcome this nickname when we are alone.",
+                outcome="They explicitly revised the earlier boundary.",
+                revises=True,
+            )
+        return result
+
+    c = companion(tmp_path, {"interaction": Worker(worker)}, character_development=True)
+    for text in [
+        "Hello",
+        "Please don't use nicknames.",
+        "I changed my mind; that nickname is fine when we're alone.",
+        "Hm, no, that is not it.",
+        "Still not it.",
+    ]:
+        await c.reply(text, conversation_id="one", user_id="alice")
+        await c.settle()
+    assert experience_topics(c.interaction_experiences("alice")) == []
+    await c.close()
+
+
+def test_checklist_mode_still_refuses_topic_problems():
+    feedback = "You can call me Shiro, but only at home."
+    candidate = {"topic": "nicknames", "topic_id": None, "lesson": "At home I may call them Shiro.",
+                 "outcome": "The user allows Shiro at home.", "character_quote": "Shiro?",
+                 "user_quote": feedback, "basis": "boundary", "revises": False}
+    review = {**approving_review({"user_feedback": feedback}), "topic_problems": ["revises without change"]}
+    assert experience_review_proof(candidate, review, feedback, None, checklist_answers()) is None
+
+
+@pytest.mark.asyncio
+async def test_a_vote_that_asks_for_a_revision_goes_through_the_full_review(tmp_path):
+    """Feedback that adds a limit to a held topic is not a mere upvote: the
+    voter answers EDIT and the candidate takes the full review path."""
+    worker, calls = voting("EDIT")
+    c = companion(tmp_path, {"interaction": Worker(worker)}, character_development=True)
+    for text in ["Hello", "Please don't use nicknames.", "And not my surname either."]:
+        await c.reply(text, conversation_id="one", user_id="alice")
+        await c.settle()
+    assert calls == ["extract", "review", "extract", "vote", "review"]
+    assert len(c.interaction_experiences("alice")) == 2
+    await c.close()
+
+
+def test_a_vote_already_counted_for_the_same_exchange_is_known():
+    from ai_character_engine.memory.experience import vote_already_counted
+
+    record = {"support_events": [{"event_id": "e1"}], "objections": [{"event_id": "e2"}]}
+    assert vote_already_counted(record, "e1")
+    assert vote_already_counted(record, "e2")
+    assert not vote_already_counted(record, "e3")
+    assert not vote_already_counted({}, "e1")
