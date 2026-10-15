@@ -1031,6 +1031,7 @@ class CharacterCompanion:
         meta_dir: str | Path | None = None,
         model_access: ModelAccess | None = None,
         actions_llm: Any | None = None,
+        review_llm: Any | None = None,
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, reply_check,
@@ -1058,6 +1059,12 @@ class CharacterCompanion:
         (reply_actions); a short answer at temperature 0 serves it best.
         Without it: the ``"actions"`` client of a ``background_llm``
         mapping, else the one ``background_llm``, else ``llm``.
+
+        ``review_llm`` reviews what she learned from the user's feedback
+        (the evidence review, the condition comparison, votes): a model
+        larger than the one that extracts serves it best. Without it: the
+        ``"interaction_review"`` client of a ``background_llm`` mapping, else
+        the interaction client.
         """
         self.settings = settings or CompanionSettings()
         self._clock: Callable[[], float] = clock or time.time
@@ -1230,7 +1237,11 @@ class CharacterCompanion:
                 lifecycle_history=self.settings.records_kept,
             ),
         )
-        self._background = self._build_background(clients)
+        review = review_llm
+        if review is None and isinstance(background_llm, Mapping):
+            review = background_llm.get("interaction_review")
+        self._review_llm = review
+        self._background = self._build_background(clients, review)
         if self._background is not None:
             self._background.output_language = self.settings.language
             self._background.mood_half_life_seconds = self.settings.mood_half_life_seconds
@@ -1363,7 +1374,7 @@ class CharacterCompanion:
             return 1 if self.settings.memory_conflicts else 0
         return int(getattr(self.settings, f"{worker.name}_every"))
 
-    def _build_background(self, clients) -> BackgroundCognitionRuntime | None:
+    def _build_background(self, clients, review_client=None) -> BackgroundCognitionRuntime | None:
         if not clients:
             return None
         specs, endpoints, policies = [], [], {}
@@ -1397,6 +1408,27 @@ class CharacterCompanion:
                 )
             )
             policies[worker.role] = CognitiveRolePolicy(primary_endpoint_ids=(endpoint_id,))
+        if CognitiveRole.INTERACTION in policies:
+            # The evidence review of what she learned: its own client when the
+            # host gives one (a larger model), else the interaction client.
+            if review_client is not None:
+                endpoints.append(
+                    ModelEndpoint(
+                        endpoint_id="companion-interaction_review",
+                        client=PoliteClient(
+                            review_client,
+                            self._access,
+                            rank=len(clients),
+                            timeout=self.settings.call_timeout_seconds,
+                            own_lane=False,
+                        ),
+                    )
+                )
+                policies[CognitiveRole.INTERACTION_REVIEW] = CognitiveRolePolicy(
+                    primary_endpoint_ids=("companion-interaction_review",)
+                )
+            else:
+                policies[CognitiveRole.INTERACTION_REVIEW] = policies[CognitiveRole.INTERACTION]
         return BackgroundCognitionRuntime(
             self._tasks,
             CognitiveModelRuntime(

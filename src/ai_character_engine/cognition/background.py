@@ -584,10 +584,19 @@ class StructuredBackgroundWorker:
             ],
         )
 
+    def _review_role(self) -> CognitiveRole:
+        """The review's own role when the host gave it a policy, else the worker's."""
+        router = getattr(self.models, "router", None)
+        policies = getattr(router, "policies", None) or {}
+        if CognitiveRole.INTERACTION_REVIEW in policies:
+            return CognitiveRole.INTERACTION_REVIEW
+        return _ROLE_BY_KIND[self.spec.kind]
+
     async def _confirmed_interaction(
         self, context: TaskContext, proposal: TaskProposal
     ):
         source = context.request.payload["interaction"]
+        role = self._review_role()
         topic_id = proposal.payload.get("topic_id")
         existing = next(
             (
@@ -602,7 +611,7 @@ class StructuredBackgroundWorker:
             # one vote on that interpretation instead of a new extraction review.
             try:
                 response = await self.models.generate(
-                    _ROLE_BY_KIND[self.spec.kind],
+                    role,
                     experience_vote_messages(existing, source),
                     requirements=self.spec.requirements,
                 )
@@ -626,7 +635,7 @@ class StructuredBackgroundWorker:
             ], {"accepted": True, "vote": vote}
         try:
             response = await self.models.generate(
-                _ROLE_BY_KIND[self.spec.kind],
+                role,
                 experience_review_messages(source, proposal.payload),
                 requirements=self.spec.requirements,
             )
@@ -645,7 +654,7 @@ class StructuredBackgroundWorker:
                 for question, _, _ in CHECKLIST_QUESTIONS:
                     try:
                         response = await self.models.generate(
-                            _ROLE_BY_KIND[self.spec.kind],
+                            role,
                             experience_checklist_messages(
                                 source, proposal.payload, component, question
                             ),
@@ -668,7 +677,7 @@ class StructuredBackgroundWorker:
             # lesson that reworded one. Compare them apart from everything else.
             try:
                 response = await self.models.generate(
-                    _ROLE_BY_KIND[self.spec.kind],
+                    role,
                     experience_condition_messages(
                         experience_review_conditions(review), proposal.payload
                     ),

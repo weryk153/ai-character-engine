@@ -1030,3 +1030,39 @@ async def test_a_vote_in_paraphrased_words_changes_nothing(tmp_path):
     assert record.metadata["support"] == 2
     assert record.metadata["objections"] == []
     await c.close()
+
+
+@pytest.mark.asyncio
+async def test_review_calls_go_to_the_review_client_when_one_is_mapped(tmp_path):
+    """A host can give the evidence review (and the condition comparison and
+    votes) a model of its own, apart from the one that extracts."""
+    where = []
+
+    def extracting(messages):
+        source = json.loads(messages[1].content)
+        where.append(("extractor", "candidate" in source or "existing" in source))
+        return lesson(messages)
+
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        where.append(("reviewer", "candidate" in source or "existing" in source))
+        return lesson(messages)
+
+    c = companion(
+        tmp_path,
+        {"interaction": Worker(extracting), "interaction_review": Worker(reviewing)},
+        character_development=True,
+    )
+    for text in ["Hello", "Please don't use nicknames.", "I still prefer my name."]:
+        await c.reply(text, conversation_id="one", user_id="alice")
+        await c.settle()
+    # extract, review, extract, vote: the extractor never sees a review or a vote.
+    assert where == [
+        ("extractor", False),
+        ("reviewer", True),
+        ("extractor", False),
+        ("reviewer", True),
+    ]
+    (record,) = c.interaction_experiences("alice")
+    assert record.metadata["support"] == 3
+    await c.close()

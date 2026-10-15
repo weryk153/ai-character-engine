@@ -42,6 +42,11 @@ class CognitiveRole(str, Enum):
     # Her day, in her words, once a day.
     DIARY = "diary"
     INTERACTION = "interaction"
+    # The evidence review of what she learned from the user (and the
+    # condition comparison and votes); a role of its own so that a host can
+    # give it a larger model than the one that extracts. Falls back to the
+    # interaction model when no policy names it.
+    INTERACTION_REVIEW = "interaction_review"
 
 
 class CognitiveOptimization(str, Enum):

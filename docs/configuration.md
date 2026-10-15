@@ -57,6 +57,11 @@ reads explicit feedback on a preceding character reply. Set it to `0` to stop
 learning. `interaction_topics_shown=4` bounds the recent topic interpretations
 appended to context. For a background client mapping, supply the `interaction`
 key; a single background client is shared with this worker automatically.
+The evidence review, the condition comparison and votes use the
+`interaction_review` key of that mapping, or `CharacterCompanion(review_llm=...)`,
+when given: a larger model than the one that extracts (a local 9B extracts
+candidates well enough, but let reworded conditions through when it reviewed
+them; a 27B did not). Without one they use the interaction client.
 
 Pass a stable, host-owned `user_id` to `reply` or `speak_up`. The default `None`
 disables both retrieval and learning for that turn. A conversation ID or display
