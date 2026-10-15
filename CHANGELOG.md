@@ -1,7 +1,10 @@
 # Changelog
 
-## 1.3.3
+## 1.4.0
 
+- Interaction experience, opt in. With `character_development=True` and a host-owned `user_id`, a background worker reads explicit feedback on a preceding reply and proposes one interpretation (what happened, what to do next time), quoting both sides. Nothing is kept on the extractor's word: an outside evidence review checks the quotes against the user's actual words, and when the user attached a condition ("if you catch me", "only at home"), a separate comparison checks that the outcome and the lesson keep it; a "changed" verdict must cite the conflicting text verbatim or nothing is stored. The user's own conditions are kept beside each experience and shown with it. Off by default; evaluate the review with your model first, a local 9B did not hold it.
+- Self-view revisions and voluntary silence, opt in. With `character_development=True` the self-memory worker may revise a taste, habit or opinion she stated before; every earlier record is checked on its own, without the claimed change to bias it, and keeps its evidence when reaffirmed. `speak_up(allow_silence=True)` lets her stay quiet on an idle opportunity.
+- `warm_up(conversation_id)` reads what her next reply there starts with, so the first reply in an opened conversation restores the prompt cache (3584–4096 cached tokens instead of 2048 on LM Studio with a local 9B).
 - A reply asked again is said. When everything she was about to say repeated what she had said (or sounded like an assistant), she was asked again; when the second answer was left out too, the user got no answer at all, 6 turns in 42 in a host's test. What she says when asked again is now passed on as it is. A remark of her own may still end in silence.
 
 ## 1.3.2
