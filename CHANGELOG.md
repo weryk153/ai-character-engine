@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- Each interaction interpretation carries a support count (2 when stored). Later feedback on a topic she already holds is one vote call instead of a new extraction review: `UPVOTE`, `DOWNVOTE`, `EDIT` (a limit the interpretation lacks; the candidate then takes the full review) or `NOOP`, and an up- or downvote counts only with the user's words quoted exactly, checked at commit. At support 1 the lesson leaves the context and the observed outcome stays; at 0 the record is marked forgotten with its objections, and the topic shows nothing rather than the view it had replaced. One wrong vote in either direction is a step, not a verdict.
+- The evidence review, the condition comparison and votes can run on a model of their own (`CharacterCompanion(review_llm=...)`, or the `interaction_review` key of a background mapping; role `CognitiveRole.INTERACTION_REVIEW`), falling back to the interaction client. A local 9B extracts candidates well enough but let reworded conditions through when it reviewed them; a 27B did not.
+- `interaction_review_checklist=True` (off by default, unproven on small models): six yes/no questions, one call each, whose yes must copy the words of the text, in place of the review's problem lists; proof version 4.
+- Memories are ranked by retention, e^(-days since last recall / (1 + recalls)), in place of a fixed 30-day recency curve; every retrieval counts a recall on the records that matched (`recalled`, `last_recalled_at`), and a memory of importance 0.8 or more never fades.
+
 ## 1.4.0
 
 - Interaction experience, opt in. With `character_development=True` and a host-owned `user_id`, a background worker reads explicit feedback on a preceding reply and proposes one interpretation (what happened, what to do next time), quoting both sides. Nothing is kept on the extractor's word: an outside evidence review checks the quotes against the user's actual words, and when the user attached a condition ("if you catch me", "only at home"), a separate comparison checks that the outcome and the lesson keep it; a "changed" verdict must cite the conflicting text verbatim or nothing is stored. The user's own conditions are kept beside each experience and shown with it. Off by default; evaluate the review with your model first, a local 9B did not hold it.
