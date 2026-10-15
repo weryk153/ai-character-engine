@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.5.1
+
+- Memory of the user follows the user. A host that names its user (`reply(user_id=...)`, Tomoshibi's `interaction_user_id`) gets one memory scope per user instead of one per conversation: a new chat with the same person no longer starts from zero (she said she had just met a user whose cat's name she had written down the day before; 4 of 25 on a long-memory benchmark for that reason). Without a user id the scope stays the conversation's, as for a stream.
+- Experiences and self-views are note lines in the conversation, not the tail of the system prompt. In the transcript placement a new experience appended to the system prompt made the whole conversation after it read again (about 2,000 tokens on a local 9B, measured). Each is now a `- experience: ` / `- self-view: ` line of the turn's note, said once and again only when it changes (`- experience withdrawn: ` when an interpretation is no longer held); only the explanation stays in the system prompt, which is the same with and without them.
+
 ## 1.5.0
 
 - Each interaction interpretation carries a support count (2 when stored). Later feedback on a topic she already holds is one vote call instead of a new extraction review: `UPVOTE`, `DOWNVOTE`, `EDIT` (a limit the interpretation lacks; the candidate then takes the full review) or `NOOP`, and an up- or downvote counts only with the user's words quoted exactly, checked at commit. At support 1 the lesson leaves the context and the observed outcome stays; at 0 the record is marked forgotten with its objections, and the topic shows nothing rather than the view it had replaced. One wrong vote in either direction is a step, not a verdict.
