@@ -5135,3 +5135,23 @@ def test_a_failed_warm_up_is_no_turn_and_raises_nothing(tmp_path):
         return warmed, len(current.runtime.history)
 
     assert run(scenario()) == (False, 0)
+
+
+@pytest.mark.asyncio
+async def test_what_the_user_said_follows_the_user_across_conversations(tmp_path):
+    """With a host-owned user_id, memory of the user belongs to the user, not
+    to the conversation it was said in: a new chat does not start from zero.
+    Without one it stays with the conversation, as for a stream."""
+    foreground = Foreground()
+    c = companion(tmp_path, {"memory": Worker(dawns_work)}, llm=foreground, memory_every=1)
+    await c.reply(DAWN, conversation_id="a", user_id="dawn")
+    await c.settle()
+    await c.reply("What do I do for a living?", conversation_id="b", user_id="dawn")
+    assert "Dawn works at a print shop" in "\n".join(m.content for m in foreground.calls[-1])
+    assert c.memories("b") == ["Dawn works at a print shop."]
+    await c.reply("Hello", conversation_id="c", user_id="bob")
+    assert "print shop" not in "\n".join(m.content for m in foreground.calls[-1])
+    await c.reply("Hello", conversation_id="d")
+    assert "print shop" not in "\n".join(m.content for m in foreground.calls[-1])
+    assert c.memories("d") == []
+    await c.close()

@@ -13,6 +13,7 @@ policies that were needed.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import copy
 import inspect
 import itertools
@@ -1083,6 +1084,9 @@ class CharacterCompanion:
         # None is a conversation too: the one of a host that names none.
         self._active: str | None = None
         self._current_user_id: str | None = None
+        # Which host-owned user each conversation is with, once reply() named
+        # one: memory of the user then follows the user across conversations.
+        self._user_of: dict[str | None, str] = {}
         self._interaction_source: dict | None = None
         self._started = False
         # Per conversation: what was said, and the notes written into it.
@@ -1521,8 +1525,13 @@ class CharacterCompanion:
     # --- conversations ---------------------------------------------------------
 
     def _scope(self, conversation_id: str | None) -> str:
-        """Memory follows the conversation; state, goals and thoughts belong to
-        the character."""
+        """Memory of the user follows the user when the host names one
+        (reply(user_id=...)), else the conversation; state, goals and thoughts
+        belong to the character."""
+        user_id = self._user_of.get(conversation_id)
+        if user_id:
+            digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()
+            return f"{self.character.id}#user:{digest}"
         if not conversation_id:
             return self.character.id
         return f"{self.character.id}:{conversation_id}"
@@ -1793,6 +1802,10 @@ class CharacterCompanion:
                 self._reply_fixes = self._take_reply_note(conversation_id)
                 self._conflict_notes = self._take_conflict_notes(conversation_id)
                 self._current_user_id = user_id
+                if user_id:
+                    if self._user_of.get(conversation_id) != user_id:
+                        self._user_of[conversation_id] = user_id
+                        self.runtime.memory_scope_id = self._scope(conversation_id)
                 self._interaction_source = None
                 if self.settings.character_development and user_id and not skip_memory and not proactive:
                     previous = next((m.content for m in reversed(self.runtime.history)

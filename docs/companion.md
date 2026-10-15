@@ -301,8 +301,17 @@ prompt extends the one before it and the inference server can reuse its work
 
 ## Conversations
 
-`conversation_id` selects the history and the memory scope: what she
-remembers of the user belongs to the conversation it was said in.
+`conversation_id` selects the history and, without a user, the memory scope:
+what she remembers of the user belongs to the conversation it was said in.
+When `reply(user_id=...)` names a host-owned user, memory of that user follows
+the user instead (one scope per user id, across conversations and restarts):
+a new chat with the same person does not start from zero, and what was said
+in a conversation with no user id, or with another, stays out of it. A
+conversation is with one user; the first `user_id` a reply names there sets
+its scope for the rest of the process, and after a restart the scope is set
+again by the first reply that names the user. `memories(conversation_id)`,
+`edit_memories` and `forget` act on that conversation's scope, so for a user's
+conversation they act on the user's memory.
 
 Who she is belongs to the character and is the same in every conversation: her
 state and mood, her long-term goals and beliefs, and what she said about her
