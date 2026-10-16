@@ -12,20 +12,18 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from datetime import datetime
 
 from ai_character_engine.llm.models import Message
 from ai_character_engine.memory.experience import (
     EXPERIENCE_KIND,
     LEGACY_IMPORTANCE,
-    experience_topics,
+    _topic_entries,
 )
 from ai_character_engine.memory.models import MemoryRecord
 
 RELATIONSHIP_VIEW_KIND = "relationship_view"
 RELATIONSHIP_VIEW_TARGET = "memory.relationship_view_candidate"
 _VIEW_CHARS = 200
-_ALL = 10_000
 
 
 def _observed(record: MemoryRecord) -> str:
@@ -34,15 +32,7 @@ def _observed(record: MemoryRecord) -> str:
 
 def current_topics(experiences: Sequence[MemoryRecord]) -> dict[str, MemoryRecord]:
     """topic_id -> the record that is that topic's interpretation now."""
-    shown = {t["topic_id"] for t in experience_topics(experiences, _ALL)}
-    latest: dict[str, MemoryRecord] = {}
-    for record in sorted(experiences, key=_observed):
-        if record.kind != EXPERIENCE_KIND:
-            continue
-        topic_id = record.metadata.get("topic_id")
-        if isinstance(topic_id, str) and topic_id in shown and record.is_active:
-            latest[topic_id] = record
-    return latest
+    return {made["topic_id"]: record for made, record in _topic_entries(experiences)}
 
 
 def view_holds(view: MemoryRecord, current: Mapping[str, MemoryRecord]) -> bool:
@@ -59,12 +49,18 @@ def _active_views(views: Sequence[MemoryRecord]) -> list[MemoryRecord]:
 
 
 def held_views(views, experiences) -> list[MemoryRecord]:
-    current = current_topics(experiences)
-    return [v for v in _active_views(views) if view_holds(v, current)]
+    return _held_from(views, current_topics(experiences))
 
 
 def views_to_review(views, experiences) -> list[MemoryRecord]:
-    current = current_topics(experiences)
+    return _review_from(views, current_topics(experiences))
+
+
+def _held_from(views, current) -> list[MemoryRecord]:
+    return [v for v in _active_views(views) if view_holds(v, current)]
+
+
+def _review_from(views, current) -> list[MemoryRecord]:
     return [v for v in _active_views(views) if not view_holds(v, current)]
 
 
@@ -98,29 +94,24 @@ def pending_importance(experiences, views) -> float:
 
 def reflection_source(experiences, views, limit: int) -> dict | None:
     """What a reflection reads: held topics with short ids, and her views."""
-    topics = experience_topics(experiences, _ALL)
-    if not topics or limit <= 0:
+    entries = _topic_entries(experiences)
+    if not entries or limit <= 0:
         return None
-    current = current_topics(experiences)
+    current = {made["topic_id"]: record for made, record in entries}
     offered = []
     ids = {}
-    for index, topic in enumerate(topics, 1):
-        record = current.get(topic["topic_id"])
-        if record is None:
-            continue
+    for index, (topic, record) in enumerate(entries, 1):
         short = f"x{index}"
         ids[short] = {"record_id": record.id, "topic_id": topic["topic_id"]}
         offered.append({
             "id": short, "topic": topic["topic"], "interpretation": topic["interpretation"],
             "conditions": topic["conditions"], "distinct_exchanges": topic["distinct_exchanges"],
         })
-    if not offered:
-        return None
     return {
         "experiences": offered,
         "ids": ids,
-        "views": [one.summary for one in held_views(views, experiences)],
-        "to_review": [one.summary for one in views_to_review(views, experiences)],
+        "views": [one.summary for one in _held_from(views, current)],
+        "to_review": [one.summary for one in _review_from(views, current)],
         "limit": limit,
     }
 

@@ -1,6 +1,5 @@
 """Relationship views: derived from reviewed experiences, held only while they are."""
 
-import json
 from dataclasses import replace
 
 from ai_character_engine.memory.relationship import (
@@ -46,8 +45,12 @@ def test_forgetting_voting_out_or_revising_a_source_withdraws_the_view():
     assert held_views([v], [forgotten]) == []
     voted_out = replace(a, metadata={**a.metadata, "support": 0, "retired_by_votes": True})
     assert held_views([v], [voted_out]) == []
+    stored = replace(
+        a, status="forgotten",
+        metadata={**a.metadata, "support": 0, "retired_by_votes": True},
+    )
+    assert held_views([v], [stored]) == []
     newer = _held("nick", "Nicknames are fine at home.", minutes=5, topic_id=a.metadata["topic_id"])
-    newer = replace(newer, metadata={**newer.metadata, "revises": True})
     assert held_views([v], [a, newer]) == []
     assert views_to_review([v], [a, newer]) == [v]
 
@@ -95,3 +98,22 @@ def test_records_from_before_importance_events_count_at_their_old_importance():
 
 def test_nothing_to_reflect_on_without_held_experiences():
     assert reflection_source([], [], limit=3) is None
+
+
+def test_an_unverified_later_record_does_not_become_the_current_interpretation():
+    a = _held("nick", "No nicknames.")
+    b = _held("nick", "Nicknames are fine.", minutes=5, topic_id=a.metadata["topic_id"])
+    b = replace(b, summary="Something the review never accepted.")
+    assert current_topics([a, b])[a.metadata["topic_id"]].id == a.id
+    source = reflection_source([a, b], [], limit=3)
+    assert source["ids"][source["experiences"][0]["id"]]["record_id"] == a.id
+
+
+def test_a_counted_vote_after_the_last_reflection_adds_its_importance():
+    a = _held("nick", "No nicknames.", minutes=0)
+    a = replace(a, metadata={**a.metadata, "importance_events": [
+        {"event_id": "1", "importance": 0.9, "observed_at": a.metadata["observed_at"]},
+        {"event_id": "2", "importance": 0.3, "observed_at": "2026-10-01T05:00:00+00:00"},
+    ]})
+    v = view("Earlier view.", a, minutes=100)
+    assert pending_importance([a], [v]) == 0.3

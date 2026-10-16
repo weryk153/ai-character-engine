@@ -234,15 +234,8 @@ def experience_support(record: MemoryRecord) -> int:
     return int(value) if isinstance(value, (int, float)) else INITIAL_SUPPORT
 
 
-def experience_topics(
-    records: Sequence[MemoryRecord], limit: int = 4, query: str | None = None
-) -> list[dict]:
-    """Latest interpretation per topic, with its evidence and revision history.
-
-    A topic whose support fell to one is shown as the observation only; at
-    zero it is not shown at all. With a query, topics sharing more word
-    pieces with it come first; otherwise (and among equals) newest first.
-    """
+def _topic_entries(records: Sequence[MemoryRecord]) -> list[tuple[dict, MemoryRecord]]:
+    """Shown topics, newest first, each with the record that produced it."""
     groups: dict[str, list[MemoryRecord]] = {}
 
     def observed(record):
@@ -311,6 +304,19 @@ def experience_topics(
         made = entry(topic_id, episodes)
         if made is not None:
             entries.append((made, episodes[-1]))
+    return entries
+
+
+def experience_topics(
+    records: Sequence[MemoryRecord], limit: int = 4, query: str | None = None
+) -> list[dict]:
+    """Latest interpretation per topic, with its evidence and revision history.
+
+    A topic whose support fell to one is shown as the observation only; at
+    zero it is not shown at all. With a query, topics sharing more word
+    pieces with it come first; otherwise (and among equals) newest first.
+    """
+    entries = _topic_entries(records)
     if query:
         wanted = word_pieces(query) - {NUMBER_PIECE}
 
