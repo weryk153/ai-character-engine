@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-CJK_RUN = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿가-힯]+")
+CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
 # Stands for "some number": an age against an age. Useless for telling topics
 # apart, where any two texts with a number would look alike.
 NUMBER_PIECE = "#"

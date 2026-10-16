@@ -285,9 +285,14 @@ def experience_topics(
         def overlap(pair) -> int:
             made, last = pair
             keywords = last.metadata.get("keywords")
+            named = (
+                [k for k in keywords if isinstance(k, str)]
+                if isinstance(keywords, list)
+                else []
+            )
             words = (
-                " ".join(k for k in keywords if isinstance(k, str))
-                if isinstance(keywords, list) and keywords
+                " ".join(named)
+                if named
                 else f"{made['topic']} {made['interpretation']}"
             )
             return len(wanted & (word_pieces(words) - {NUMBER_PIECE}))

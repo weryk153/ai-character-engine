@@ -1197,7 +1197,7 @@ def test_without_a_query_topics_are_exactly_the_newest():
 def test_a_number_alone_does_not_make_two_topics_alike():
     records = [
         _held("age", "I am 30.", minutes=0),
-        *(_held(f"other{i}", f"Something else {i}.", minutes=10 + i) for i in range(5)),
+        *(_held(f"other{chr(97 + i)}", f"Something else {chr(97 + i)}.", minutes=10 + i) for i in range(5)),
     ]
     matched = experience_topics(records, 1, query="see you at 7")
-    assert matched[0]["topic"] == "other4"
+    assert matched[0]["topic"] == "othere"
