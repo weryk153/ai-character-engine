@@ -597,7 +597,7 @@ model can run every worker on every turn.
 | `across_runs_framing`, `across_runs_in_context` | None, 8 | The line above what she remembers across runs in her system prompt (None: `From before this world began again, you remember:`), and how many of the newest go there (0: none) |
 | `interaction_every`, `interaction_topics_shown` | 1, 4 | With `character_development`: read explicit feedback on her preceding reply every N turns (0: off); how many topic interpretations reach her |
 | `interaction_review_checklist`, `interaction_review_mode` | false, "" | How an interaction candidate is reviewed: problem lists, the six-question checklist, or `"claims"` (three calls); see the configuration guide |
-| `relationship_every`, `relationship_reflection_threshold`, `relationship_views_shown` | 1, 1.0, 3 | Relationship views: run the worker every N turns (0: off); the importance of new experiences and votes since the last reflection that triggers it; how many views reach her |
+| `relationship_every`, `relationship_reflection_threshold`, `relationship_views_shown` | 1, 1.0, 3 | Relationship views: run the worker every N turns (0: off); the importance of new experiences and votes since the last reflection that triggers it; the most views one reflection keeps (and so how many reach her) |
 
 ## Telling what the engine offers
 

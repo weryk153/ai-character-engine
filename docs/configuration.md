@@ -161,11 +161,13 @@ checklist when `interaction_review_checklist` is set; `"checklist"` forces the
 checklist; `"claims"` asks, once per component, for the claims it makes, each as
 `{claim, subject, said_by, quote}` with `subject` one of `user`, `character`,
 `other` and `said_by` one of `user`, `character`, `nobody`, `plan`. Code then
-judges the rest. A claim is unstated when nobody said it and it is not a plan
-(a plan may stand only in the lesson, with no quote and no reason word). A
-claim is on the wrong speaker when its quote is not found verbatim on the
-speaker's side (at least 4 non-space characters), or when its subject is the
-user and the character is named as having said it. Whether the lesson widens a
+judges the rest. A claim is unstated when nobody said it, when its plan
+breaks the plan rule (a plan may stand only in the lesson, with no quote and no
+reason word), or when its quote is found on neither side; it is on the wrong
+speaker when its quote is found only on the other speaker's side, or when its
+subject is the user and the character is named as having said it. A quote needs
+at least 4 non-space characters, unless it is the whole of a source shorter than
+that. Whether the lesson widens a
 limit stays a yes/no question. This takes 3 calls instead of 6 and stores proof
 version 5. It is not the default; compare it with your model before enabling it.
 
@@ -190,7 +192,8 @@ they are not facts about the user, and nothing is written for a turn without a
 - Every view cites the experience ids it rests on. It holds only while each of
   them is still its topic's current interpretation; if one is forgotten, voted
   out or revised, the view is withdrawn. A new batch supersedes the previous one.
-- `relationship_views_shown=3` bounds how many views reach her. In the
+- `relationship_views_shown=3` caps how many views one reflection keeps, and so
+  how many reach her. In the
   transcript placement they are `- view: ` lines of the turn's note, and a
   withdrawn one is `- view withdrawn: `.
 - `companion.relationship_views(user_id)` returns the views that still hold.
