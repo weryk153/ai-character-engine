@@ -1057,7 +1057,8 @@ class CharacterCompanion:
     ) -> None:
         """``background_llm`` is the model for background cognition: one client
         for every worker, or a mapping from worker name (emotion, reply_check,
-        mood, memory, memory_conflict, self_memory, goal, reflection, summary)
+        mood, interaction, memory, memory_conflict, self_memory, goal, reflection,
+        relationship, user_state, diary, summary)
         to a client; a worker without a client does not run. It defaults to ``llm``. Background workers must return JSON, so a
         client with a low temperature serves them better than the one tuned for
         conversation.
@@ -1449,13 +1450,18 @@ class CharacterCompanion:
             # The evidence review of what she learned: its own client when the
             # host gives one (a larger model), else the interaction client.
             if review_client is not None:
+                # Same rank as interaction learning: each review step queues
+                # separately, and below every worker it would never run.
+                review_rank = next(
+                    r for r, (w, _) in enumerate(clients) if w.name == "interaction"
+                )
                 endpoints.append(
                     ModelEndpoint(
                         endpoint_id="companion-interaction_review",
                         client=PoliteClient(
                             review_client,
                             self._access,
-                            rank=len(clients),
+                            rank=review_rank,
                             timeout=self.settings.call_timeout_seconds,
                             own_lane=False,
                         ),

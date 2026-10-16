@@ -1070,6 +1070,27 @@ async def test_review_calls_go_to_the_review_client_when_one_is_mapped(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_the_review_client_ranks_with_interaction_learning_not_after_memory(tmp_path):
+    """Each review step is a separate queued model call. A separate review
+    client ranks with the interaction worker, ahead of memory, rather than below
+    every background worker."""
+    workers = {
+        "interaction": Worker(lesson, name="extract"),
+        "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, name="memory"),
+        "interaction_review": Worker(lesson, name="review"),
+    }
+    c = companion(
+        tmp_path, workers, character_development=True, memory_every=1, interaction_every=1
+    )
+    endpoints = c._background.models.endpoints
+    rank = {n: e.client._rank for n, e in endpoints.items() if hasattr(e.client, "_rank")}
+    review = rank["companion-interaction_review"]
+    assert review == rank["companion-interaction"], rank
+    assert review < rank["companion-memory"], rank
+    await c.close()
+
+
+@pytest.mark.asyncio
 async def test_a_view_voted_out_does_not_bring_back_the_one_it_replaced(tmp_path):
     """Review finding: at support 0 the newest record dropped out and the
     topic fell back to the view the user had replaced."""
