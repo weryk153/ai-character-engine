@@ -1039,6 +1039,31 @@ def test_the_other_background_jobs_use_the_model_one_at_a_time(tmp_path):
     assert most_at_once == 1
 
 
+def test_feedback_is_learned_before_the_memory_of_the_same_turn(tmp_path):
+    """Under steady chat, work at the end of the queue never runs: feedback on
+    her last reply is learned right after the reply-critical work."""
+
+    async def scenario():
+        workers = {
+            "memory": Worker({"items": [], "confidence": 0.5, "evidence": []}, name="memory"),
+            "interaction": Worker({"lessons": []}, name="interaction"),
+        }
+        current = companion(
+            tmp_path, workers, character_development=True, memory_every=1, interaction_every=1
+        )
+        await current.reply("hello", conversation_id="a", user_id="alice")
+        await current.settle()
+        Worker.order.clear()
+        await current.reply("please stop doing that", conversation_id="a", user_id="alice")
+        await current.settle()
+        await current.close()
+        return list(Worker.order)
+
+    order = run(scenario())
+    assert "interaction" in order and "memory" in order, order
+    assert order.index("interaction") < order.index("memory"), order
+
+
 def test_a_worker_that_is_down_never_reaches_the_conversation(tmp_path):
     async def scenario():
         current = companion(tmp_path, {"emotion": Worker(WARM, fail=True)}, emotion_every=1)

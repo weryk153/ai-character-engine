@@ -286,6 +286,17 @@ _WORKERS = (
         TaskPriority.HIGH,
         MOOD_TARGET,
     ),
+    # Feedback on her last reply is worth most in the turn it is given: under
+    # steady chat every new message makes pending work give way, and work at
+    # the end of the queue never gets the model. After the reply-critical
+    # work, before memory.
+    _Worker(
+        "interaction",
+        BackgroundCognitionKind.INTERACTION_LEARNING,
+        CognitiveRole.INTERACTION,
+        TaskPriority.HIGH,
+        EXPERIENCE_TARGET,
+    ),
     _Worker(
         "memory",
         BackgroundCognitionKind.MEMORY_EXTRACTION,
@@ -318,13 +329,6 @@ _WORKERS = (
         CognitiveRole.GOAL,
         TaskPriority.NORMAL,
         "cognition.goal_candidate",
-    ),
-    _Worker(
-        "interaction",
-        BackgroundCognitionKind.INTERACTION_LEARNING,
-        CognitiveRole.INTERACTION,
-        TaskPriority.NORMAL,
-        EXPERIENCE_TARGET,
     ),
     _Worker(
         "relationship",
