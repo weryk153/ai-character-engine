@@ -1176,7 +1176,10 @@ class CharacterCompanion:
         if self.settings.character_development:
             builder.current_self_views = self._current_self_views
             builder.interaction_experiences = self._experiences_for_context
-            builder.relationship_views = self._views_for_context
+            # Told about views only when the worker that writes them runs.
+            if any(worker.name == "relationship" for worker, _ in
+                   self._background_clients(llm if background_llm is None else background_llm)):
+                builder.relationship_views = self._views_for_context
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -1543,6 +1546,11 @@ class CharacterCompanion:
     def _relationship_if_due(self) -> dict | None:
         source = self._interaction_source
         if source is None:
+            return None
+        # A newer reflection would cancel the one under way (it is not read
+        # once), so a person who keeps chatting would never see one finish.
+        if any(_under_way(handle) for handle in
+               self._live_by_kind.get(BackgroundCognitionKind.RELATIONSHIP_REFLECTION, ())):
             return None
         user_id = source["user_id"]
         experiences, views = self._relationship_records(user_id)

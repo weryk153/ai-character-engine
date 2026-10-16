@@ -937,7 +937,14 @@ class StructuredBackgroundWorker:
             user_id = source.get("user_id")
             if not isinstance(user_id, str) or not user_id.strip():
                 return None, confidence, (), []
+            raw_views = data.get("views") if isinstance(data, Mapping) else None
+            if not isinstance(raw_views, list):
+                raise ValueError("relationship reflection response.views must be an array")
             views = normalize_views(data, source, int(source.get("limit") or 0))
+            if raw_views and not views:
+                # Nothing usable in a non-empty answer is a bad answer, not
+                # "no views": it must not supersede the views she holds.
+                return None, confidence, (), []
             proposals.append(context.proposal(
                 RELATIONSHIP_VIEW_TARGET, {"views": views}, confidence=1.0,
                 provenance={**provenance, "user_id": user_id,

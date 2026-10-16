@@ -258,20 +258,23 @@ def _experience_news(experiences: Sequence[Mapping], said: Sequence[str]) -> lis
 
 
 def _view_news(views: Sequence[str], said: Sequence[str]) -> list[str]:
-    """View lines no earlier note still says, and withdrawals of views an
-    earlier note introduced that no longer hold."""
-    known = set(said)
-    held = {one_line(v) for v in views}
-    lines = [VIEW_LINE + v for v in views if VIEW_LINE + one_line(v) not in known]
-    withdrawn = {line[len(VIEW_WITHDRAWN_LINE):] for line in said
-                 if line.startswith(VIEW_WITHDRAWN_LINE)}
-    seen: set[str] = set()
+    """View lines for views held now whose newest earlier note is not a view
+    line, and withdrawals of views whose newest earlier note is a view line
+    but which no longer hold."""
+    last: dict[str, bool] = {}
     for line in said:
         if line.startswith(VIEW_LINE):
-            text = line[len(VIEW_LINE):]
-            if text not in held and text not in withdrawn and text not in seen:
-                seen.add(text)
-                lines.append(VIEW_WITHDRAWN_LINE + text)
+            last[line[len(VIEW_LINE):]] = True
+        elif line.startswith(VIEW_WITHDRAWN_LINE):
+            last[line[len(VIEW_WITHDRAWN_LINE):]] = False
+    held = list(dict.fromkeys(one_line(v) for v in views))
+    lines = [VIEW_LINE + v for v in held if not last.get(v, False)]
+    heldset = set(held)
+    lines += [
+        VIEW_WITHDRAWN_LINE + text
+        for text, said_view in last.items()
+        if said_view and text not in heldset
+    ]
     return lines
 
 

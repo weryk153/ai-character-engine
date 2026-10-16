@@ -614,7 +614,10 @@ def _real_quote(quote: str, source: str) -> bool:
     """A verbatim quote long enough to point at something (or the whole short source)."""
     if not _quoted_verbatim(quote, source):
         return False
-    if len("".join(quote.split())) >= _MIN_QUOTE:
+    bare = quote
+    for mark in _ELLIPSES:
+        bare = bare.replace(mark, "")
+    if len("".join(bare.split())) >= _MIN_QUOTE:
         return True
     whole = source.strip()
     return len("".join(whole.split())) < _MIN_QUOTE and quote.strip() == whole

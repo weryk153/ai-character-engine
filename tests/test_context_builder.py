@@ -384,3 +384,31 @@ def test_without_a_diary_entry_the_system_prompt_is_as_before():
     builder = ContextBuilder()
     assert builder.diary is None
     assert "diary" not in builder.build_system_prompt(CHARACTER)
+
+
+def test_view_news_said_once_and_withdrawn_once() -> None:
+    from ai_character_engine.context.builder import _view_news
+
+    first = _view_news(["A"], [])
+    assert first == ["- view: A"]
+    assert _view_news(["A"], first) == []
+    gone = _view_news([], first)
+    assert gone == ["- view withdrawn: A"]
+    assert _view_news([], first + gone) == []
+
+
+def test_view_news_held_again_after_withdrawal_is_said_again() -> None:
+    from ai_character_engine.context.builder import _view_news
+
+    said = ["- view: A", "- view withdrawn: A"]
+    again = _view_news(["A"], said)
+    assert again == ["- view: A"]
+    said += again
+    assert _view_news(["A"], said) == []
+    assert _view_news([], said) == ["- view withdrawn: A"]
+
+
+def test_view_news_normalises_lines_and_dedupes() -> None:
+    from ai_character_engine.context.builder import _view_news
+
+    assert _view_news(["a\nb", "a b", "a  b"], []) == ["- view: a b"]

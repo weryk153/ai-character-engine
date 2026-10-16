@@ -1434,3 +1434,13 @@ async def test_review_mode_checklist_alone_runs_the_checklist(tmp_path):
     await c.settle()
     assert len(asked) == 6
     await c.close()
+
+
+def test_ellipsis_marks_do_not_count_toward_the_quote_floor():
+    from ai_character_engine.memory.experience import _real_quote
+
+    source = "Please call me Kuu, not anything else, okay?"
+    assert not _real_quote("Kuu…", source)
+    assert not _real_quote("…Kuu…", source)
+    assert not _real_quote("Ku...u", "Kuuuuu, please call me by name")
+    assert _real_quote("Please call me…not anything else", source)

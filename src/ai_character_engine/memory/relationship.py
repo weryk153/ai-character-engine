@@ -152,7 +152,7 @@ def relationship_messages(source: Mapping, language: str = "") -> list[Message]:
         "do not generalise one exchange to everything. views are her current views; "
         "to_review are views whose experiences changed: keep, rewrite or drop them. "
         'Return JSON only: {"views":[{"view":str,"derived_from":[id]}]}; at most '
-        f"{int(source.get('limit') or 3)} views; an empty list is a fine answer."
+        f"{3 if source.get('limit') is None else int(source['limit'])} views; an empty list is a fine answer."
     )
     if language:
         system += f" Write each view in {language}."

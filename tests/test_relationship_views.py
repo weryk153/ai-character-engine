@@ -276,7 +276,9 @@ async def test_a_view_is_said_once_as_a_note_and_withdrawn_when_it_no_longer_hol
     c = await taught(tmp_path, relationship_reflection_threshold=0.8)
     await c.close()
     foreground = Foreground()
-    c = companion(tmp_path, llm=foreground, character_development=True)
+    worker = Worker(reflect)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker}, llm=foreground,
+                  character_development=True)
     await c.reply("Hello", conversation_id="a", user_id="alice")
     said = "\n".join(m.content for m in foreground.calls[-1])
     assert said.count("- view: With them I use their name.") == 1
@@ -310,3 +312,87 @@ async def test_no_view_reaches_another_person_or_a_conversation_without_a_user(t
     await c.reply("Hello", conversation_id="z")
     assert not _view_lines(foreground.calls[-1])
     await c.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", [
+    {}, {"views": "none"}, {"views": None},
+    {"views": [{"view": "", "derived_from": ["e1"]}, "junk"]},
+    {"views": [{"view": "With them I use their name.", "derived_from": ["nope"]}]},
+])
+async def test_a_malformed_reflection_answer_leaves_the_held_views_alone(tmp_path, bad):
+    answers = []
+
+    def bad_after(messages):
+        data = json.loads(messages[1].content)
+        if "experiences" in data and answers:
+            return bad
+        return reflect(messages)
+
+    worker = Worker(bad_after)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker},
+                  character_development=True, relationship_reflection_threshold=0.0)
+    for text in ("Hi", "Please don't use nicknames.", "Thanks."):
+        await c.reply(text, conversation_id="a", user_id="alice")
+        await c.settle()
+    (held,) = c.relationship_views("alice")
+    answers.append(1)
+    before = len(stored_views(c))
+    await c.reply("Still no nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    assert [v.id for v in c.relationship_views("alice")] == [held.id]
+    assert len(stored_views(c)) == before
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_reflection_under_way_is_not_cancelled_or_doubled_by_later_turns(tmp_path):
+    import asyncio
+
+    gate = asyncio.Event()
+    learner = Worker(keyed_lesson)
+    reflector = Worker(reflect, gate=gate)
+    c = companion(tmp_path, {"interaction": learner, "relationship": reflector},
+                  character_development=True, relationship_reflection_threshold=0.0)
+    await c.reply("Hi", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Please don't use nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Thanks.", conversation_id="a", user_id="alice")
+    for _ in range(50):
+        await asyncio.sleep(0)
+    def scheduled():
+        return sum(1 for e in c._background._events
+                   if e.kind.value == "relationship_reflection" and e.action == "scheduled")
+
+    assert scheduled() == 1
+    for text in ("Still no nicknames.", "Ok."):
+        await c.reply(text, conversation_id="a", user_id="alice")
+        for _ in range(20):
+            await asyncio.sleep(0)
+    # One job, never replaced by a newer one (the model being asked again
+    # after she spoke is not a new job).
+    assert scheduled() == 1
+    gate.set()
+    await c.settle()
+    assert scheduled() == 1
+    assert c.relationship_views("alice")
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_without_the_relationship_worker_she_is_told_nothing_about_views(tmp_path):
+    async def system_prompt(root, **settings):
+        llm = Foreground()
+        worker = Worker(reflect)
+        c = companion(root, {"interaction": worker, "relationship": worker}, llm=llm,
+                      character_development=True, **settings)
+        await c.reply("Hi", conversation_id="a", user_id="alice")
+        await c.settle()
+        await c.close()
+        return llm.calls[0][0].content
+
+    off = await system_prompt(tmp_path / "off", relationship_every=0)
+    on = await system_prompt(tmp_path / "on")
+    assert '"- view: "' not in off and "- view withdrawn" not in off
+    assert '"- view: "' in on
