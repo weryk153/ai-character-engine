@@ -978,7 +978,6 @@ class CognitiveCommitCoordinator:
             reflected_at = str(proposal.provenance.get("reflected_at")
                                or proposal.created_at.isoformat())
             written = []
-            marker = None
             common = {
                 "reflected_at": reflected_at,
                 "importance_seen": proposal.provenance.get("importance_seen", 0.0),
@@ -987,38 +986,32 @@ class CognitiveCommitCoordinator:
                 "proposal_id": proposal.id,
             }
             event_id = str(proposal.provenance.get("foreground_event_id") or "")
+            # An empty batch still leaves a marker, so that when she reflected
+            # is remembered; it is superseded at once and never shows as a view.
+            items = [(i["view"], i["derived_from"])
+                     for i in proposal.payload.get("views") or ()] or [("(no views)", [])]
+            empty = not proposal.payload.get("views")
             try:
-                for item in proposal.payload.get("views") or ():
+                for text, derived in items:
                     written.append(manager.append_background_candidate(
-                        character_id=scope, summary=item["view"],
+                        character_id=scope, summary=text,
                         kind=RELATIONSHIP_VIEW_KIND, importance=0.6,
                         source_event_id=event_id, source_event_type="user_message",
                         tags=("background_cognition", "relationship_reflection"),
-                        metadata={**common, "derived_from": item["derived_from"]},
+                        metadata={**common, "derived_from": derived},
                     ))
-                if not written:
-                    # Nothing held, but when she reflected must be remembered.
-                    marker = manager.append_background_candidate(
-                        character_id=scope, summary="(no views)",
-                        kind=RELATIONSHIP_VIEW_KIND, importance=0.6,
-                        source_event_id=event_id, source_event_type="user_message",
-                        tags=("background_cognition", "relationship_reflection"),
-                        metadata={**common, "derived_from": []},
-                    )
-                newest = written[-1].id if written else None
-                keep = {r.id for r in written}
+                newest = None if empty else written[-1].id
+                keep = {r.id for r in written} if not empty else set()
                 manager.store.replace_for_character(scope, [
                     replace(r, status="superseded", superseded_by=newest)
-                    if r.kind == RELATIONSHIP_VIEW_KIND
-                    and (r.is_active or (marker is not None and r.id == marker.id))
-                    and r.id not in keep
+                    if r.kind == RELATIONSHIP_VIEW_KIND and r.is_active and r.id not in keep
                     else r
                     for r in manager.store.list_for_character(scope)
                 ])
             except Exception:
                 manager.store.replace_for_character(scope, before)
                 raise
-            return newest or "none"
+            return written[-1].id
         if proposal.target in {"memory.append_candidate", "memory.self_candidate"}:
             manager = runtime.memory_manager
             if manager is None:

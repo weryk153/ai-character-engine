@@ -70,6 +70,31 @@ def _last_reflection(views: Sequence[MemoryRecord]) -> str | None:
     return max(times) if times else None
 
 
+def last_reflection(views: Sequence[MemoryRecord]) -> str | None:
+    """When the latest reflection happened (superseded batches count)."""
+    return _last_reflection(views)
+
+
+def _importance_events(experiences):
+    for record in experiences:
+        if record.kind != EXPERIENCE_KIND:
+            continue
+        events = record.metadata.get("importance_events")
+        if not isinstance(events, list):
+            events = [{"importance": LEGACY_IMPORTANCE, "observed_at": _observed(record)}]
+        for event in events:
+            if isinstance(event, Mapping):
+                yield event
+
+
+def importance_watermark(experiences) -> str | None:
+    """The latest importance event among these records: what a reflection that
+    read them has seen. Later events are still pending after it."""
+    times = [str(e.get("observed_at") or "") for e in _importance_events(experiences)]
+    times = [t for t in times if t]
+    return max(times) if times else None
+
+
 def pending_importance(experiences, views) -> float:
     """Importance of experiences written or voted on since the last reflection."""
     since = _last_reflection(views)

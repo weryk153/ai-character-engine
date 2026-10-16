@@ -173,6 +173,8 @@ class CompanionSettings:
         ):
             if int(getattr(self, name)) < 0:
                 raise ValueError(f"{name} must be >= 0")
+        if float(self.relationship_reflection_threshold) < 0:
+            raise ValueError("relationship_reflection_threshold must be >= 0")
         if self.self_memories_kept < 1:
             raise ValueError("self_memories_kept must be >= 1")
         if self.records_kept < 1:

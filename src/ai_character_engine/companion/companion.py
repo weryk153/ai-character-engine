@@ -93,6 +93,8 @@ from ai_character_engine.memory.relationship import (
     RELATIONSHIP_VIEW_KIND,
     RELATIONSHIP_VIEW_TARGET,
     held_views,
+    importance_watermark,
+    last_reflection,
     pending_importance,
     reflection_source,
     views_to_review,
@@ -1541,17 +1543,17 @@ class CharacterCompanion:
         user_id = source["user_id"]
         experiences, views = self._relationship_records(user_id)
         pending = pending_importance(experiences, views)
-        if pending < self.settings.relationship_reflection_threshold and not views_to_review(
-            views, experiences
-        ):
+        to_review = views_to_review(views, experiences)
+        if pending < self.settings.relationship_reflection_threshold and not to_review:
             return None
         reading = reflection_source(experiences, views, self.settings.relationship_views_shown)
-        if reading is None and not views_to_review(views, experiences):
+        if reading is None and not to_review:
             return None
         reading = reading or {"experiences": [], "ids": {}, "views": [], "to_review": [],
                               "limit": self.settings.relationship_views_shown}
         return {"relationship": {**reading, "user_id": user_id,
-                                 "reflected_at": self._now().isoformat(),
+                                 "reflected_at": importance_watermark(experiences)
+                                 or last_reflection(views) or self._now().isoformat(),
                                  "importance_seen": pending}}
 
     def _experiences_for_context(self) -> list[dict]:

@@ -125,6 +125,8 @@ def test_a_counted_vote_after_the_last_reflection_adds_its_importance():
 
 def reflect(messages):
     data = json.loads(messages[1].content)
+    if "experiences" in data and not data["experiences"]:
+        return {"views": []}
     if "experiences" in data:
         return {"views": [{"view": "With them I use their name.",
                            "derived_from": [data["experiences"][0]["id"]]}]}
@@ -162,23 +164,84 @@ async def test_below_the_threshold_nothing_is_reflected(tmp_path):
     await c.close()
 
 
+def stored_views(c, user_id="alice"):
+    scope = c.interaction_experiences(user_id)[0].character_id
+    return [r for r in c._memory_store.list_for_character(scope)
+            if r.kind == "relationship_view"]
+
+
 @pytest.mark.asyncio
 async def test_a_forgotten_source_withdraws_the_view_and_forces_a_reflection(tmp_path):
-    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    worker = Worker(reflect)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker},
+                  character_development=True, relationship_reflection_threshold=0.8)
+    for text in ("Hi", "Please don't use nicknames.", "Thanks."):
+        await c.reply(text, conversation_id="a", user_id="alice")
+        await c.settle()
+    (view,) = c.relationship_views("alice")
     (record,) = c.interaction_experiences("alice")
     c.forget_interaction_experiences("alice", [record.id])
+    assert c.relationship_views("alice") == ()
+    # Only the review path can trigger now.
+    c.settings = replace(c.settings, relationship_reflection_threshold=99.0)
+    calls = worker.calls
+    await c.reply("Anyway.", conversation_id="a", user_id="alice")
+    await c.settle()
+    assert worker.calls > calls
+    assert next(r for r in stored_views(c) if r.id == view.id).status == "superseded"
     assert c.relationship_views("alice") == ()
     await c.close()
 
 
 @pytest.mark.asyncio
 async def test_a_new_batch_replaces_the_last(tmp_path):
-    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
-    await c.reply("No nicknames, I mean it.", conversation_id="b", user_id="alice")
+    c = await taught(tmp_path, relationship_reflection_threshold=0.0)
+    (first,) = c.relationship_views("alice")
+    await c.reply("Still no nicknames.", conversation_id="a", user_id="alice")
     await c.settle()
-    scope_views = [r for r in c._memory_store.list_for_character(
-        c.interaction_experiences("alice")[0].character_id) if r.kind == "relationship_view"]
-    assert sum(1 for r in scope_views if r.is_active) == 1
+    views = stored_views(c)
+    assert sum(1 for r in views if r.is_active) == 1
+    assert any(r.status == "superseded" for r in views)
+    assert next(r for r in views if r.id == first.id).status == "superseded"
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_the_importance_of_the_reflecting_turn_still_counts(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    experiences, views = c._relationship_records("alice")
+    assert views and pending_importance(experiences, views) > 0
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_an_empty_batch_leaves_a_superseded_marker_and_resets_pending(tmp_path):
+    answers = []
+
+    def empty_or_views(messages):
+        data = json.loads(messages[1].content)
+        if "experiences" in data and answers:
+            return {"views": []}
+        return reflect(messages)
+
+    worker = Worker(empty_or_views)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker},
+                  character_development=True, relationship_reflection_threshold=0.8)
+    for text in ("Hi", "Please don't use nicknames.", "Thanks."):
+        await c.reply(text, conversation_id="a", user_id="alice")
+        await c.settle()
+    assert c.relationship_views("alice")
+    answers.append(1)
+    await c.reply("Still no nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    views = stored_views(c)
+    assert c.relationship_views("alice") == ()
+    assert not any(r.is_active for r in views)
+    marker = next(r for r in views if r.summary == "(no views)")
+    assert marker.status == "superseded" and marker.metadata["reflected_at"]
+    experiences, all_views = c._relationship_records("alice")
+    # Only what came in during the reflecting turn is still pending.
+    assert pending_importance(experiences, all_views) < pending_importance(experiences, [])
     await c.close()
 
 
