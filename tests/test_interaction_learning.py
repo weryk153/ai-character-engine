@@ -1130,3 +1130,74 @@ def test_a_vote_already_counted_for_the_same_exchange_is_known():
     assert vote_already_counted(record, "e2")
     assert not vote_already_counted(record, "e3")
     assert not vote_already_counted({}, "e1")
+
+
+from datetime import UTC, datetime, timedelta
+
+from ai_character_engine.memory.experience import EXPERIENCE_KIND
+from ai_character_engine.memory.models import MemoryRecord
+
+
+def _held(topic, lesson, *, keywords=None, minutes=0, topic_id=None):
+    """A stored, verified experience as the coordinator writes it."""
+    candidate = {
+        "topic": topic, "lesson": lesson, "outcome": "The user said so.",
+        "character_quote": "Hi", "user_quote": lesson, "basis": "preference",
+        "topic_id": None, "revises": False,
+    }
+    feedback = lesson
+    review = {
+        "literal_user_meaning": "A preference.", "user_conditions": [],
+        "explicit_feedback": True, "topic_problems": [], "outcome_problems": [],
+        "lesson_problems": [], "supporting_user_quote": feedback,
+    }
+    proof = experience_review_proof(candidate, review, feedback)
+    when = datetime(2026, 10, 1, tzinfo=UTC) + timedelta(minutes=minutes)
+    metadata = {
+        **candidate, "support": 2, "support_events": [], "objections": [],
+        "topic_id": topic_id or f"t-{topic}", "reviewed_topic_id": None,
+        "review_feedback": feedback, "interpretation_review": proof,
+        "observed_at": when.isoformat(),
+    }
+    if keywords is not None:
+        metadata["keywords"] = keywords
+    return MemoryRecord(
+        character_id="mei#with:x", summary=lesson, kind=EXPERIENCE_KIND,
+        importance=0.7, source_event_id=f"e-{topic}", created_at=when, metadata=metadata,
+    )
+
+
+def test_topics_with_overlapping_keywords_come_first():
+    records = [
+        _held("nicknames", "Please do not call me Kuu.", keywords=["綽號", "名字"], minutes=0),
+        *(_held(f"other{i}", f"Something else {i}.", minutes=10 + i) for i in range(5)),
+    ]
+    newest = experience_topics(records, 4)
+    assert "nicknames" not in [t["topic"] for t in newest]
+    matched = experience_topics(records, 4, query="你又叫我綽號了")
+    assert matched[0]["topic"] == "nicknames"
+    assert len(matched) == 4
+
+
+def test_old_topics_without_keywords_are_matched_by_their_words():
+    records = [
+        _held("早餐", "我早餐不吃蛋。", minutes=0),
+        *(_held(f"other{i}", f"Something else {i}.", minutes=10 + i) for i in range(5)),
+    ]
+    matched = experience_topics(records, 2, query="早餐要吃什麼")
+    assert matched[0]["topic"] == "早餐"
+
+
+def test_without_a_query_topics_are_exactly_the_newest():
+    records = [_held(f"t{i}", f"Lesson {i}.", keywords=["x"], minutes=i) for i in range(6)]
+    assert experience_topics(records, 4) == experience_topics(records, 4, query=None)
+    assert [t["topic"] for t in experience_topics(records, 4)] == ["t5", "t4", "t3", "t2"]
+
+
+def test_a_number_alone_does_not_make_two_topics_alike():
+    records = [
+        _held("age", "I am 30.", minutes=0),
+        *(_held(f"other{i}", f"Something else {i}.", minutes=10 + i) for i in range(5)),
+    ]
+    matched = experience_topics(records, 1, query="see you at 7")
+    assert matched[0]["topic"] == "other4"

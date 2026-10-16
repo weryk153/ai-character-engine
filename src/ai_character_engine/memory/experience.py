@@ -14,6 +14,7 @@ from typing import Any
 
 from ai_character_engine.llm.models import Message
 from ai_character_engine.memory.models import MemoryRecord
+from ai_character_engine.memory.pieces import NUMBER_PIECE, word_pieces
 
 EXPERIENCE_TARGET = "memory.experience_candidate"
 EXPERIENCE_VOTE_TARGET = "memory.experience_vote"
@@ -201,11 +202,14 @@ def experience_support(record: MemoryRecord) -> int:
     return int(value) if isinstance(value, (int, float)) else INITIAL_SUPPORT
 
 
-def experience_topics(records: Sequence[MemoryRecord], limit: int = 4) -> list[dict]:
+def experience_topics(
+    records: Sequence[MemoryRecord], limit: int = 4, query: str | None = None
+) -> list[dict]:
     """Latest interpretation per topic, with its evidence and revision history.
 
     A topic whose support fell to one is shown as the observation only; at
-    zero it is not shown at all.
+    zero it is not shown at all. With a query, topics sharing more word
+    pieces with it come first; otherwise (and among equals) newest first.
     """
     groups: dict[str, list[MemoryRecord]] = {}
 
@@ -228,13 +232,11 @@ def experience_topics(records: Sequence[MemoryRecord], limit: int = 4) -> list[d
     newest = sorted(
         groups.items(), key=lambda pair: observed(pair[1][-1]), reverse=True
     )
-    result = []
-    for topic_id, episodes in newest:
-        if len(result) >= max(0, limit):
-            break
+
+    def entry(topic_id, episodes):
         last = episodes[-1]
         if experience_support(last) <= 0 or not last.is_active:
-            continue
+            return None
         start = max(
             (i for i, r in enumerate(episodes) if r.metadata.get("revises")), default=0
         )
@@ -249,31 +251,50 @@ def experience_topics(records: Sequence[MemoryRecord], limit: int = 4) -> list[d
             "lesson" in last.metadata["interpretation_review"]["accepted_components"]
             and experience_support(last) >= INITIAL_SUPPORT
         )
-        result.append(
-            {
-                "topic_id": topic_id,
-                "topic": last.metadata["topic"],
-                "interpretation": last.metadata["lesson"] if lesson_shown else last.metadata["outcome"],
-                "conditions": verified_conditions(
-                    last.metadata["interpretation_review"].get("review", {}),
-                    str(last.metadata.get("review_feedback") or ""),
-                ),
-                "interpretation_basis": "reviewed_lesson"
-                if lesson_shown
-                else "reviewed_observation_only",
-                "basis": last.metadata["basis"],
-                "distinct_exchanges": len(support),
-                "previous_interpretation": episodes[start - 1].summary
-                if start
-                else None,
-                "latest_exchange": {
-                    "character_said": last.metadata["character_quote"],
-                    "user_replied": last.metadata["user_quote"],
-                    "outcome": last.metadata["outcome"],
-                },
-            }
-        )
-    return result
+        return {
+            "topic_id": topic_id,
+            "topic": last.metadata["topic"],
+            "interpretation": last.metadata["lesson"] if lesson_shown else last.metadata["outcome"],
+            "conditions": verified_conditions(
+                last.metadata["interpretation_review"].get("review", {}),
+                str(last.metadata.get("review_feedback") or ""),
+            ),
+            "interpretation_basis": "reviewed_lesson"
+            if lesson_shown
+            else "reviewed_observation_only",
+            "basis": last.metadata["basis"],
+            "distinct_exchanges": len(support),
+            "previous_interpretation": episodes[start - 1].summary
+            if start
+            else None,
+            "latest_exchange": {
+                "character_said": last.metadata["character_quote"],
+                "user_replied": last.metadata["user_quote"],
+                "outcome": last.metadata["outcome"],
+            },
+        }
+
+    entries = []
+    for topic_id, episodes in newest:
+        made = entry(topic_id, episodes)
+        if made is not None:
+            entries.append((made, episodes[-1]))
+    if query:
+        wanted = word_pieces(query) - {NUMBER_PIECE}
+
+        def overlap(pair) -> int:
+            made, last = pair
+            keywords = last.metadata.get("keywords")
+            words = (
+                " ".join(k for k in keywords if isinstance(k, str))
+                if isinstance(keywords, list) and keywords
+                else f"{made['topic']} {made['interpretation']}"
+            )
+            return len(wanted & (word_pieces(words) - {NUMBER_PIECE}))
+
+        # Stable sort: equal overlap keeps newest first.
+        entries.sort(key=overlap, reverse=True)
+    return [made for made, _ in entries[: max(0, limit)]]
 
 
 _ELLIPSES = ("...", "…", "⋯")

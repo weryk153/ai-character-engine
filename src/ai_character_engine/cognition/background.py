@@ -43,6 +43,7 @@ from ai_character_engine.memory.experience import (
     normalize_experience,
 )
 from ai_character_engine.memory.models import MemoryRecord
+from ai_character_engine.memory.pieces import CJK_RUN as _CJK_RUN, word_pieces as _word_pieces
 from ai_character_engine.memory.self_kinds import (
     DEVELOPING_SELF_KINDS,
     SELF_MEMORY_KINDS,
@@ -2539,25 +2540,6 @@ def script_of(text: str) -> str:
 
 # The name it had; kept for whoever imported it.
 _script = script_of
-
-
-_CJK_RUN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+")
-
-
-def _word_pieces(text: str) -> set[str]:
-    """What two texts must share to speak of the same thing: two characters in
-    a row of Chinese, Japanese or Korean, the first four letters of a longer
-    word, or any number at all (an age against an age)."""
-    text = text.casefold()
-    pieces = {
-        run[index : index + 2]
-        for run in _CJK_RUN.findall(text)
-        for index in range(len(run) - 1)
-    }
-    pieces.update(word[:4] for word in re.findall(r"[a-z]{4,}", text))
-    if re.search(r"\d", text):
-        pieces.add("#")
-    return pieces
 
 
 # Where the first clause of what she says ends.
