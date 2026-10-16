@@ -194,11 +194,44 @@ def may_contradict(earlier: str, newer: str) -> bool:
     return not says_a_plan(newer) and not one_day_against_a_habit(newer, earlier)
 
 
-def may_supersede(earlier: str, newer: str, said: str) -> bool:
+# Words that say a plan is now happening or done, and words that say it has not
+# happened: a plan retires on the first and never on the second.
+_NOW_OR_DONE_CUES = (
+    "已經", "已经", "現在在", "现在在", "到了", "正在", "做完", "完成", "交了",
+)
+_NOW_OR_DONE_WORDS = re.compile(r"\b(?:now|already|finished|done|arrived|handed in)\b")
+_NOT_YET_CUES = ("還沒", "还没", "沒去", "没去", "沒有去", "没有去", "尚未", "未曾")
+_NOT_YET_WORDS = re.compile(r"\b(?:not yet|haven't|hasn't|have not|has not|never|didn't)\b")
+_PLAN_KINDS = frozenset({"plan", "plans"})
+
+
+def retires_a_plan(earlier: str, newer: str, said: str, earlier_kind: str) -> bool:
+    """A plan the user says is happening or done: the earlier fact is a plan
+    (its kind, or its words), the new words say now or done and not "not yet",
+    and both are about the same thing (a word piece in common that is not the
+    plan or the "now" itself)."""
+    if earlier_kind.strip().casefold() not in _PLAN_KINDS and not says_a_plan(earlier):
+        return False
+    text = f"{newer} {said}"
+    if _has(text, _NOT_YET_CUES, _NOT_YET_WORDS):
+        return False
+    if not _has(text, _NOW_OR_DONE_CUES, _NOW_OR_DONE_WORDS):
+        return False
+    markers = "".join(_NOW_OR_DONE_CUES + _PLAN_CUES)
+    shared = {
+        piece for piece in _pieces(earlier) & _pieces(text) if piece not in markers
+    }
+    return bool(shared)
+
+
+def may_supersede(earlier: str, newer: str, said: str, earlier_kind: str = "") -> bool:
     """Whether ``newer`` may replace ``earlier``, whoever proposes it: the
     user's own words say a change, it is not a plan or one day against a
     habit, and the earlier fact is one fact on a topic the new one is about.
+    Or the earlier fact is a plan and the user says it is happening or done.
     A replacement wrongly made erases a true fact."""
+    if retires_a_plan(earlier, newer, said, earlier_kind):
+        return True
     text = f"{newer} {said}"
     if not says_a_change(said) or not may_contradict(earlier, text):
         return False
@@ -356,7 +389,7 @@ def apply_conflicts(
             or old_id in superseded
             or any(done["old_id"] == old_id for done in applied)
             # Held to the same rules whoever proposed it.
-            or (relation == "supersedes" and not may_supersede(old.summary, new.summary, said))
+            or (relation == "supersedes" and not may_supersede(old.summary, new.summary, said, old.kind))
             or (
                 relation == "contradicts"
                 and not may_contradict(old.summary, f"{new.summary} {said}")

@@ -22,6 +22,7 @@ from ai_character_engine.memory.conflicts import (
     CONFLICT_RELATIONS,
     may_contradict,
     may_supersede,
+    retires_a_plan,
     says_a_change,
 )
 from ai_character_engine.memory.evidence import classify_user_text
@@ -851,6 +852,10 @@ class StructuredBackgroundWorker:
             str(item.get("id")): str(item.get("summary") or "")
             for item in payload.get("candidates") or ()
         }
+        kind_of = {
+            str(item.get("id")): str(item.get("kind") or "")
+            for item in payload.get("candidates") or ()
+        }
         kept = []
         for item in proposal.payload["conflicts"]:
             if item["relation"] == "refines":
@@ -885,10 +890,11 @@ class StructuredBackgroundWorker:
             if both_true:
                 # Both can be true: no change of hers replaces either.
                 continue
-            if (
-                item["relation"] == "supersedes"
-                and changed
-                and may_supersede(earlier, str(new.get("summary") or ""), said)
+            new_summary = str(new.get("summary") or "")
+            if item["relation"] == "supersedes" and (
+                (changed and may_supersede(earlier, new_summary, said))
+                # A plan the user says is happening or done needs no change word.
+                or retires_a_plan(earlier, new_summary, said, kind_of.get(item["old_id"], ""))
             ):
                 kept.append(item)
             else:
@@ -1716,7 +1722,10 @@ class BackgroundCognitionRuntime:
         )
         payload: dict[str, Any] = {
             "new_memory": {"id": new.id, "summary": new.summary, "said": str(said or "")},
-            "candidates": [{"id": record.id, "summary": record.summary} for record in candidates],
+            "candidates": [
+                {"id": record.id, "summary": record.summary, "kind": record.kind}
+                for record in candidates
+            ],
             "foreground_event_id": new.source_event_id,
             "foreground_event_type": new.source_event_type,
             "memory_evidence_type": "asserted_fact",
@@ -1956,6 +1965,10 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "\"記得帶相機喔\") is the user's wish about the character: write it as the user wanting the "
             "character to do it, never as the user doing it. Whoever does the action in the quote does "
             "it in the summary."
+            # 1.6.0, added at the end only: what comes before is cached.
+            " When the user says one of their plans is now happening or done (\"we're at the beach "
+            "now\", \"I handed in the report\", \"我已經在海邊了\"), state it as a fact with kind plan, "
+            "e.g. \"用戶已經到海邊了\": an earlier plan can then be retired."
         ),
         BackgroundCognitionKind.EMOTION_ANALYSIS: (
             "Infer the user's currently expressed emotion conservatively; do not diagnose hidden mental states. "

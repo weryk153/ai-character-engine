@@ -1174,3 +1174,46 @@ def test_the_note_is_in_simplified_chinese_for_china_and_singapore(tmp_path, lan
 )
 def test_a_plan_is_a_change_still_to_come_not_every_want(words, plan):
     assert says_a_plan(words) is plan
+
+
+# --- a plan the user says is happening or done leaves her mind ----------------------
+
+
+@pytest.mark.parametrize(
+    "earlier, kind, newer, words, allowed",
+    [
+        ("用戶想去海邊", "plan", "用戶已經到海邊了", "我已經在海邊了", True),
+        ("用戶打算明天交報告", "plan", "用戶已經交了報告", "報告交了", True),
+        ("The user wants to go to the beach", "plans", "The user is at the beach now", "We're at the beach now", True),
+        # Another place.
+        ("用戶想去海邊", "plan", "用戶已經到公司了", "我已經到公司了", False),
+        # Not happened yet.
+        ("用戶想去海邊", "plan", "用戶還沒去海邊", "我還沒去海邊", False),
+        ("The user wants to go to the beach", "plan", "The user has not been to the beach yet", "not yet", False),
+        # Liking the beach is no plan, and stays true.
+        ("用戶喜歡海邊", "fact", "用戶已經到海邊了", "我已經在海邊了", False),
+    ],
+)
+def test_a_plan_is_retired_once_the_user_says_it_is_happening_or_done(
+    earlier, kind, newer, words, allowed
+):
+    assert may_supersede(earlier, newer, words, earlier_kind=kind) is allowed
+
+
+def test_a_plan_retired_through_apply_conflicts_is_marked_superseded():
+    old = fact("用戶想去海邊", kind="plan")
+    new = said("用戶已經到海邊了", "我已經在海邊了", minutes=1)
+    records, applied = apply_conflicts(
+        [old, new], new.id, [{"old_id": old.id, "relation": "supersedes"}]
+    )
+    assert [a["old_id"] for a in applied] == [old.id]
+    assert records[0].status == "superseded" and records[0].superseded_by == new.id
+
+
+def test_a_liked_place_is_not_retired_through_apply_conflicts():
+    old = fact("用戶喜歡海邊")
+    new = said("用戶已經到海邊了", "我已經在海邊了", minutes=1)
+    records, applied = apply_conflicts(
+        [old, new], new.id, [{"old_id": old.id, "relation": "supersedes"}]
+    )
+    assert applied == () and records == [old, new]

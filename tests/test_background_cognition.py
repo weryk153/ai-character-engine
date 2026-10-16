@@ -1498,8 +1498,13 @@ def test_the_memory_worker_keeps_who_does_what_and_the_cached_prefix_is_unchange
         "character to do it, never as the user doing it. Whoever does the action in the quote does "
         "it in the summary."
     )
-    assert prompt.endswith(added)
-    before = prompt[: -len(added)]
+    plan_done = (
+        " When the user says one of their plans is now happening or done (\"we're at the beach "
+        "now\", \"I handed in the report\", \"我已經在海邊了\"), state it as a fact with kind plan, "
+        "e.g. \"用戶已經到海邊了\": an earlier plan can then be retired."
+    )
+    assert prompt.endswith(added + plan_done)
+    before = prompt[: -len(added + plan_done)]
     # The text before the 1.6.0 sentence is cached by the model server: it must stay as it was.
     assert before.startswith("Extract durable facts the user stated in the user lines to extract from")
     assert before.endswith("never an English one unless the quote is English.")
