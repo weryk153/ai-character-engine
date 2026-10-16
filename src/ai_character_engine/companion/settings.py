@@ -178,6 +178,8 @@ class CompanionSettings:
         ):
             if int(getattr(self, name)) < 0:
                 raise ValueError(f"{name} must be >= 0")
+        if self.interaction_review_mode not in ("", "checklist", "claims"):
+            raise ValueError("interaction_review_mode must be '', 'checklist' or 'claims'")
         if float(self.relationship_reflection_threshold) < 0:
             raise ValueError("relationship_reflection_threshold must be >= 0")
         if self.self_memories_kept < 1:

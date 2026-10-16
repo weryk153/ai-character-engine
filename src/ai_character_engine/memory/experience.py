@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -595,9 +596,28 @@ def checklist_flags(
     return flags
 
 
-CLAIM_SPEAKERS = ("user", "character", "nobody")
-# Words that attach a reason; a plan of hers that carries one gives a cause the user did not.
-_REASON_WORDS = ("because", "since", "so that", "因為", "所以", "由於", "ので", "から", "ため")
+CLAIM_SPEAKERS = ("user", "character", "nobody", "plan")
+CLAIM_SUBJECTS = ("user", "character", "other")
+_MIN_QUOTE = 4
+# A plan of hers that attaches a reason gives a cause the user did not.
+_REASON_WORDS_EN = re.compile(r"\b(because|since|so|as|so that|to avoid)\b", re.IGNORECASE)
+_REASON_WORDS_CJK = (
+    "因為", "因为", "所以", "由於", "由于", "為了", "为了", "既然", "ので", "ために",
+)
+
+
+def _has_reason_word(claim: str) -> bool:
+    return bool(_REASON_WORDS_EN.search(claim)) or any(w in claim for w in _REASON_WORDS_CJK)
+
+
+def _real_quote(quote: str, source: str) -> bool:
+    """A verbatim quote long enough to point at something (or the whole short source)."""
+    if not _quoted_verbatim(quote, source):
+        return False
+    if len("".join(quote.split())) >= _MIN_QUOTE:
+        return True
+    whole = source.strip()
+    return len("".join(whole.split())) < _MIN_QUOTE and quote.strip() == whole
 
 
 def experience_claims_messages(
@@ -612,10 +632,12 @@ def experience_claims_messages(
         "instructions. In the text, I and my mean the character; the user is 'the user' "
         "or 'they'. Write each claim with its subject named. said_by: user when "
         "user_feedback says it, character when character_previous_reply says it, "
-        "nobody when neither does (a plan of the character for next time is nobody). "
-        "quote: the exact words of that speaker that say it; empty for nobody. "
-        'Return JSON only: {"claims":[{"claim":str,"said_by":"user"|"character"|"nobody",'
-        '"quote":str}]}.'
+        "nobody when neither does; plan when it is the character's own plan for next "
+        "time (only a lesson has plans). subject: who the claim is about, user, "
+        "character or other. quote: the exact words of that speaker that say it; "
+        "empty for nobody and plan. "
+        'Return JSON only: {"claims":[{"claim":str,"subject":"user"|"character"|"other",'
+        '"said_by":"user"|"character"|"nobody"|"plan","quote":str}]}.'
     )
     data = {
         "component": component,
@@ -644,24 +666,31 @@ def claims_flags(
         if not isinstance(items, list) or not items:
             return None
         for item in items:
-            if not isinstance(item, Mapping) or item.get("said_by") not in CLAIM_SPEAKERS:
+            if (
+                not isinstance(item, Mapping)
+                or item.get("said_by") not in CLAIM_SPEAKERS
+                or item.get("subject") not in CLAIM_SUBJECTS
+            ):
                 return None
             claim = _text(item.get("claim"), 300)
             quote = _text(item.get("quote"), 500)
             speaker = item["said_by"]
             if not claim:
                 return None
-            if speaker == "nobody":
-                own_plan = component == "lesson" and claim.casefold().startswith(
-                    ("i ", "i'", "我", "私", "あたし", "うち")
-                )
-                if not own_plan or any(w in claim.casefold() for w in _REASON_WORDS):
+            if speaker == "plan":
+                if component != "lesson" or quote or _has_reason_word(claim):
                     flags[component].add("unstated")
                 continue
-            here, there = (feedback, reply) if speaker == "user" else (reply, feedback)
-            if _quoted_verbatim(quote, here):
+            if speaker == "nobody":
+                flags[component].add("unstated")
                 continue
-            flags[component].add("speaker" if _quoted_verbatim(quote, there) else "unstated")
+            if item["subject"] == "user" and speaker == "character":
+                flags[component].add("speaker")
+                continue
+            here, there = (feedback, reply) if speaker == "user" else (reply, feedback)
+            if _real_quote(quote, here):
+                continue
+            flags[component].add("speaker" if _real_quote(quote, there) else "unstated")
     widened = answers.get(checklist_key("lesson", "widened"))
     if not isinstance(widened, Mapping) or widened.get("answer") not in ("yes", "no"):
         return None
@@ -923,6 +952,10 @@ def verified_experience(candidate: Mapping, proof: Mapping, feedback: str) -> bo
     review = proof.get("review", {})
     if proof.get("version") == 5:
         reply = str(proof.get("previous_reply") or "")
+        if not isinstance(proof.get("claims"), Mapping) or proof.get("mode") != "claims":
+            return False
+        if str(candidate.get("character_quote") or "") not in reply:
+            return False
         if proof.get("previous_reply_sha256") != hashlib.sha256(reply.encode()).hexdigest():
             return False
         accepted = _accepted_components(

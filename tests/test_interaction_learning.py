@@ -1265,13 +1265,14 @@ NO_WIDENING = {"answer": "no", "text_excerpt": "", "user_excerpt": "", "reason":
 
 
 def claims(*items):
-    return {"claims": [dict(zip(("claim", "said_by", "quote"), item)) for item in items]}
+    keys = ("claim", "subject", "said_by", "quote")
+    return {"claims": [dict(zip(keys, item)) for item in items]}
 
 
 def good_claims():
     return {
-        "outcome": claims(("The user asked for no nicknames.", "user", "Please don't use nicknames.")),
-        "lesson": claims(("I will use their name.", "nobody", "")),
+        "outcome": claims(("The user asked for no nicknames.", "user", "user", "Please don't use nicknames.")),
+        "lesson": claims(("I will use their name.", "character", "plan", "")),
         "lesson:widened": dict(NO_WIDENING),
     }
 
@@ -1281,7 +1282,7 @@ def test_a_claim_nobody_said_is_unstated_and_a_plan_of_hers_is_not():
 
     answers = good_claims()
     assert claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers) == {"outcome": set(), "lesson": set()}
-    answers["outcome"] = claims(("The user was annoyed.", "nobody", ""))
+    answers["outcome"] = claims(("The user was annoyed.", "user", "nobody", ""))
     assert "unstated" in claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers)["outcome"]
 
 
@@ -1289,7 +1290,7 @@ def test_a_quote_from_the_wrong_side_is_a_speaker_slip():
     from ai_character_engine.memory.experience import claims_flags
 
     answers = good_claims()
-    answers["outcome"] = claims(("The user wants to be called Kuu.", "user", "Shall I call you Kuu?"))
+    answers["outcome"] = claims(("The user wants to be called Kuu.", "user", "user", "Shall I call you Kuu?"))
     assert "speaker" in claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers)["outcome"]
 
 
@@ -1310,7 +1311,7 @@ def test_a_claims_proof_verifies_after_restart_and_fails_when_tampered():
     )
     assert proof["version"] == 5 and proof["accepted_components"] == ["outcome", "lesson"]
     assert verified_experience(CLAIMS_CANDIDATE, proof, CLAIMS_SOURCE["feedback"])
-    tampered = {**proof, "claims": {**answers, "outcome": claims(("x", "nobody", ""))}}
+    tampered = {**proof, "claims": {**answers, "outcome": claims(("x", "user", "nobody", ""))}}
     assert not verified_experience(CLAIMS_CANDIDATE, tampered, CLAIMS_SOURCE["feedback"])
     swapped = {**proof, "previous_reply": "other"}
     assert not verified_experience(CLAIMS_CANDIDATE, swapped, CLAIMS_SOURCE["feedback"])
@@ -1325,8 +1326,8 @@ async def test_claims_review_makes_four_calls_and_writes_the_experience(tmp_path
         if "component" in source:
             calls.append("claims")
             if source["component"] == "outcome":
-                return claims(("The user dislikes it.", "user", source["user_feedback"]))
-            return claims(("I will use their name.", "nobody", ""))
+                return claims(("The user dislikes it.", "user", "user", source["user_feedback"]))
+            return claims(("I will use their name.", "character", "plan", ""))
         if "question" in source:
             calls.append("widened")
             return dict(NO_WIDENING)
@@ -1346,4 +1347,90 @@ async def test_claims_review_makes_four_calls_and_writes_the_experience(tmp_path
     assert [x for x in calls if x != "extract"] == ["review", "claims", "claims", "widened"]
     (record,) = c.interaction_experiences("alice")
     assert record.metadata["interpretation_review"]["version"] == 5
+    await c.close()
+
+
+def flags_for(outcome=None, lesson=None, widened=None):
+    from ai_character_engine.memory.experience import claims_flags
+
+    answers = good_claims()
+    if outcome is not None:
+        answers["outcome"] = outcome
+    if lesson is not None:
+        answers["lesson"] = lesson
+    if widened is not None:
+        answers["lesson:widened"] = widened
+    return claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers)
+
+
+def test_a_plan_with_a_reason_or_in_the_outcome_is_unstated():
+    plan = claims(("I will use their name because they like it.", "character", "plan", ""))
+    assert "unstated" in flags_for(lesson=plan)["lesson"]
+    assert "unstated" in flags_for(outcome=claims(("I will stop.", "character", "plan", "")))["outcome"]
+    assert flags_for(lesson=claims(("I will use their name.", "character", "nobody", "")))["lesson"] == {"unstated"}
+
+
+def test_a_claim_about_the_user_resting_on_her_words_is_a_speaker_slip():
+    said = claims(("The user wants to be called Kuu.", "user", "character", "Shall I call you Kuu?"))
+    assert "speaker" in flags_for(outcome=said)["outcome"]
+    missing = claims(("x", "bogus", "user", "Please don't use nicknames."))
+    assert flags_for(outcome=missing) is None
+
+
+def test_a_one_word_quote_does_not_count():
+    short = claims(("The user mentioned Kuu.", "user", "character", "Kuu"))
+    assert flags_for(outcome=claims(("x", "other", "character", "Kuu")))["outcome"] == {"unstated"}
+    assert short  # subject user + character is a speaker slip regardless of quote
+
+
+def test_widened_yes_with_valid_excerpts_adds_widened():
+    yes = {"answer": "yes", "text_excerpt": "use their name",
+           "user_excerpt": "don't use nicknames", "reason": "wider"}
+    assert "widened" in flags_for(widened=yes)["lesson"]
+
+
+def test_claims_proof_needs_claims_and_mode():
+    from ai_character_engine.memory.experience import verified_experience
+
+    review = approving_review({"user_feedback": CLAIMS_SOURCE["feedback"]})
+    proof = experience_review_proof(
+        CLAIMS_CANDIDATE, review, CLAIMS_SOURCE["feedback"], claims=good_claims(),
+        previous_reply=CLAIMS_SOURCE["previous_reply"],
+    )
+    assert verified_experience(CLAIMS_CANDIDATE, proof, CLAIMS_SOURCE["feedback"])
+    assert not verified_experience(CLAIMS_CANDIDATE, {**proof, "mode": "x"}, CLAIMS_SOURCE["feedback"])
+    no_claims = {k: v for k, v in proof.items() if k != "claims"}
+    assert not verified_experience(CLAIMS_CANDIDATE, no_claims, CLAIMS_SOURCE["feedback"])
+    other = {**CLAIMS_CANDIDATE, "character_quote": "not in the reply"}
+    assert not verified_experience(other, proof, CLAIMS_SOURCE["feedback"])
+
+
+def test_an_invalid_review_mode_raises():
+    from ai_character_engine.companion.settings import CompanionSettings
+
+    with pytest.raises(ValueError):
+        CompanionSettings(interaction_review_mode="bogus")
+
+
+@pytest.mark.asyncio
+async def test_review_mode_checklist_alone_runs_the_checklist(tmp_path):
+    asked = []
+
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "question" in source:
+            asked.append(1)
+            return dict(NO_WIDENING)
+        if "candidate" in source:
+            return approving_review(source)
+        return lesson(messages)
+
+    c = companion(
+        tmp_path, {"interaction": Worker(reviewing)}, llm=Foreground(),
+        character_development=True, interaction_review_mode="checklist",
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply("I don't like nicknames.", conversation_id="one", user_id="alice")
+    await c.settle()
+    assert len(asked) == 6
     await c.close()
