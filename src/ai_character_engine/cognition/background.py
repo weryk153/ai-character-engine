@@ -25,6 +25,11 @@ from ai_character_engine.memory.conflicts import (
     says_a_change,
 )
 from ai_character_engine.memory.evidence import classify_user_text
+from ai_character_engine.memory.relationship import (
+    RELATIONSHIP_VIEW_TARGET,
+    normalize_views,
+    relationship_messages,
+)
 from ai_character_engine.memory.experience import (
     CHECKLIST_COMPONENTS,
     CHECKLIST_QUESTIONS,
@@ -91,6 +96,7 @@ class BackgroundCognitionKind(str, Enum):
     USER_STATE = "user_state"
     DIARY = "diary"
     INTERACTION_LEARNING = "interaction_learning"
+    RELATIONSHIP_REFLECTION = "relationship_reflection"
 
 
 _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
@@ -107,6 +113,7 @@ _ROLE_BY_KIND: dict[BackgroundCognitionKind, CognitiveRole] = {
     BackgroundCognitionKind.USER_STATE: CognitiveRole.USER_STATE,
     BackgroundCognitionKind.DIARY: CognitiveRole.DIARY,
     BackgroundCognitionKind.INTERACTION_LEARNING: CognitiveRole.INTERACTION,
+    BackgroundCognitionKind.RELATIONSHIP_REFLECTION: CognitiveRole.RELATIONSHIP,
 }
 
 SELF_MEMORY_TARGET = "memory.self_candidate"
@@ -404,6 +411,11 @@ class StructuredBackgroundWorker:
             )
 
     def _messages(self, context: TaskContext) -> list[Message]:
+        if self.spec.kind is BackgroundCognitionKind.RELATIONSHIP_REFLECTION:
+            return relationship_messages(
+                context.request.payload.get("relationship", {}),
+                str(context.request.payload.get("output_language") or ""),
+            )
         if self.spec.kind is BackgroundCognitionKind.INTERACTION_LEARNING:
             return experience_messages(
                 context.request.payload.get("interaction", {}),
@@ -882,6 +894,20 @@ class StructuredBackgroundWorker:
                             "experience_extras": experience_extras(data)},
             ))
             return value, confidence, evidence, proposals
+
+        if kind is BackgroundCognitionKind.RELATIONSHIP_REFLECTION:
+            source = context.request.payload.get("relationship", {})
+            user_id = source.get("user_id")
+            if not isinstance(user_id, str) or not user_id.strip():
+                return None, confidence, (), []
+            views = normalize_views(data, source, int(source.get("limit") or 0))
+            proposals.append(context.proposal(
+                RELATIONSHIP_VIEW_TARGET, {"views": views}, confidence=1.0,
+                provenance={**provenance, "user_id": user_id,
+                            "reflected_at": source.get("reflected_at"),
+                            "importance_seen": source.get("importance_seen", 0.0)},
+            ))
+            return tuple(views), confidence, (), proposals
 
         if kind is BackgroundCognitionKind.MEMORY_EXTRACTION:
             items = data.get("items", [])
@@ -1859,6 +1885,9 @@ _MOTIVATION_SOURCE_RULE = "; ".join(
 
 _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
     {
+        # The messages come from relationship_messages; a placeholder keeps
+        # lookups by kind from failing.
+        BackgroundCognitionKind.RELATIONSHIP_REFLECTION: "",
         BackgroundCognitionKind.MEMORY_EXTRACTION: (
             "Extract durable facts the user stated in the user lines to extract from, about themselves or "
             "their world: name, people and pets, work, projects, preferences, plans, and corrections of "

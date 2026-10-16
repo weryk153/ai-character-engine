@@ -89,6 +89,14 @@ from ai_character_engine.memory.experience import (
     experience_scope,
     experience_topics,
 )
+from ai_character_engine.memory.relationship import (
+    RELATIONSHIP_VIEW_KIND,
+    RELATIONSHIP_VIEW_TARGET,
+    held_views,
+    pending_importance,
+    reflection_source,
+    views_to_review,
+)
 from ai_character_engine.memory.self_kinds import (
     DEVELOPING_SELF_KINDS,
     CONVERSATION_KEY,
@@ -315,6 +323,13 @@ _WORKERS = (
         CognitiveRole.INTERACTION,
         TaskPriority.NORMAL,
         EXPERIENCE_TARGET,
+    ),
+    _Worker(
+        "relationship",
+        BackgroundCognitionKind.RELATIONSHIP_REFLECTION,
+        CognitiveRole.RELATIONSHIP,
+        TaskPriority.LOW,
+        RELATIONSHIP_VIEW_TARGET,
     ),
     _Worker(
         "reflection",
@@ -1267,6 +1282,9 @@ class CharacterCompanion:
                     }
                     if self._interaction_source is not None else None
                 )
+                self._background.job_extras[BackgroundCognitionKind.RELATIONSHIP_REFLECTION] = (
+                    self._relationship_if_due
+                )
         self._commits = CognitiveCommitCoordinator(
             self._tasks, event_history=self.settings.records_kept
         )
@@ -1368,6 +1386,8 @@ class CharacterCompanion:
 
     def _every(self, worker: _Worker) -> int:
         if worker.name == "interaction" and not self.settings.character_development:
+            return 0
+        if worker.name == "relationship" and not self.settings.character_development:
             return 0
         if worker.name == "diary":
             # Asked after every turn whether her day is due (_day_if_due), and
@@ -1500,6 +1520,39 @@ class CharacterCompanion:
             if r.kind == EXPERIENCE_KIND and r.id in forgotten else r
             for r in self._memory_store.list_for_character(scope)
         ])
+
+    def _relationship_records(self, user_id: str) -> tuple[list, list]:
+        scope = experience_scope(self.character.id, user_id)
+        records = self._memory_store.list_for_character(scope)
+        experiences = [r for r in records if r.kind == EXPERIENCE_KIND
+                       and (r.is_active or r.metadata.get("retired_by_votes") is True)]
+        views = [r for r in records if r.kind == RELATIONSHIP_VIEW_KIND]
+        return experiences, views
+
+    def relationship_views(self, user_id: str) -> tuple[MemoryRecord, ...]:
+        """Her views of being with this person that still rest on what holds."""
+        experiences, views = self._relationship_records(user_id)
+        return tuple(held_views(views, experiences))
+
+    def _relationship_if_due(self) -> dict | None:
+        source = self._interaction_source
+        if source is None:
+            return None
+        user_id = source["user_id"]
+        experiences, views = self._relationship_records(user_id)
+        pending = pending_importance(experiences, views)
+        if pending < self.settings.relationship_reflection_threshold and not views_to_review(
+            views, experiences
+        ):
+            return None
+        reading = reflection_source(experiences, views, self.settings.relationship_views_shown)
+        if reading is None and not views_to_review(views, experiences):
+            return None
+        reading = reading or {"experiences": [], "ids": {}, "views": [], "to_review": [],
+                              "limit": self.settings.relationship_views_shown}
+        return {"relationship": {**reading, "user_id": user_id,
+                                 "reflected_at": self._now().isoformat(),
+                                 "importance_seen": pending}}
 
     def _experiences_for_context(self) -> list[dict]:
         if self._current_user_id is None:

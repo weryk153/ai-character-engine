@@ -55,6 +55,14 @@ class CompanionSettings:
     # of one call listing problems. For a reviewer that invents problems or
     # never leaves the list empty; costs six more calls per candidate.
     interaction_review_checklist: bool = False
+    # Her views of being with this person, drawn from the experiences above
+    # and kept with the ids they rest on. Asked after every turn; runs when the
+    # importance of experiences since the last reflection reaches the threshold
+    # (about two ordinary ones or one firm limit), or when a view lost an
+    # experience it rested on.
+    relationship_every: int = 1
+    relationship_reflection_threshold: float = 1.0
+    relationship_views_shown: int = 3
     # One model call. The engine's own worker defaults (12 s for emotion, 20 s
     # for a summary) time out on the hardware above.
     call_timeout_seconds: float = 60.0
@@ -151,6 +159,8 @@ class CompanionSettings:
             "self_memory_every",
             "interaction_every",
             "interaction_topics_shown",
+            "relationship_every",
+            "relationship_views_shown",
             "user_state_every",
             "max_turns_late",
             "goal_max_age_days",

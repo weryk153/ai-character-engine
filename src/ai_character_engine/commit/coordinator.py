@@ -36,6 +36,7 @@ from ai_character_engine.memory.experience import (
     record_has_verified_interpretation,
 )
 from ai_character_engine.memory.models import MemoryRecord
+from ai_character_engine.memory.relationship import RELATIONSHIP_VIEW_KIND, RELATIONSHIP_VIEW_TARGET
 from ai_character_engine.memory.self_kinds import CONVERSATION_KEY
 from ai_character_engine.long_term_cognition import (
     BeliefClaim,
@@ -88,6 +89,12 @@ _DEFAULT_POLICIES: dict[str, CommitTargetPolicy] = {
         min_confidence=0.0,
         stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
         expected_worker_kind="interaction_learning",
+        max_age_s=300.0,
+    ),
+    RELATIONSHIP_VIEW_TARGET: CommitTargetPolicy(
+        min_confidence=0.0,
+        stale_policy=StalePolicy.ALLOW_MANUAL_REBASE,
+        expected_worker_kind="relationship_reflection",
         max_age_s=300.0,
     ),
     "memory.append_candidate": CommitTargetPolicy(
@@ -542,6 +549,20 @@ class CognitiveCommitCoordinator:
                     "experience_topic_not_owned_by_user",
                     current_revision,
                 )
+        if proposal.target == RELATIONSHIP_VIEW_TARGET:
+            user_id = proposal.provenance.get("user_id")
+            manager = self.tasks.runtime.memory_manager
+            if manager is None or not isinstance(user_id, str) or not user_id.strip():
+                return self._finalize(proposal, CommitStatus.REJECTED,
+                                      "relationship_view_requires_user", current_revision)
+            scope = experience_scope(self.tasks.runtime.character.id, user_id)
+            owned = {r.id for r in manager.store.list_for_character(scope)
+                     if r.kind == EXPERIENCE_KIND}
+            if any(s["record_id"] not in owned
+                   for v in proposal.payload.get("views") or ()
+                   for s in v.get("derived_from") or ()):
+                return self._finalize(proposal, CommitStatus.REJECTED,
+                                      "relationship_view_source_not_owned", current_revision)
         if proposal.target == EXPERIENCE_VOTE_TARGET:
             source = proposal.provenance.get("interaction")
             user_id = proposal.provenance.get("user_id")
@@ -950,6 +971,54 @@ class CognitiveCommitCoordinator:
                 [updated if r.id == record.id else r for r in manager.store.list_for_character(scope)],
             )
             return record.id
+        if proposal.target == RELATIONSHIP_VIEW_TARGET:
+            manager = runtime.memory_manager
+            scope = experience_scope(runtime.character.id, proposal.provenance["user_id"])
+            before = manager.store.list_for_character(scope)
+            reflected_at = str(proposal.provenance.get("reflected_at")
+                               or proposal.created_at.isoformat())
+            written = []
+            marker = None
+            common = {
+                "reflected_at": reflected_at,
+                "importance_seen": proposal.provenance.get("importance_seen", 0.0),
+                "user_id": proposal.provenance["user_id"],
+                "source_task_id": proposal.source_task_id,
+                "proposal_id": proposal.id,
+            }
+            event_id = str(proposal.provenance.get("foreground_event_id") or "")
+            try:
+                for item in proposal.payload.get("views") or ():
+                    written.append(manager.append_background_candidate(
+                        character_id=scope, summary=item["view"],
+                        kind=RELATIONSHIP_VIEW_KIND, importance=0.6,
+                        source_event_id=event_id, source_event_type="user_message",
+                        tags=("background_cognition", "relationship_reflection"),
+                        metadata={**common, "derived_from": item["derived_from"]},
+                    ))
+                if not written:
+                    # Nothing held, but when she reflected must be remembered.
+                    marker = manager.append_background_candidate(
+                        character_id=scope, summary="(no views)",
+                        kind=RELATIONSHIP_VIEW_KIND, importance=0.6,
+                        source_event_id=event_id, source_event_type="user_message",
+                        tags=("background_cognition", "relationship_reflection"),
+                        metadata={**common, "derived_from": []},
+                    )
+                newest = written[-1].id if written else None
+                keep = {r.id for r in written}
+                manager.store.replace_for_character(scope, [
+                    replace(r, status="superseded", superseded_by=newest)
+                    if r.kind == RELATIONSHIP_VIEW_KIND
+                    and (r.is_active or (marker is not None and r.id == marker.id))
+                    and r.id not in keep
+                    else r
+                    for r in manager.store.list_for_character(scope)
+                ])
+            except Exception:
+                manager.store.replace_for_character(scope, before)
+                raise
+            return newest or "none"
         if proposal.target in {"memory.append_candidate", "memory.self_candidate"}:
             manager = runtime.memory_manager
             if manager is None:

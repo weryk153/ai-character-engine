@@ -1,6 +1,9 @@
 """Relationship views: derived from reviewed experiences, held only while they are."""
 
+import json
 from dataclasses import replace
+
+import pytest
 
 from ai_character_engine.memory.relationship import (
     RELATIONSHIP_VIEW_KIND,
@@ -12,7 +15,8 @@ from ai_character_engine.memory.relationship import (
     views_to_review,
 )
 from ai_character_engine.memory.models import MemoryRecord
-from tests.test_interaction_learning import _held
+from tests.test_companion import Worker, companion
+from tests.test_interaction_learning import _held, keyed_lesson
 
 
 def view(text, *records, minutes=100):
@@ -117,3 +121,88 @@ def test_a_counted_vote_after_the_last_reflection_adds_its_importance():
     ]})
     v = view("Earlier view.", a, minutes=100)
     assert pending_importance([a], [v]) == 0.3
+
+
+def reflect(messages):
+    data = json.loads(messages[1].content)
+    if "experiences" in data:
+        return {"views": [{"view": "With them I use their name.",
+                           "derived_from": [data["experiences"][0]["id"]]}]}
+    return keyed_lesson(messages)
+
+
+async def taught(tmp_path, **settings):
+    worker = Worker(reflect)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker},
+                  character_development=True, **settings)
+    await c.reply("Hi", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Please don't use nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Thanks.", conversation_id="a", user_id="alice")
+    await c.settle()
+    return c
+
+
+@pytest.mark.asyncio
+async def test_enough_importance_brings_a_view_for_that_person_only(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    (one,) = c.relationship_views("alice")
+    assert one.summary == "With them I use their name."
+    assert c.relationship_views("bob") == ()
+    assert all(r.kind != "relationship_view"
+               for r in c._memory_store.list_for_character(c._self_scope()))
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_below_the_threshold_nothing_is_reflected(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=5.0)
+    assert c.relationship_views("alice") == ()
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_forgotten_source_withdraws_the_view_and_forces_a_reflection(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    (record,) = c.interaction_experiences("alice")
+    c.forget_interaction_experiences("alice", [record.id])
+    assert c.relationship_views("alice") == ()
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_new_batch_replaces_the_last(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    await c.reply("No nicknames, I mean it.", conversation_id="b", user_id="alice")
+    await c.settle()
+    scope_views = [r for r in c._memory_store.list_for_character(
+        c.interaction_experiences("alice")[0].character_id) if r.kind == "relationship_view"]
+    assert sum(1 for r in scope_views if r.is_active) == 1
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_no_user_id_no_reflection(tmp_path):
+    worker = Worker(reflect)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker},
+                  character_development=True, relationship_reflection_threshold=0.0)
+    await c.reply("Hi", conversation_id="a")
+    await c.settle()
+    await c.reply("Please don't use nicknames.", conversation_id="a")
+    await c.settle()
+    assert worker.calls == 0
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_two_conversations_reflecting_leave_one_batch_active(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.0)
+    await c.reply("Hello", conversation_id="b", user_id="alice")
+    await c.reply("Hello again", conversation_id="a", user_id="alice")
+    await c.settle()
+    scope = c.interaction_experiences("alice")[0].character_id
+    active = [r for r in c._memory_store.list_for_character(scope)
+              if r.kind == "relationship_view" and r.is_active]
+    assert len(active) == 1
+    await c.close()

@@ -47,6 +47,8 @@ class CognitiveRole(str, Enum):
     # give it a larger model than the one that extracts. Falls back to the
     # interaction model when no policy names it.
     INTERACTION_REVIEW = "interaction_review"
+    # Her views of being with one person, drawn from the experiences.
+    RELATIONSHIP = "relationship"
 
 
 class CognitiveOptimization(str, Enum):
