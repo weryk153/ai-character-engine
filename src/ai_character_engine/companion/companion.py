@@ -1817,7 +1817,11 @@ class CharacterCompanion:
                             "character": self.character.background or self.character.description,
                             "previous_reply": previous,
                             "feedback": text,
-                            "topics": self._experiences_for_context(),
+                            "topics": experience_topics(
+                                self.interaction_experiences(user_id),
+                                self.settings.interaction_topics_shown,
+                                query=text,
+                            ),
                         }
                 self._access.foreground_started()
                 try:

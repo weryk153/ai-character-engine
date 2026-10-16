@@ -36,6 +36,7 @@ from ai_character_engine.memory.experience import (
     experience_checklist_messages,
     experience_condition_messages,
     experience_vote_messages,
+    experience_extras,
     experience_messages,
     experience_review_conditions,
     experience_review_messages,
@@ -877,7 +878,8 @@ class StructuredBackgroundWorker:
                 EXPERIENCE_TARGET, value, confidence=confidence,
                 provenance={**provenance, "evidence": list(evidence),
                             "evidence_type": "interaction_observation",
-                            "user_id": user_id, "interaction": dict(source)},
+                            "user_id": user_id, "interaction": dict(source),
+                            "experience_extras": experience_extras(data)},
             ))
             return value, confidence, evidence, proposals
 

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from ai_character_engine.memory.experience import (
+    experience_extras,
     experience_topics,
     normalize_experience,
     experience_review_proof,
@@ -1201,3 +1202,53 @@ def test_a_number_alone_does_not_make_two_topics_alike():
     ]
     matched = experience_topics(records, 1, query="see you at 7")
     assert matched[0]["topic"] == "othere"
+
+
+def test_extras_keep_short_keywords_and_a_bounded_importance():
+    extras = experience_extras({
+        "keywords": ["綽號", "  名字 ", "", 3, "x" * 21, "a", "b", "c", "d", "e"],
+        "importance": 1.7,
+    })
+    assert extras["keywords"] == ["綽號", "名字", "a", "b", "c", "d"]
+    assert extras["importance"] == 1.0
+    assert experience_extras({})["importance"] == 0.5
+    assert experience_extras({"importance": "high"})["importance"] == 0.5
+
+
+def keyed_lesson(messages):
+    answer = lesson(messages)
+    if "experience" in answer:
+        answer = {**answer, "keywords": ["綽號"], "importance": 0.9}
+    return answer
+
+
+@pytest.mark.asyncio
+async def test_keywords_and_importance_are_stored_outside_the_reviewed_candidate(tmp_path):
+    worker = Worker(keyed_lesson)
+    c = companion(tmp_path, {"interaction": worker}, character_development=True)
+    await c.reply("Hi", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Please don't use nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    assert record.importance == 0.9
+    assert record.metadata["keywords"] == ["綽號"]
+    assert [e["importance"] for e in record.metadata["importance_events"]] == [0.9]
+    # The review proof still verifies: extras are not part of the reviewed candidate.
+    assert experience_topics([record], 4)
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_counted_vote_adds_the_records_importance_again(tmp_path):
+    worker = Worker(keyed_lesson)
+    c = companion(tmp_path, {"interaction": worker}, character_development=True)
+    await c.reply("Hi", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Please don't use nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    await c.reply("Again: no nicknames.", conversation_id="a", user_id="alice")
+    await c.settle()
+    (record,) = c.interaction_experiences("alice")
+    assert [e["importance"] for e in record.metadata["importance_events"]] == [0.9, 0.9]
+    await c.close()

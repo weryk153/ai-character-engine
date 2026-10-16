@@ -27,6 +27,34 @@ _VOTES = ("UPVOTE", "DOWNVOTE", "NOOP")
 # EDIT is answered by the voter but counted by nobody: the candidate then
 # takes the full extraction review, as a revision does.
 VOTE_EDIT = "EDIT"
+KEYWORDS_KEPT = 6
+_KEYWORD_CHARS = 20
+DEFAULT_IMPORTANCE = 0.5
+# Stored before importance was asked for.
+LEGACY_IMPORTANCE = 0.7
+
+
+def experience_extras(data: Mapping) -> dict:
+    """Keywords and importance the extractor gave beside the candidate.
+
+    Kept apart from the candidate: the review proof is a digest of the
+    candidate alone, and records written before these existed must still verify.
+    """
+    raw = data.get("keywords") if isinstance(data, Mapping) else None
+    keywords = []
+    for item in raw if isinstance(raw, list) else ():
+        word = _text(item, _KEYWORD_CHARS)
+        if word and word not in keywords:
+            keywords.append(word)
+        if len(keywords) == KEYWORDS_KEPT:
+            break
+    try:
+        importance = float(data.get("importance"))
+    except (TypeError, ValueError, AttributeError):
+        importance = DEFAULT_IMPORTANCE
+    if importance != importance:  # NaN
+        importance = DEFAULT_IMPORTANCE
+    return {"keywords": keywords, "importance": max(0.0, min(1.0, importance))}
 
 
 def experience_scope(character_id: str, user_id: str) -> str:
@@ -96,7 +124,11 @@ def experience_messages(source: Mapping, language: str = "") -> list[Message]:
         "Write lesson in the character's first person, in at most two short sentences. "
         'Return JSON: {"experience":null|{"topic":str,"topic_id":null|str,'
         '"basis":"boundary|preference|shared_outcome","outcome":str,"lesson":str,'
-        '"character_quote":str,"user_quote":str,"revises":bool},"confidence":0..1}.'
+        '"character_quote":str,"user_quote":str,"revises":bool},"confidence":0..1,'
+        '"keywords":[str],"importance":0..1}. '
+        "keywords: 3 to 6 short words a later message on the same issue would share, "
+        "in the language of the user's words. importance: 0.2 for a passing preference, "
+        "0.5 for a clear preference, 0.9 for a firm limit or something the user stressed."
     )
     if language:
         system += f" Write topic, outcome and lesson in {language}."

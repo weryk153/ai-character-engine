@@ -25,6 +25,7 @@ from ai_character_engine.memory.experience import (
     EXPERIENCE_KIND,
     EXPERIENCE_TARGET,
     EXPERIENCE_VOTE_TARGET,
+    DEFAULT_IMPORTANCE,
     INITIAL_SUPPORT,
     apply_vote,
     experience_scope,
@@ -846,6 +847,11 @@ class CognitiveCommitCoordinator:
             before = manager.store.list_for_character(scope)
             payload = dict(proposal.payload)
             event_id = str(proposal.provenance["foreground_event_id"])
+            extras = proposal.provenance.get("experience_extras") or {}
+            importance = float(extras.get("importance", DEFAULT_IMPORTANCE))
+            observed_at = proposal.provenance["interaction"].get(
+                "observed_at", proposal.created_at.isoformat()
+            )
             try:
                 record = manager.append_background_candidate(
                     character_id=scope,
@@ -858,7 +864,7 @@ class CognitiveCommitCoordinator:
                         else payload["outcome"]
                     ),
                     kind=EXPERIENCE_KIND,
-                    importance=0.7,
+                    importance=importance,
                     source_event_id=event_id,
                     source_event_type="user_message",
                     tags=("background_cognition", "interaction_learning"),
@@ -876,9 +882,12 @@ class CognitiveCommitCoordinator:
                             proposal.provenance["interpretation_review"]
                         ),
                         "user_id": proposal.provenance["user_id"],
-                        "observed_at": proposal.provenance["interaction"].get(
-                            "observed_at", proposal.created_at.isoformat()
-                        ),
+                        "observed_at": observed_at,
+                        "keywords": list(extras.get("keywords") or ()),
+                        "importance_events": [
+                            {"event_id": event_id, "importance": importance,
+                             "observed_at": observed_at}
+                        ],
                         "evidence_type": "interaction_observation",
                         "confidence": proposal.confidence,
                         "source_task_id": proposal.source_task_id,
@@ -915,6 +924,12 @@ class CognitiveCommitCoordinator:
                 "support_events": list(record.metadata.get("support_events") or ()),
                 "objections": list(record.metadata.get("objections") or ()),
             }
+            if proposal.payload.get("action") in ("UPVOTE", "DOWNVOTE"):
+                metadata["importance_events"] = [
+                    *(record.metadata.get("importance_events") or ()),
+                    {"event_id": entry["event_id"], "importance": record.importance,
+                     "observed_at": entry["observed_at"]},
+                ]
             action = proposal.payload.get("action")
             if action == "UPVOTE":
                 metadata["support_events"].append(entry)
