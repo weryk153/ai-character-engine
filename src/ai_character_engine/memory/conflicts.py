@@ -194,14 +194,14 @@ def may_contradict(earlier: str, newer: str) -> bool:
     return not says_a_plan(newer) and not one_day_against_a_habit(newer, earlier)
 
 
-# Words that say a plan is now happening or done. 到了 does not count after a
-# verb that only reaches something (找到了, 買到了, 想到了).
+# Words that say a plan is now happening or done. 到了 counts only after a
+# motion verb or 已經 (搬到了, 已經到了), not after 找, 買, 想...
 _NOW_OR_DONE_CUES = (
     "已經", "已经", "現在在", "现在在", "正在", "做完", "完成", "交了",
 )
 _NOW_OR_DONE = re.compile(
     "|".join(
-        [*(re.escape(cue) for cue in _NOW_OR_DONE_CUES), "(?<![找買买想看遇拿得])到了"]
+        [*(re.escape(cue) for cue in _NOW_OR_DONE_CUES), "(?:(?<=已經)|(?<=已经)|(?<=[去來来回搬走跑飛飞開开]))到了"]
         + [r"\b(?:now|already|finished|done|arrived|handed in)\b"]
     ),
     re.IGNORECASE,
@@ -215,10 +215,13 @@ _NOT_YET_WORDS = re.compile(r"\bnot\b|n't|\bnever\b")
 _STEP_CUES = (
     "找到", "買到", "买到", "訂了", "订了", "報名", "报名", "準備", "准备", "決定", "决定",
     "考慮", "考虑", "訂金", "订金", "預約", "预约", "預訂", "预订",
+    "訂到", "订到", "收到", "頭期款", "头期款", "付了",
 )
+# Any verb + 好 is a step done, not the plan: 訂好, 約好, 看好, 準備好...
+_STEP_DONE = re.compile("[訂订買买約约看請请存排辦办弄備备準准]好")
 _STEP_WORDS = re.compile(
     r"\b(?:booked|bought|found|registered|registering|signed up|deposit|applied|preparing|"
-    r"deciding|considering)\b"
+    r"deciding|considering|got|reserved|packed|saved|tickets?)\b"
 )
 # Left out when two facts are compared: the plan and "now" words, and 開始.
 _NOISE_CUES = (*_NOW_OR_DONE_CUES, *_PLAN_CUES, "開始", "开始")
@@ -243,7 +246,9 @@ def _content_pieces(summary: str) -> set[str]:
 
 def _is_a_plan(earlier: str, kind: str) -> bool:
     kind = kind.strip().casefold()
-    return "plan" in kind if kind else says_a_plan(earlier)
+    if not kind:
+        return says_a_plan(earlier)
+    return bool({"plan", "plans"} & set(re.split(r"[^a-z]+", kind)))
 
 
 def retires_a_plan(earlier: str, newer: str, said: str, earlier_kind: str) -> bool:
@@ -258,7 +263,7 @@ def retires_a_plan(earlier: str, newer: str, said: str, earlier_kind: str) -> bo
     text = f"{newer} {said}"
     if says_a_plan(text) or _has(text, _NOT_YET_CUES, _NOT_YET_WORDS):
         return False
-    if _has(said, _STEP_CUES, _STEP_WORDS):
+    if _has(said, _STEP_CUES, _STEP_WORDS) or _STEP_DONE.search(said):
         return False
     return bool(_content_pieces(earlier) & _content_pieces(text))
 

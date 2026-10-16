@@ -1281,3 +1281,37 @@ async def test_a_done_plan_survives_the_recheck_without_a_change_word():
 @pytest.mark.asyncio
 async def test_a_done_plan_is_dropped_when_the_model_says_both_are_true():
     assert await _plan_recheck({"changed": False, "word": "", "both_true": True}) == []
+
+
+@pytest.mark.parametrize(
+    "earlier, newer",
+    [
+        ("用戶想去海邊", "已經訂好去海邊的車票了"),
+        ("用戶想去海邊", "已經買好去海邊的票了"),
+        ("用戶想去海邊", "已經約好朋友去海邊了"),
+        ("用戶打算搬去台中", "已經看好台中的房子了"),
+        ("用戶打算去東京", "已經請好假去東京了"),
+        ("用戶打算買電腦", "已經存好買電腦的錢了"),
+        ("用戶想去海邊", "我訂到了去海邊的票"),
+        ("用戶想去海邊", "我收到了海邊民宿的確認信"),
+        ("用戶打算搬去台中", "已經付了台中房子的頭期款"),
+        ("The user plans to visit Kyoto", "I already got the train tickets to Kyoto"),
+        ("The user plans to visit Kyoto", "I already reserved a hotel in Kyoto"),
+        ("The user is going to Taichung next week", "I already packed for Taichung"),
+        ("用戶想去海邊", "我買到了去海邊的票"),
+    ],
+)
+def test_a_step_toward_a_plan_is_not_the_plan(earlier, newer):
+    assert may_supersede(earlier, newer, newer, earlier_kind="plan") is False
+
+
+def test_a_move_done_still_retires_the_plan():
+    assert may_supersede("用戶打算搬去台中", "用戶已經搬到台中了", "我已經搬到台中了", earlier_kind="plan")
+
+
+@pytest.mark.parametrize("kind, plan", [
+    ("plan", True), ("plans", True), ("travel_plan", True), ("Plan", True),
+    ("explanation", False), ("planet", False), ("event", False),
+])
+def test_only_a_whole_plan_word_in_the_kind_is_a_plan(kind, plan):
+    assert may_supersede("用戶想去海邊", "用戶已經到海邊了", "我已經在海邊了", earlier_kind=kind) is plan
