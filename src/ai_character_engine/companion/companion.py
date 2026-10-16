@@ -1176,6 +1176,7 @@ class CharacterCompanion:
         if self.settings.character_development:
             builder.current_self_views = self._current_self_views
             builder.interaction_experiences = self._experiences_for_context
+            builder.relationship_views = self._views_for_context
         notes_of_the_host = builder.turn_notes
         builder.turn_notes = lambda: [
             *(notes_of_the_host() if notes_of_the_host is not None else ()),
@@ -1561,6 +1562,11 @@ class CharacterCompanion:
             return []
         return experience_topics(self.interaction_experiences(self._current_user_id),
                                  self.settings.interaction_topics_shown)
+
+    def _views_for_context(self) -> list[str]:
+        if self._current_user_id is None or not self.settings.character_development:
+            return []
+        return [one_line(v.summary) for v in self.relationship_views(self._current_user_id)]
 
     @property
     def character(self) -> CharacterProfile:

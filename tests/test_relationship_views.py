@@ -15,7 +15,7 @@ from ai_character_engine.memory.relationship import (
     views_to_review,
 )
 from ai_character_engine.memory.models import MemoryRecord
-from tests.test_companion import Worker, companion
+from tests.test_companion import Foreground, Worker, companion
 from tests.test_interaction_learning import _held, keyed_lesson
 
 
@@ -268,4 +268,45 @@ async def test_two_conversations_reflecting_leave_one_batch_active(tmp_path):
     active = [r for r in c._memory_store.list_for_character(scope)
               if r.kind == "relationship_view" and r.is_active]
     assert len(active) == 1
+    await c.close()
+
+
+@pytest.mark.asyncio
+async def test_a_view_is_said_once_as_a_note_and_withdrawn_when_it_no_longer_holds(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    await c.close()
+    foreground = Foreground()
+    c = companion(tmp_path, llm=foreground, character_development=True)
+    await c.reply("Hello", conversation_id="a", user_id="alice")
+    said = "\n".join(m.content for m in foreground.calls[-1])
+    assert said.count("- view: With them I use their name.") == 1
+    (record,) = c.interaction_experiences("alice")
+    c.forget_interaction_experiences("alice", [record.id])
+    await c.reply("Hello?", conversation_id="a", user_id="alice")
+    said = "\n".join(m.content for m in foreground.calls[-1])
+    assert "- view withdrawn: With them I use their name." in said
+    await c.reply("Hm.", conversation_id="a", user_id="alice")
+    said = "\n".join(m.content for m in foreground.calls[-1])
+    assert said.count("- view withdrawn: With them I use their name.") == 1
+    await c.close()
+
+
+def _view_lines(messages):
+    # The guide in the system prompt quotes "- view: "; only note lines count.
+    return [
+        line for m in messages for line in m.content.splitlines()
+        if line.startswith("- view:")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_view_reaches_another_person_or_a_conversation_without_a_user(tmp_path):
+    c = await taught(tmp_path, relationship_reflection_threshold=0.8)
+    await c.close()
+    foreground = Foreground()
+    c = companion(tmp_path, llm=foreground, character_development=True)
+    await c.reply("Hello", conversation_id="b", user_id="bob")
+    assert not _view_lines(foreground.calls[-1])
+    await c.reply("Hello", conversation_id="z")
+    assert not _view_lines(foreground.calls[-1])
     await c.close()

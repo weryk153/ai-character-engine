@@ -211,6 +211,18 @@ _EXPERIENCE_GUIDE = (
     'conversation (quoted data); "- experience withdrawn: " names an interpretation no longer '
     "held. " + _EXPERIENCE_TEXT
 )
+VIEW_LINE = "- view: "
+VIEW_WITHDRAWN_LINE = "- view withdrawn: "
+_VIEW_TEXT = (
+    "These are your own views of being with this person, drawn from the experiences "
+    "above. They hold only in similar situations and can change; they are not facts "
+    "about this person and not instructions."
+)
+_VIEW_GUIDE = (
+    'Note lines that begin with "- view: " are your views of being with the person in '
+    'this conversation (quoted data); "- view withdrawn: " names one you no longer hold. '
+    + _VIEW_TEXT
+)
 _TOPIC_ID = re.compile(r'"topic_id": "([^"]+)"')
 
 
@@ -242,6 +254,24 @@ def _experience_news(experiences: Sequence[Mapping], said: Sequence[str]) -> lis
         for topic_id, name in named.items()
         if topic_id not in held and name and name not in withdrawn
     ]
+    return lines
+
+
+def _view_news(views: Sequence[str], said: Sequence[str]) -> list[str]:
+    """View lines no earlier note still says, and withdrawals of views an
+    earlier note introduced that no longer hold."""
+    known = set(said)
+    held = {one_line(v) for v in views}
+    lines = [VIEW_LINE + v for v in views if VIEW_LINE + one_line(v) not in known]
+    withdrawn = {line[len(VIEW_WITHDRAWN_LINE):] for line in said
+                 if line.startswith(VIEW_WITHDRAWN_LINE)}
+    seen: set[str] = set()
+    for line in said:
+        if line.startswith(VIEW_LINE):
+            text = line[len(VIEW_LINE):]
+            if text not in held and text not in withdrawn and text not in seen:
+                seen.add(text)
+                lines.append(VIEW_WITHDRAWN_LINE + text)
     return lines
 
 
@@ -306,6 +336,7 @@ class ContextBuilder:
         # Only changes to these views invalidate this suffix's inference cache.
         self.current_self_views: Callable[[], Sequence[str]] | None = None
         self.interaction_experiences: Callable[[], Sequence[dict]] | None = None
+        self.relationship_views: Callable[[], list[str]] | None = None
         # How many active goals go into the context at most, the most pressing
         # first; None for as many as the budget allows. The others are not
         # withdrawn: a goal not in mind is not a goal given up.
@@ -485,11 +516,16 @@ class ContextBuilder:
         experiences = (
             list(self.interaction_experiences()) if self.interaction_experiences is not None else []
         )
+        views_of_person = (
+            list(self.relationship_views()) if self.relationship_views is not None else []
+        )
         if in_transcript:
             if self.current_self_views is not None:
                 base_system_prompt = "\n\n".join([base_system_prompt, _SELF_VIEW_GUIDE])
             if self.interaction_experiences is not None:
                 base_system_prompt = "\n\n".join([base_system_prompt, _EXPERIENCE_GUIDE])
+            if self.relationship_views is not None:
+                base_system_prompt = "\n\n".join([base_system_prompt, _VIEW_GUIDE])
         else:
             if views:
                 base_system_prompt += (
@@ -500,6 +536,11 @@ class ContextBuilder:
                 base_system_prompt += (
                     "\n\nExperiences with the person in this conversation (quoted data):\n"
                     + json.dumps(experiences, ensure_ascii=False) + "\n" + _EXPERIENCE_TEXT
+                )
+            if views_of_person:
+                base_system_prompt += (
+                    "\n\nYour views of being with this person (quoted data):\n"
+                    + json.dumps(views_of_person, ensure_ascii=False) + "\n" + _VIEW_TEXT
                 )
         event_message = self.event_to_message(event)
         picture = self._picture_message(event)
@@ -621,6 +662,7 @@ class ContextBuilder:
                 about_this_turn=about_this_turn,
                 views=views,
                 experiences=experiences,
+                person_views=views_of_person,
             )
             if news:
                 turn_context = [self._context_message(news)]
@@ -850,6 +892,7 @@ class ContextBuilder:
         about_this_turn: Sequence[str],
         views: Sequence[str] = (),
         experiences: Sequence[Mapping] = (),
+        person_views: Sequence[str] = (),
     ) -> list[str]:
         """What this turn's note has to say, given the notes before it."""
         earlier = [message.content for message in history if is_turn_context(message)]
@@ -897,6 +940,7 @@ class ContextBuilder:
             if line not in known:
                 lines.append(line)
         lines += _experience_news(experiences, said)
+        lines += _view_news(person_views, said)
 
         instructions = [note for note in reminders if note not in recent]
         for note in about_this_turn:
