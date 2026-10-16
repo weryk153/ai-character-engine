@@ -306,7 +306,13 @@ async def test_no_view_reaches_another_person_or_a_conversation_without_a_user(t
     c = await taught(tmp_path, relationship_reflection_threshold=0.8)
     await c.close()
     foreground = Foreground()
-    c = companion(tmp_path, llm=foreground, character_development=True)
+    worker = Worker(reflect)
+    c = companion(tmp_path, {"interaction": worker, "relationship": worker},
+                  llm=foreground, character_development=True)
+    # Positive control: with the worker installed the view is shown to alice,
+    # so its absence below is the scoping and not a missing worker.
+    await c.reply("Hello", conversation_id="a", user_id="alice")
+    assert _view_lines(foreground.calls[-1])
     await c.reply("Hello", conversation_id="b", user_id="bob")
     assert not _view_lines(foreground.calls[-1])
     await c.reply("Hello", conversation_id="z")
