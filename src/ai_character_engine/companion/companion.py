@@ -1282,6 +1282,9 @@ class CharacterCompanion:
                         "interaction": self._interaction_source,
                         "interaction_review_checklist":
                             self.settings.interaction_review_checklist,
+                        "interaction_review_mode":
+                            self.settings.interaction_review_mode
+                            or ("checklist" if self.settings.interaction_review_checklist else ""),
                     }
                     if self._interaction_source is not None else None
                 )

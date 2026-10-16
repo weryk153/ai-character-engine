@@ -55,6 +55,11 @@ class CompanionSettings:
     # of one call listing problems. For a reviewer that invents problems or
     # never leaves the list empty; costs six more calls per candidate.
     interaction_review_checklist: bool = False
+    # "claims": each component split into claims with the speaker's exact words
+    # (two calls) plus the widened question for the lesson (one call); judged by
+    # code. "checklist": six yes/no questions. Empty: checklist when
+    # interaction_review_checklist is set, else one review listing problems.
+    interaction_review_mode: str = ""
     # Her views of being with this person, drawn from the experiences above
     # and kept with the ids they rest on. Asked after every turn; runs when the
     # importance of experiences since the last reflection reaches the threshold

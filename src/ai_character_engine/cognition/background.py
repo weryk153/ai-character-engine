@@ -39,6 +39,7 @@ from ai_character_engine.memory.experience import (
     checklist_key,
     condition_check_required,
     experience_checklist_messages,
+    experience_claims_messages,
     experience_condition_messages,
     experience_vote_messages,
     experience_extras,
@@ -663,8 +664,39 @@ class StructuredBackgroundWorker:
         except Exception:
             return [], {"accepted": False, "reason": "review_unavailable"}
         feedback = str(source["feedback"])
+        mode = context.request.payload.get("interaction_review_mode") or (
+            "checklist" if context.request.payload.get("interaction_review_checklist") else ""
+        )
         checklist = None
-        if context.request.payload.get("interaction_review_checklist"):
+        claims = None
+        previous_reply = str(source.get("previous_reply") or "")
+        if mode == "claims":
+            # Each component split into claims with the speaker's exact words,
+            # plus the widened question for the lesson; code judges the rest.
+            claims = {}
+            asks = [
+                (c, experience_claims_messages(source, proposal.payload, c))
+                for c in CHECKLIST_COMPONENTS
+            ]
+            asks.append((
+                checklist_key("lesson", "widened"),
+                experience_checklist_messages(source, proposal.payload, "lesson", "widened"),
+            ))
+            for key, messages in asks:
+                try:
+                    response = await self.models.generate(
+                        role, messages, requirements=self.spec.requirements
+                    )
+                    claims[key] = _parse_json_object(response.text)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    return [], {
+                        "accepted": False,
+                        "reason": "claims_unavailable",
+                        "review": review,
+                    }
+        elif mode == "checklist":
             # One narrow question per concern and component, each answered with
             # the words of the text; the review's own problem lists are not used.
             checklist = {}
@@ -690,7 +722,10 @@ class StructuredBackgroundWorker:
                             "review": review,
                         }
         conditions_check = None
-        if condition_check_required(review, feedback, proposal.payload, checklist):
+        if condition_check_required(
+            review, feedback, proposal.payload, checklist,
+            claims=claims, previous_reply=previous_reply,
+        ):
             # The reviewer lists the user's conditions but has repeatedly passed a
             # lesson that reworded one. Compare them apart from everything else.
             try:
@@ -711,13 +746,15 @@ class StructuredBackgroundWorker:
                     "review": review,
                 }
         proof = experience_review_proof(
-            proposal.payload, review, feedback, conditions_check, checklist
+            proposal.payload, review, feedback, conditions_check, checklist,
+            claims=claims, previous_reply=previous_reply,
         )
         audit = {
             "accepted": proof is not None,
             "review": review,
             "conditions": conditions_check,
             "checklist": checklist,
+            "claims": claims,
         }
         if proof is None:
             return [], audit

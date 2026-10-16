@@ -1252,3 +1252,98 @@ async def test_a_counted_vote_adds_the_records_importance_again(tmp_path):
     (record,) = c.interaction_experiences("alice")
     assert [e["importance"] for e in record.metadata["importance_events"]] == [0.9, 0.9]
     await c.close()
+
+
+CLAIMS_SOURCE = {"previous_reply": "Shall I call you Kuu?", "feedback": "Please don't use nicknames."}
+CLAIMS_CANDIDATE = {
+    "topic": "nicknames", "lesson": "I should use their name instead of a nickname.",
+    "outcome": "The user asked not to be called by a nickname.",
+    "character_quote": "Shall I call you Kuu?", "user_quote": "Please don't use nicknames.",
+    "basis": "boundary", "topic_id": None, "revises": False,
+}
+NO_WIDENING = {"answer": "no", "text_excerpt": "", "user_excerpt": "", "reason": ""}
+
+
+def claims(*items):
+    return {"claims": [dict(zip(("claim", "said_by", "quote"), item)) for item in items]}
+
+
+def good_claims():
+    return {
+        "outcome": claims(("The user asked for no nicknames.", "user", "Please don't use nicknames.")),
+        "lesson": claims(("I will use their name.", "nobody", "")),
+        "lesson:widened": dict(NO_WIDENING),
+    }
+
+
+def test_a_claim_nobody_said_is_unstated_and_a_plan_of_hers_is_not():
+    from ai_character_engine.memory.experience import claims_flags
+
+    answers = good_claims()
+    assert claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers) == {"outcome": set(), "lesson": set()}
+    answers["outcome"] = claims(("The user was annoyed.", "nobody", ""))
+    assert "unstated" in claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers)["outcome"]
+
+
+def test_a_quote_from_the_wrong_side_is_a_speaker_slip():
+    from ai_character_engine.memory.experience import claims_flags
+
+    answers = good_claims()
+    answers["outcome"] = claims(("The user wants to be called Kuu.", "user", "Shall I call you Kuu?"))
+    assert "speaker" in claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, answers)["outcome"]
+
+
+def test_an_unusable_answer_stores_nothing():
+    from ai_character_engine.memory.experience import claims_flags
+
+    assert claims_flags(CLAIMS_CANDIDATE, CLAIMS_SOURCE, {"outcome": {"claims": "x"}}) is None
+
+
+def test_a_claims_proof_verifies_after_restart_and_fails_when_tampered():
+    from ai_character_engine.memory.experience import verified_experience
+
+    review = approving_review({"user_feedback": CLAIMS_SOURCE["feedback"]})
+    answers = good_claims()
+    proof = experience_review_proof(
+        CLAIMS_CANDIDATE, review, CLAIMS_SOURCE["feedback"], claims=answers,
+        previous_reply=CLAIMS_SOURCE["previous_reply"],
+    )
+    assert proof["version"] == 5 and proof["accepted_components"] == ["outcome", "lesson"]
+    assert verified_experience(CLAIMS_CANDIDATE, proof, CLAIMS_SOURCE["feedback"])
+    tampered = {**proof, "claims": {**answers, "outcome": claims(("x", "nobody", ""))}}
+    assert not verified_experience(CLAIMS_CANDIDATE, tampered, CLAIMS_SOURCE["feedback"])
+    swapped = {**proof, "previous_reply": "other"}
+    assert not verified_experience(CLAIMS_CANDIDATE, swapped, CLAIMS_SOURCE["feedback"])
+
+
+@pytest.mark.asyncio
+async def test_claims_review_makes_four_calls_and_writes_the_experience(tmp_path):
+    calls = []
+
+    def reviewing(messages):
+        source = json.loads(messages[1].content)
+        if "component" in source:
+            calls.append("claims")
+            if source["component"] == "outcome":
+                return claims(("The user dislikes it.", "user", source["user_feedback"]))
+            return claims(("I will use their name.", "nobody", ""))
+        if "question" in source:
+            calls.append("widened")
+            return dict(NO_WIDENING)
+        if "candidate" in source:
+            calls.append("review")
+            return approving_review(source)
+        calls.append("extract")
+        return lesson(messages)
+
+    c = companion(
+        tmp_path, {"interaction": Worker(reviewing)}, llm=Foreground(),
+        character_development=True, interaction_review_mode="claims",
+    )
+    await c.reply("Hello", conversation_id="one", user_id="alice")
+    await c.reply("I don't like nicknames.", conversation_id="one", user_id="alice")
+    await c.settle()
+    assert [x for x in calls if x != "extract"] == ["review", "claims", "claims", "widened"]
+    (record,) = c.interaction_experiences("alice")
+    assert record.metadata["interpretation_review"]["version"] == 5
+    await c.close()
