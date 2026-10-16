@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.0
+
+- Relationship views: her first-person views of being with one person, drawn from reviewed experiences and kept with the ids they rest on (`kind "relationship_view"`, per-user experience scope only). A view holds only while every source is still its topic's current interpretation; when one is forgotten, voted out or revised, the view is withdrawn, and a new batch supersedes the previous one. `CharacterCompanion.relationship_views(user_id)` returns the held ones; with `character_development` and a `user_id` they reach her as `- view: ` / `- view withdrawn: ` note lines. New settings `relationship_every` (1), `relationship_reflection_threshold` (1.0), `relationship_views_shown` (3).
+- Reflection is gated by importance: it runs when the importance of experiences and counted votes since the last reflection (a watermark of what it read) reaches `relationship_reflection_threshold`, or when a view lost a source. New background kind `RELATIONSHIP_REFLECTION`, role `RELATIONSHIP`.
+- Experiences carry the extractor's `importance` (0..1, default 0.5; records before 1.6.0 count as 0.7) and `keywords` (at most 6, 20 characters each). A counted upvote or downvote adds an importance event. Extraction and votes see older topics that share the user's words, and `experience_topics(records, limit=4, query=None)` puts topics sharing word pieces with a query first.
+- `interaction_review_mode`: `""` (default; the checklist when `interaction_review_checklist` is set), `"checklist"` or `"claims"`. Claims lists the claims of each component (what, about whom, said by whom, with a quote) and lets code judge what is unstated or put on the wrong speaker: three calls instead of six, proof version 5. Not the default.
+
 ## 1.5.1
 
 - Memory of the user follows the user. A host that names its user (`reply(user_id=...)`, Tomoshibi's `interaction_user_id`) gets one memory scope per user instead of one per conversation: a new chat with the same person no longer starts from zero (she said she had just met a user whose cat's name she had written down the day before; 4 of 25 on a long-memory benchmark for that reason). Without a user id the scope stays the conversation's, as for a stream.

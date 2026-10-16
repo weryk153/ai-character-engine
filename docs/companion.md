@@ -595,6 +595,9 @@ model can run every worker on every turn.
 | `self_memories_kept`, `self_memories_shown` | 40, 12 | How many things she said about herself she keeps (the oldest beyond are forgotten), and how many of the newest stand in the conversation |
 | `mood_half_life_seconds`, `mood_floor` | 300, 0.15 | Her mood's intensity halves every this many seconds; below the floor she is neutral again |
 | `across_runs_framing`, `across_runs_in_context` | None, 8 | The line above what she remembers across runs in her system prompt (None: `From before this world began again, you remember:`), and how many of the newest go there (0: none) |
+| `interaction_every`, `interaction_topics_shown` | 1, 4 | With `character_development`: read explicit feedback on her preceding reply every N turns (0: off); how many topic interpretations reach her |
+| `interaction_review_checklist`, `interaction_review_mode` | false, "" | How an interaction candidate is reviewed: problem lists, the six-question checklist, or `"claims"` (three calls); see the configuration guide |
+| `relationship_every`, `relationship_reflection_threshold`, `relationship_views_shown` | 1, 1.0, 3 | Relationship views: run the worker every N turns (0: off); the importance of new experiences and votes since the last reflection that triggers it; how many views reach her |
 
 ## Telling what the engine offers
 
@@ -728,8 +731,11 @@ system prompt: a changed view then extends the conversation instead of
 invalidating the prompt cache from the system prompt on (a new experience
 cost a local 9B about 2,000 tokens read again). Interaction experiences are
 `- experience: ` lines in the same way, with `- experience withdrawn: ` when
-an interpretation is no longer held. The `turn` and `system` placements keep
-both at the end of the system prompt. Evaluate the quality of the replies
+an interpretation is no longer held. With a `user_id`, her relationship views
+(first-person views of being with that person, each resting on cited
+experiences) are `- view: ` lines the same way, with `- view withdrawn: ` when a
+source was forgotten, voted out or revised. The `turn` and `system` placements
+keep all of them at the end of the system prompt. Evaluate the quality of the replies
 with the same model.
 
 `await companion.speak_up(allow_silence=True)` gives the character the choice to

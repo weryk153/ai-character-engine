@@ -154,3 +154,47 @@ still verify; new reviews are stored as version 3 with the condition
 comparison. Each valid candidate adds one background model call, two when the
 user stated conditions, under the existing job limit and timeout. Review
 failure leaves the conversation reply intact.
+
+`interaction_review_mode` chooses how the extraction review judges the outcome
+and the lesson: `""` (the default) uses the problem lists, or the six-question
+checklist when `interaction_review_checklist` is set; `"checklist"` forces the
+checklist; `"claims"` asks, once per component, for the claims it makes, each as
+`{claim, subject, said_by, quote}` with `subject` one of `user`, `character`,
+`other` and `said_by` one of `user`, `character`, `nobody`, `plan`. Code then
+judges the rest. A claim is unstated when nobody said it and it is not a plan
+(a plan may stand only in the lesson, with no quote and no reason word). A
+claim is on the wrong speaker when its quote is not found verbatim on the
+speaker's side (at least 4 non-space characters), or when its subject is the
+user and the character is named as having said it. Whether the lesson widens a
+limit stays a yes/no question. This takes 3 calls instead of 6 and stores proof
+version 5. It is not the default; compare it with your model before enabling it.
+
+### Relationship views (development candidate)
+
+With `character_development=True` and a `user_id`, a background worker turns
+reviewed experiences of one person into a few first-person views of being with
+that person ("when she is tired she wants me to stay quiet and close"). They are
+stored in the same per-user experience scope as `kind "relationship_view"`;
+they are not facts about the user, and nothing is written for a turn without a
+`user_id`.
+
+- `relationship_every=1` runs the worker every N turns (0: off). Supply the
+  `relationship` key in a background client mapping; a single shared client is
+  used automatically.
+- It reflects only when enough has happened: the importance of experiences and
+  counted votes since the last reflection reaches
+  `relationship_reflection_threshold` (default 1.0), or a view lost a source.
+  The last reflection keeps a watermark of what it read, so the same experiences
+  are not counted twice. Importance comes from the extractor (0..1, default 0.5;
+  experiences stored before 1.6.0 count as 0.7).
+- Every view cites the experience ids it rests on. It holds only while each of
+  them is still its topic's current interpretation; if one is forgotten, voted
+  out or revised, the view is withdrawn. A new batch supersedes the previous one.
+- `relationship_views_shown=3` bounds how many views reach her. In the
+  transcript placement they are `- view: ` lines of the turn's note, and a
+  withdrawn one is `- view withdrawn: `.
+- `companion.relationship_views(user_id)` returns the views that still hold.
+
+Extraction and votes see the older topics that share the user's words (the
+extractor's `keywords`, else a topic's wording), so feedback on a topic she
+already holds is found even when it is not among the newest four.
