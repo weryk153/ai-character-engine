@@ -1951,6 +1951,11 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "failed; that is the character's judgement. The summary is written in the language of "
             "its quote: a Chinese quote gets a Chinese summary, a Japanese quote a Japanese one, "
             "never an English one unless the quote is English."
+            # 1.6.0, added at the end only: what comes before is cached.
+            " A request, reminder or invitation to the character (\"remember to bring your camera\", "
+            "\"記得帶相機喔\") is the user's wish about the character: write it as the user wanting the "
+            "character to do it, never as the user doing it. Whoever does the action in the quote does "
+            "it in the summary."
         ),
         BackgroundCognitionKind.EMOTION_ANALYSIS: (
             "Infer the user's currently expressed emotion conservatively; do not diagnose hidden mental states. "

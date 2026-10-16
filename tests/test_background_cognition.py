@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ai_character_engine._version import VERSION
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass
 
@@ -1487,6 +1488,27 @@ def test_the_memory_worker_is_told_a_practised_sentence_is_not_the_user():
     assert "never an English one unless the quote is English" in prompt
 
 
+def test_the_memory_worker_keeps_who_does_what_and_the_cached_prefix_is_unchanged():
+    from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
+
+    prompt = _SYSTEM_PROMPTS[BackgroundCognitionKind.MEMORY_EXTRACTION]
+    added = (
+        " A request, reminder or invitation to the character (\"remember to bring your camera\", "
+        "\"記得帶相機喔\") is the user's wish about the character: write it as the user wanting the "
+        "character to do it, never as the user doing it. Whoever does the action in the quote does "
+        "it in the summary."
+    )
+    assert prompt.endswith(added)
+    before = prompt[: -len(added)]
+    # The text before the 1.6.0 sentence is cached by the model server: it must stay as it was.
+    assert before.startswith("Extract durable facts the user stated in the user lines to extract from")
+    assert before.endswith("never an English one unless the quote is English.")
+    assert len(before) == 1383
+    assert hashlib.sha256(before.encode()).hexdigest() == (
+        "551f13bbfb9cbba7ec135dae315933205ef9e8c1774bab7c186326b189a632ba"
+    )
+
+
 def test_the_reflection_worker_is_told_evidence_is_the_users_own_words():
     from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
 
@@ -2134,9 +2156,7 @@ async def test_her_opening_said_again_is_pointed_out_whatever_the_model_answers(
 # (length, sha256) of each prompt as it stood before the diary and the user
 # state were added. Nothing of them changes: a model server keeps their start.
 PROMPTS_BEFORE_DIARY = {
-    BackgroundCognitionKind.MEMORY_EXTRACTION: (
-        1383, "551f13bbfb9cbba7ec135dae315933205ef9e8c1774bab7c186326b189a632ba"
-    ),
+    # memory_extraction is pinned by its own prefix test (it grew a 1.6.0 sentence).
     BackgroundCognitionKind.EMOTION_ANALYSIS: (
         825, "e649ea9e806653250ccd8ba7023352e41fdff93323a7a98931474ec2c48d323f"
     ),

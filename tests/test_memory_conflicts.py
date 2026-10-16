@@ -842,7 +842,7 @@ def test_the_prompts_of_the_other_workers_are_unchanged():
     from ai_character_engine.cognition.background import _SYSTEM_PROMPTS
 
     expected = {
-        "memory_extraction": "551f13bbfb9cbba7ec135dae315933205ef9e8c1774bab7c186326b189a632ba",
+        # memory_extraction grew a 1.6.0 sentence at its end; its old prefix is pinned in test_background_cognition.py
         "emotion_analysis": "e649ea9e806653250ccd8ba7023352e41fdff93323a7a98931474ec2c48d323f",
         "conversation_summary": "49f94e82327cead4d3429ef55bf0de5d883686f176bee92b05d5263f6865d3f5",
         "reflection": "4a2296027b52bb378af083fc6a94fd53793eadac94bd5b11594256bbcedb812c",
