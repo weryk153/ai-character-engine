@@ -1500,7 +1500,7 @@ def test_the_memory_worker_keeps_who_does_what_and_the_cached_prefix_is_unchange
     )
     plan_done = (
         " When the user says one of their plans is now happening or done (\"we're at the beach "
-        "now\", \"I handed in the report\", \"我已經在海邊了\"), state it as a fact with kind plan, "
+        "now\", \"I handed in the report\", \"我已經在海邊了\"), state it as a fact with kind event, "
         "e.g. \"用戶已經到海邊了\": an earlier plan can then be retired."
     )
     assert prompt.endswith(added + plan_done)

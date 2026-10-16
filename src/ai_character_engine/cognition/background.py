@@ -1967,7 +1967,7 @@ _SYSTEM_PROMPTS: Mapping[BackgroundCognitionKind, str] = MappingProxyType(
             "it in the summary."
             # 1.6.0, added at the end only: what comes before is cached.
             " When the user says one of their plans is now happening or done (\"we're at the beach "
-            "now\", \"I handed in the report\", \"我已經在海邊了\"), state it as a fact with kind plan, "
+            "now\", \"I handed in the report\", \"我已經在海邊了\"), state it as a fact with kind event, "
             "e.g. \"用戶已經到海邊了\": an earlier plan can then be retired."
         ),
         BackgroundCognitionKind.EMOTION_ANALYSIS: (

@@ -1217,3 +1217,67 @@ def test_a_liked_place_is_not_retired_through_apply_conflicts():
         [old, new], new.id, [{"old_id": old.id, "relation": "supersedes"}]
     )
     assert applied == () and records == [old, new]
+
+
+@pytest.mark.parametrize(
+    "earlier, kind, newer, words",
+    [
+        # A habit, or not a plan at all.
+        ("用戶下班之後常去健身房", "habit", "用戶現在在健身房", "我現在在健身房"),
+        ("用戶吃完飯之後會散步", "habit", "用戶正在散步", "我正在散步"),
+        ("The user usually goes running after work and will keep doing it", "habit",
+         "The user is running now", "I'm running now"),
+        ("用戶每週六去游泳", "plan", "用戶正在游泳", "我正在游泳"),
+        ("用戶將家裡的貓取名叫小花", "fact", "小花現在在睡覺", "小花現在在睡覺"),
+        ("The user lives next to a park", "fact", "The user is at the park now", "I'm at the park now"),
+        # The new words are still a plan, or a compound earlier fact.
+        ("用戶打算去日本", "plan", "用戶已經決定要去日本了", "我已經決定要去日本了"),
+        ("用戶下個月要考日檢", "plan", "用戶已經在準備日檢了", "我已經在準備日檢了"),
+        ("用戶打算明年去日本留學", "plan", "用戶正在考慮要不要去日本留學", "我正在考慮要不要去日本留學"),
+        ("用戶在台北上班，下個月要搬去台中", "plan", "用戶現在在台中", "我現在在台中"),
+        # No real shared word, or a step toward the plan.
+        ("用戶想養一隻貓", "plan", "用戶已經養了一隻狗", "我已經養了一隻狗"),
+        ("用戶打算開始學日文", "plan", "用戶已經開始學吉他了", "我已經開始學吉他了"),
+        ("用戶下週要去看牙醫", "plan", "用戶正在去看電影", "我正在去看電影"),
+        ("The user is going to Kyoto next week", "plan", "The user is already going crazy", "I'm already going crazy"),
+        ("The user plans to visit Kyoto", "plan", "The user is visiting Osaka now", "We're visiting Osaka now"),
+        ("用戶打算搬去台中", "plan", "用戶找到了台中的房子", "我找到了台中的房子"),
+        ("用戶打算搬去台中", "plan", "用戶交了台中房子的訂金", "我交了台中房子的訂金"),
+        ("用戶想去海邊", "plan", "用戶買到了去海邊的票", "我買到了去海邊的票"),
+        ("用戶下個月要考日檢", "plan", "用戶完成日檢報名了", "我完成日檢報名了"),
+        # Done only in the model's summary, not in the user's words.
+        ("用戶想去海邊", "plan", "用戶已經到海邊了", "我想去海邊"),
+        # An event is no plan.
+        ("用戶已經交了報告", "event", "用戶已經在寫下一份報告了", "我已經在寫下一份報告了"),
+        # Said not.
+        ("The user wants to go to the beach", "plan", "The user is not at the beach now", "I'm not at the beach now"),
+        ("用戶想去海邊", "plan", "用戶現在不在海邊", "我現在不在海邊"),
+    ],
+)
+def test_a_plan_is_not_retired_on_a_false_match(earlier, kind, newer, words):
+    assert may_supersede(earlier, newer, words, earlier_kind=kind) is False
+
+
+def test_a_travel_plan_kind_counts_as_a_plan():
+    assert may_supersede("用戶想去海邊", "用戶已經到海邊了", "我已經在海邊了", earlier_kind="travel_plan")
+
+
+async def _plan_recheck(confirm):
+    old = fact("用戶想去海邊", kind="plan")
+    new = said("用戶已經到海邊了", "我已經在海邊了", minutes=1)
+    judge = Judge(one("supersedes"), confirm)
+    tasks, background = conflict_runtime(judge)
+    async with tasks:
+        handle = await background.schedule_memory_conflict(new, [old])
+        result = await handle.wait()
+    return [i["relation"] for p in result.output.proposals for i in p.payload["conflicts"]]
+
+
+@pytest.mark.asyncio
+async def test_a_done_plan_survives_the_recheck_without_a_change_word():
+    assert await _plan_recheck({"changed": False, "word": "", "both_true": False}) == ["supersedes"]
+
+
+@pytest.mark.asyncio
+async def test_a_done_plan_is_dropped_when_the_model_says_both_are_true():
+    assert await _plan_recheck({"changed": False, "word": "", "both_true": True}) == []
