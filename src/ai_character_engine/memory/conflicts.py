@@ -202,7 +202,9 @@ _NOW_OR_DONE_CUES = (
 )
 _NOW_OR_DONE = re.compile(
     "|".join(
-        [*(re.escape(cue) for cue in _NOW_OR_DONE_CUES), "(?:^|(?<=已經)|(?<=已经)|(?<=終於)|(?<=终于)|(?<=[去來来回搬走跑飛飞開开我們们剛刚]))到了"]
+        [*(re.escape(cue) for cue in _NOW_OR_DONE_CUES), "(?:^|(?<=已經)|(?<=已经)|(?<=終於)|(?<=终于)|(?<=[去來来回搬走跑飛飞開开我們们剛刚]))到了",
+         # A verb finished: 考完, 搬完, 寫完; 完了 on its own is "done for".
+         "(?<=[考搬寫写交吃看跑辦办弄讀读修拍念唸])完"]
         + [r"\b(?:now|already|finished|done|arrived|handed in)\b"]
     ),
     re.IGNORECASE,

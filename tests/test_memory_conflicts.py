@@ -1317,6 +1317,22 @@ def test_arrived_said_on_its_own_says_done(words, done):
     assert may_supersede("用戶想去海邊", "用戶已經到海邊了", words, earlier_kind="plan") is done
 
 
+@pytest.mark.parametrize("earlier, newer, words", [
+    # Seen in the benchmark: both plans stayed held and she said the exam was
+    # still to come the day after it.
+    ("用戶11月2號要考日檢", "用戶考完日檢了", "日檢考完了！聽力好難。"),
+    ("用戶月底要搬去新竹", "用戶已經搬到新竹了", "搬完了，箱子還沒拆。"),
+    ("用戶這週要寫完報告", "用戶寫完報告了", "報告寫完了"),
+])
+def test_a_verb_finished_retires_the_plan(earlier, newer, words):
+    assert may_supersede(earlier, newer, words, earlier_kind="plan")
+
+
+@pytest.mark.parametrize("words", ["完了，我忘記帶錢包", "我還沒考完", "還沒搬完啦"])
+def test_finished_is_not_said_by_these(words):
+    assert not may_supersede("用戶月底要搬去新竹考多益", "用戶在新竹", words, earlier_kind="plan")
+
+
 @pytest.mark.asyncio
 async def test_a_done_plan_is_dropped_when_the_model_says_both_are_true():
     assert await _plan_recheck({"changed": False, "word": "", "both_true": True}) == []
