@@ -694,3 +694,38 @@ def test_what_she_said_about_herself_carries_the_day_she_said_it(tmp_path):
 
     day, lines = asyncio.run(scenario())
     assert lines == [f"{SELF_LINE}({day}) {TEA[0]}"]
+
+
+class Down:
+    """A background endpoint that cannot be reached, then can."""
+
+    def __init__(self, answer):
+        self.answer, self.up = answer, False
+
+    async def generate(self, messages, *, tools=None):
+        if not self.up:
+            raise ConnectionError("Connection refused")
+        return LLMResponse(text=json.dumps(self.answer(messages), ensure_ascii=False), model="w")
+
+
+def test_a_background_model_that_cannot_be_reached_is_said_out_loud(tmp_path, caplog):
+    # Seen live: the tunnel to the background model died and nothing was
+    # remembered for two hours, with nothing in the host's logs.
+    caplog.set_level("WARNING", logger="ai_character_engine.companion.companion")
+
+    async def scenario():
+        worker = Down(about_herself(TEA))
+        current = make(tmp_path, her=Her("I love jasmine tea."),
+                       workers={"self_memory": worker}, self_memory_every=1)
+        for _ in range(2):
+            await current.reply("hi", conversation_id="a")
+            await current.settle()
+        worker.up = True
+        await current.reply("hi", conversation_id="a")
+        await current.settle()
+        await current.close()
+
+    asyncio.run(scenario())
+    said = [r.getMessage() for r in caplog.records]
+    assert sum("failed" in m and "self_memory" in m for m in said) == 1, said
+    assert any("works again after 2" in m for m in said), said

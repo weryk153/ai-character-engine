@@ -122,6 +122,7 @@ from ai_character_engine.state.mood import (
 from ai_character_engine.state.policy import CharacterStatePolicy
 from ai_character_engine.state.relationship import RelationshipStatePolicy
 from ai_character_engine.tasks import MultiTaskRuntime, MultiTaskRuntimeConfig, TaskPriority
+from ai_character_engine.tasks.models import TaskStatus
 from ai_character_engine.tasks.errors import UnknownTaskError
 from ai_character_engine.tools.registry import ToolRegistry
 from ai_character_engine.vision import VisionFrame, VisionPipeline
@@ -160,6 +161,7 @@ _THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
 # How long the user saying a plan is done retires her plans for it, the one
 # she says again after that included.
 _DONE_SAYS_FOR_HOURS = 24
+_FAILURES_SAID_EVERY = 20
 # How a slip in her last reply is pointed out to her, one line each.
 REPLY_NOTE_LINE = "About your last reply: "
 # How she is told to ask about two facts of the user that cannot both be
@@ -1144,6 +1146,8 @@ class CharacterCompanion:
         self._access = model_access or ModelAccess(self.settings.foreground_patience_seconds)
         # target -> the turn after which a job for it was last scheduled
         self._scheduled_at: dict[str, int] = {}
+        # Background work that failed in a row, by kind: said once, not every turn.
+        self._failing: dict[str, int] = {}
         # The turns (revisions) after which her mood was given to the mood
         # worker to read: on those the rules leave her mood to its reading.
         self._mood_read_at: deque[int] = deque(maxlen=self.settings.records_kept)
@@ -2371,6 +2375,22 @@ class CharacterCompanion:
         # Not every turn schedules work: a remark of her own does not.
         return self._scheduled_at.get(proposal.target, -1) > proposal.base_revision
 
+    def _note_failure(self, result) -> None:
+        """A background model that cannot be reached leaves her remembering
+        nothing, turn after turn: said on the first failure and every
+        _FAILURES_SAID_EVERY after, not only to a debug log no host reads."""
+        failed = self._failing[result.task_type] = self._failing.get(result.task_type, 0) + 1
+        if failed == 1 or failed % _FAILURES_SAID_EVERY == 0:
+            logger.warning(
+                "background %s %s (%d in a row): %s",
+                result.task_type, result.status.value, failed, result.error,
+            )
+
+    def _note_success(self, task_type: str) -> None:
+        failed = self._failing.pop(task_type, 0)
+        if failed:
+            logger.warning("background %s works again after %d failure(s)", task_type, failed)
+
     async def _collect(self, handle) -> None:
         try:
             try:
@@ -2380,8 +2400,12 @@ class CharacterCompanion:
             conversation_id = self._conversation_by_task.pop(handle.task_id, None)
             first = self._first_by_task.pop(handle.task_id, None)
             if result.output is None:
-                logger.debug("%s %s: %s", result.task_type, result.status.value, result.error)
+                if result.status in {TaskStatus.FAILED, TaskStatus.TIMED_OUT}:
+                    self._note_failure(result)
+                else:
+                    logger.debug("%s %s: %s", result.task_type, result.status.value, result.error)
                 return
+            self._note_success(result.task_type)
             # The same lock as a turn: the conversation must not change under
             # a commit.
             async with self._turn_lock:
