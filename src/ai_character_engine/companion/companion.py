@@ -77,6 +77,7 @@ from ai_character_engine.long_term_cognition.store import (
 from ai_character_engine.memory import InMemoryMemoryStore, MemoryManager
 from ai_character_engine.memory.conflicts import (
     CONFLICTS_LOG,
+    plans_done,
     resolve_conflict,
     take_unasked_conflicts,
     unresolved_conflicts,
@@ -156,6 +157,9 @@ _KEPT_HOWEVER_LATE = (MEMORY_TARGET, SELF_MEMORY_TARGET, DIARY_TARGET,
 # Of use only before the next turn: a note about a reply is never moved onto
 # a later one.
 _THIS_TURN_ONLY = (REPLY_NOTE_TARGET,)
+# How long the user saying a plan is done retires her plans for it, the one
+# she says again after that included.
+_DONE_SAYS_FOR_HOURS = 24
 # How a slip in her last reply is pointed out to her, one line each.
 REPLY_NOTE_LINE = "About your last reply: "
 # How she is told to ask about two facts of the user that cannot both be
@@ -2397,6 +2401,11 @@ class CharacterCompanion:
                     await self._react_to_observation()
                 if any(o.committed and o.target == SELF_MEMORY_TARGET for o in outcomes):
                     self._keep_the_newest_self_memories()
+                if any(
+                    o.committed and o.target in {MEMORY_TARGET, SELF_MEMORY_TARGET}
+                    for o in outcomes
+                ):
+                    self._retire_her_done_plans(conversation_id)
                 try:
                     if any(o.committed for o in outcomes):
                         self._save_state()
@@ -2659,6 +2668,26 @@ class CharacterCompanion:
         if same and not outcome.committed:
             self._memory_store.replace_for_character(scope, before)
         return outcome
+
+    def _retire_her_done_plans(self, conversation_id: str | None) -> None:
+        """Call with the turn lock held. Her plans the user said in the last
+        day are happening or done step back, and so does one she says again
+        after that: kept apart from the user's facts, no conflict check sees
+        them, and she kept planning a trip the user had arrived from."""
+        scope = self._self_scope()
+        records = self._memory_store.list_for_character(scope)
+        since = datetime.fromtimestamp(self._clock() - _DONE_SAYS_FOR_HOURS * 3600, UTC)
+        done = plans_done(
+            records, self._memory_store.list_for_character(self._scope(conversation_id)),
+            since=since,
+        )
+        if not done:
+            return
+        self._memory_store.replace_for_character(scope, [
+            replace(r, status="superseded", superseded_by=done[r.id]) if r.id in done else r
+            for r in records
+        ])
+        self._take_back_what_she_no_longer_holds()
 
     def _keep_the_newest_self_memories(self) -> None:
         """The oldest beyond ``self_memories_kept`` are forgotten: counted

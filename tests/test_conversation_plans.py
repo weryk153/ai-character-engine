@@ -641,3 +641,36 @@ def test_what_was_kept_before_1_2_is_from_another_conversation(tmp_path):
         assert goals == ("Become a good teacher",)
         assert thoughts == ()
         assert everything == ["Mei is teaching the user Japanese", "Mei plans a quiz"]
+
+
+def test_her_plan_steps_back_once_the_user_says_it_is_done(tmp_path):
+    # Seen live: the user said 「到了」 at the beach and she went on planning to
+    # go there, because her plans are kept apart from what the user said.
+    plan = ("Mei 計劃天亮就帶用戶去海邊", "天亮我們就去海邊吧", "plan")
+
+    def user_facts(messages):
+        listed = messages[1].content.split("User lines to extract from:")[1]
+        items = [
+            {"summary": "用戶已經到海邊了", "kind": "event", "importance": 0.6,
+             "confidence": 0.9, "evidence": "到了"}
+        ] * ("到了" in listed)
+        return {"items": items, "confidence": 0.9, "evidence": []}
+
+    async def scenario():
+        her = Her("天亮我們就去海邊吧。", "好耶！")
+        current = make(
+            tmp_path, her=her, memory_every=1, self_memory_every=1,
+            workers={"self_memory": Worker(about_herself(plan)), "memory": Worker(user_facts)},
+        )
+        await current.reply("好啊", conversation_id="a")
+        await current.settle()
+        held_before = current.self_memories()
+        await current.reply("到了", conversation_id="a")
+        await current.settle()
+        held_after = current.self_memories()
+        await current.close()
+        return held_before, held_after
+
+    before, after = asyncio.run(scenario())
+    assert before == ["Mei 計劃天亮就帶用戶去海邊"]
+    assert after == []

@@ -16,6 +16,7 @@ from ai_character_engine.memory.conflicts import (
     CONFLICT_RELATIONS,
     apply_conflicts,
     conflict_candidates,
+    plans_done,
     resolve_conflict,
     take_unasked_conflicts,
     unresolved_conflicts,
@@ -1370,3 +1371,43 @@ def test_a_move_done_still_retires_the_plan():
 ])
 def test_only_a_whole_plan_word_in_the_kind_is_a_plan(kind, plan):
     assert may_supersede("用戶想去海邊", "用戶已經到海邊了", "我已經在海邊了", earlier_kind=kind) is plan
+
+
+# --- her own plans, kept apart from the user's facts ------------------------------
+
+
+def her_plan(summary, *, minutes=0):
+    return fact(summary, minutes=minutes, kind="plan")
+
+
+def test_her_plan_is_done_when_the_user_says_so():
+    plan = her_plan("三月計劃等天亮了就帶用戶去海邊")
+    done = said("用戶已經到海邊了", "到了", minutes=30)
+    assert plans_done([plan], [done], since=T0) == {plan.id: done.id}
+
+
+def test_her_plan_said_again_after_the_user_arrived_is_done_too():
+    # Seen live: she said "等天一亮就去海邊" again after the user said they were
+    # there, and it was kept as a new plan of hers.
+    done = said("用戶已經到海邊了", "到了", minutes=0)
+    plan = her_plan("三月計劃等天一亮就去海邊玩", minutes=30)
+    assert plans_done([plan], [done], since=T0) == {plan.id: done.id}
+
+
+@pytest.mark.parametrize("summary", ["三月計劃下次再帶用戶去海邊", "三月計劃改天再去海邊"])
+def test_a_plan_to_go_again_is_not_done(summary):
+    done = said("用戶已經到海邊了", "到了", minutes=0)
+    assert plans_done([her_plan(summary, minutes=30)], [done], since=T0) == {}
+
+
+def test_only_what_the_user_said_since_counts():
+    done = said("用戶已經到海邊了", "到了", minutes=0)
+    plan = her_plan("三月計劃帶用戶去海邊", minutes=30)
+    assert plans_done([plan], [done], since=T0 + timedelta(minutes=1)) == {}
+
+
+def test_her_plan_on_another_topic_or_not_a_plan_stays():
+    done = said("用戶已經到海邊了", "到了", minutes=30)
+    assert plans_done(
+        [her_plan("三月計劃帶用戶去看電影"), fact("三月喜歡海邊", kind="preference")], [done], since=T0
+    ) == {}

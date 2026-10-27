@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import replace
+from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
 from .models import MemoryRecord
@@ -545,3 +546,38 @@ def resolve_conflict(
             record = replace(record, metadata={**record.metadata, CONFLICT_WITH: remaining})
         result.append(record)
     return result, True
+
+
+# Her plan to do it once more is a new plan, not the one the user said is done.
+_AGAIN = re.compile(r"再|又要|下次|下回|改天|\bagain\b|\bnext time\b", re.IGNORECASE)
+
+
+def _said(record: MemoryRecord) -> str:
+    provenance = record.metadata.get("background_provenance") or {}
+    return str(next(iter(provenance.get("evidence") or ()), "") or record.metadata.get("source_content", ""))
+
+
+def plans_done(
+    plans: Iterable[MemoryRecord], facts: Iterable[MemoryRecord], *, since: datetime
+) -> dict[str, str]:
+    """Her plans (plan id -> fact id) that a fact about the user written since
+    ``since`` says are happening or done (retires_a_plan), by the same rule as
+    the user's own plans. Hers are kept apart from the user's facts, so no
+    conflict check sees them; and one she says again after the user arrived
+    is done as well, unless she plans to go again."""
+    recent = [
+        record
+        for record in facts
+        if record.is_active and about_the_user(record) and record.created_at >= since
+    ]
+    done: dict[str, str] = {}
+    for plan in plans:
+        if not plan.is_active or _AGAIN.search(plan.summary):
+            continue
+        fact = next(
+            (f for f in recent if retires_a_plan(plan.summary, f.summary, _said(f), plan.kind)),
+            None,
+        )
+        if fact is not None:
+            done[plan.id] = fact.id
+    return done
