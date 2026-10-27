@@ -114,8 +114,9 @@ def make(tmp_path, *, her=None, workers=None, **settings):
 
 
 def self_lines(messages):
+    """What she said about herself, without the day she said it."""
     return [
-        line.removeprefix(SELF_LINE)
+        re.sub(r"^\(\d{4}-\d{2}-\d{2}\) ", "", line.removeprefix(SELF_LINE))
         for message in messages
         for line in message.content.splitlines()
         if line.startswith(SELF_LINE)
@@ -674,3 +675,22 @@ def test_her_plan_steps_back_once_the_user_says_it_is_done(tmp_path):
     before, after = asyncio.run(scenario())
     assert before == ["Mei 計劃天亮就帶用戶去海邊"]
     assert after == []
+
+
+def test_what_she_said_about_herself_carries_the_day_she_said_it(tmp_path):
+    async def scenario():
+        her = Her("I love jasmine tea.", "Mm.")
+        current = make(tmp_path, her=her, workers={"self_memory": Worker(about_herself(TEA))},
+                       self_memory_every=1)
+        await current.reply("what do you drink", conversation_id="a")
+        await current.settle()
+        day = current.self_memory_history()[0].created_at.date().isoformat()
+        await current.reply("and today?", conversation_id="a")
+        await current.close()
+        return day, [
+            line for message in her.calls[-1] for line in message.content.splitlines()
+            if line.startswith(SELF_LINE)
+        ]
+
+    day, lines = asyncio.run(scenario())
+    assert lines == [f"{SELF_LINE}({day}) {TEA[0]}"]

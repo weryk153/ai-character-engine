@@ -1492,9 +1492,19 @@ class CharacterCompanion:
 
     def _self_memories_for_context(self) -> list[str]:
         shown = self.settings.self_memories_shown
-        said = self.self_memories(in_conversation=self._active)[-shown:] if shown else []
-        said = self._with_change_reasons(said)
+        said = self._dated_self_memories()[-shown:] if shown else []
         return ["\n".join(f"{SELF_MEMORY_LINE}{line}" for line in said)] * bool(said)
+
+    def _dated_self_memories(self) -> list[str]:
+        """What she holds in the conversation at hand, oldest first, each with
+        the day she said it: undated, a plan she made and the news that it was
+        done could not be put in order."""
+        records = self._self_records(in_conversation=self._active)
+        said = self._with_change_reasons([one_line(record.summary) for record in records])
+        return [
+            f"({record.created_at.date().isoformat()}) {line}"
+            for record, line in zip(records, said)
+        ]
 
     def _with_change_reasons(self, said: list[str]) -> list[str]:
         if self.settings.character_development and said:
@@ -1998,7 +2008,7 @@ class CharacterCompanion:
         the host's user, or pushed out by newer ones. It was written into this
         conversation while she held it. What she said in another conversation
         about what she is doing there is not held here."""
-        held = set(self._with_change_reasons(self.self_memories(in_conversation=self._active)))
+        held = set(self._dated_self_memories())
         self.runtime.withdraw_from_notes(
             lambda line: line.startswith(SELF_MEMORY_LINE)
             and line.removeprefix(SELF_MEMORY_LINE) not in held
@@ -3502,8 +3512,14 @@ class CharacterCompanion:
         that names none), what is in her mind in that conversation: what is
         hers in every conversation, and what she said there about what she is
         doing, plans to do and thinks of the user."""
+        return [
+            one_line(record.summary)
+            for record in self._self_records(in_conversation=in_conversation)
+        ]
+
+    def _self_records(self, *, in_conversation: Any = _ANY) -> list[MemoryRecord]:
         records = self._memory_store.list_for_character(self._self_scope())
-        active = sorted(
+        return sorted(
             (
                 record
                 for record in records
@@ -3512,7 +3528,6 @@ class CharacterCompanion:
             ),
             key=lambda record: record.created_at,
         )
-        return [one_line(record.summary) for record in active]
 
     def self_memory_history(self) -> tuple[MemoryRecord, ...]:
         """All self views, including superseded ones, with source evidence.

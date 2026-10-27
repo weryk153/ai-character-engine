@@ -3048,8 +3048,9 @@ HILLS = ("Mei walks in the hills every Sunday", "I walk in the hills every Sunda
 
 
 def _self_lines(messages):
+    """What she said about herself, without the day she said it."""
     return [
-        line
+        re.sub(r"^(- you said about yourself: )\(\d{4}-\d{2}-\d{2}\) ", r"\1", line)
         for message in messages
         for line in message.content.splitlines()
         if line.startswith(SELF_LINE)
