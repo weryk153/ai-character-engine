@@ -222,5 +222,5 @@ def test_context_declares_scope_discipline_and_memory_provenance():
     system = system_context(messages)
     assert "Scope discipline" in system
     assert "incidental context" in system
-    assert "[asserted_fact]" in system
+    assert "[asserted_fact, " in system
     assert "revisable evidence" in system

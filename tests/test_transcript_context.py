@@ -16,6 +16,8 @@ conversation has said.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
 from ai_character_engine import CharacterProfile, CharacterRuntime
@@ -229,7 +231,7 @@ async def test_a_memory_is_mentioned_once_while_its_note_is_in_the_conversation(
 
     mentions = [note for note in notes(llm.calls[-1]) if "Bun" in note]
     assert len(mentions) == 1
-    assert "- memory [unknown]: The user has a cat called Bun" in mentions[0]
+    assert "]: The user has a cat called Bun" in mentions[0]
 
 
 def test_what_was_already_said_costs_no_budget():
@@ -601,3 +603,26 @@ def test_a_host_with_the_system_placement_keeps_experiences_in_the_system_prompt
     system = build(builder=builder)[0].content
     assert "They dislike nicknames." in system
     assert "I prefer tea." in system
+
+
+@pytest.mark.asyncio
+async def test_a_memory_line_carries_the_day_it_was_said():
+    # Undated, "the user wants to go to the beach" and "the user is at the
+    # beach" could not be put in order, and she kept planning a trip made.
+    llm = FakeLLMClient("fine")
+    memory = MemoryManager()
+    memory.store.add(
+        MemoryRecord(
+            character_id="mei",
+            summary="The user has a cat called Bun",
+            importance=0.9,
+            created_at=datetime(2026, 10, 16, 23, 7, tzinfo=UTC),
+        )
+    )
+    current = runtime(llm, memory_manager=memory)
+
+    await current.process_event(CharacterEvent.user_message("what is my cat called"))
+
+    assert "- memory [unknown, 2026-10-16]: The user has a cat called Bun" in "\n".join(
+        notes(llm.calls[-1])
+    )

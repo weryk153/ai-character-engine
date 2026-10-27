@@ -148,7 +148,10 @@ def one_line(text: str) -> str:
 
 
 def memory_line(record) -> str:
-    return f"{MEMORY_LINE}{record.evidence_type}]: {one_line(record.summary)}"
+    """With the day it was said: undated, a plan and the news that it was
+    done cannot be put in order."""
+    day = record.created_at.date().isoformat()
+    return f"{MEMORY_LINE}{record.evidence_type}, {day}]: {one_line(record.summary)}"
 
 
 def belief_line(record: BeliefRecord) -> str:
