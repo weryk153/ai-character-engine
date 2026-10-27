@@ -1133,6 +1133,26 @@ class StructuredBackgroundWorker:
                         "reason": str(raw.get("reason") or "").strip(),
                     }
                 )
+            # A plan the user says is happening or done is retired by the
+            # rule, whatever the model named: a 9B model called arriving at
+            # the beach a refinement of something else and left every plan
+            # to go there held. The recheck can still refuse it.
+            new_memory = payload.get("new_memory") or {}
+            new_summary = str(new_memory.get("summary") or "")
+            said = str(new_memory.get("said") or "")
+            for item in payload.get("candidates") or ():
+                old_id = str(item.get("id"))
+                if not retires_a_plan(
+                    str(item.get("summary") or ""), new_summary, said, str(item.get("kind") or "")
+                ):
+                    continue
+                named = next((c for c in conflicts if c["old_id"] == old_id), None)
+                if named is None:
+                    conflicts.append(
+                        {"old_id": old_id, "relation": "supersedes", "reason": "said done"}
+                    )
+                else:
+                    named["relation"] = "supersedes"
             if not conflicts or not new_id:
                 return (), confidence, evidence, []
             proposals.append(

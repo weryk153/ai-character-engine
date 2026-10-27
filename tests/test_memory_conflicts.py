@@ -1278,6 +1278,45 @@ async def test_a_done_plan_survives_the_recheck_without_a_change_word():
     assert await _plan_recheck({"changed": False, "word": "", "both_true": False}) == ["supersedes"]
 
 
+async def _plan_said_done(answer, words="到了", *, kind="plan", earlier="用戶想去海邊"):
+    old = fact(earlier, kind=kind)
+    new = said("用戶已經到海邊了", words, minutes=1)
+    judge = Judge(answer, {"changed": False, "word": "", "both_true": False})
+    tasks, background = conflict_runtime(judge)
+    async with tasks:
+        handle = await background.schedule_memory_conflict(new, [old])
+        result = await handle.wait()
+    return [i["relation"] for p in result.output.proposals for i in p.payload["conflicts"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [{"conflicts": []}, one("refines")])
+async def test_a_plan_the_user_says_is_done_is_retired_whatever_the_model_named(answer):
+    # Seen live: 「到了」 at the beach, the model called it a refinement of
+    # another fact and named none of the plans, which stayed held for hours.
+    assert await _plan_said_done(answer) == ["supersedes"]
+
+
+@pytest.mark.asyncio
+async def test_her_own_plan_is_retired_when_the_user_says_it_is_done():
+    assert await _plan_said_done(
+        {"conflicts": []}, "我們到了", kind="plans", earlier="三月計劃等天亮了就帶用戶去海邊"
+    ) == ["supersedes"]
+
+
+@pytest.mark.asyncio
+async def test_a_plan_is_not_retired_by_the_rule_when_the_words_say_not_yet():
+    assert await _plan_said_done({"conflicts": []}, "還沒到啦") == []
+
+
+@pytest.mark.parametrize("words, done", [
+    ("到了", True), ("我到了！", True), ("我們到了", True), ("終於到了", True), ("剛到了", True),
+    ("找到了", False), ("想到了", False), ("輪到了", False), ("買到了", False),
+])
+def test_arrived_said_on_its_own_says_done(words, done):
+    assert may_supersede("用戶想去海邊", "用戶已經到海邊了", words, earlier_kind="plan") is done
+
+
 @pytest.mark.asyncio
 async def test_a_done_plan_is_dropped_when_the_model_says_both_are_true():
     assert await _plan_recheck({"changed": False, "word": "", "both_true": True}) == []

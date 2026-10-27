@@ -195,13 +195,14 @@ def may_contradict(earlier: str, newer: str) -> bool:
 
 
 # Words that say a plan is now happening or done. 到了 counts only after a
-# motion verb or 已經 (搬到了, 已經到了), not after 找, 買, 想...
+# motion verb, 已經, someone arriving or on its own (搬到了, 已經到了, 我到了,
+# 到了), not after 找, 買, 想...
 _NOW_OR_DONE_CUES = (
     "已經", "已经", "現在在", "现在在", "正在", "做完", "完成", "交了",
 )
 _NOW_OR_DONE = re.compile(
     "|".join(
-        [*(re.escape(cue) for cue in _NOW_OR_DONE_CUES), "(?:(?<=已經)|(?<=已经)|(?<=[去來来回搬走跑飛飞開开]))到了"]
+        [*(re.escape(cue) for cue in _NOW_OR_DONE_CUES), "(?:^|(?<=已經)|(?<=已经)|(?<=終於)|(?<=终于)|(?<=[去來来回搬走跑飛飞開开我們们剛刚]))到了"]
         + [r"\b(?:now|already|finished|done|arrived|handed in)\b"]
     ),
     re.IGNORECASE,
